@@ -22,6 +22,8 @@ Invariants it checks:
 
 PRs need the `validate` check green before merge.
 
+Run `claude plugin eval . --trust-plugin` after changing SKILL.md's description or rules.
+
 Commits must follow [Conventional Commits](https://www.conventionalcommits.org/):
 `feat:` bumps minor, `fix:`/`docs:`/`chore:` bump patch, `feat!:` or a
 `BREAKING CHANGE` footer bumps major. release-please opens/updates a
