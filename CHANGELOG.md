@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.4.0...v1.5.0) (2026-09-22)
+
+
+### Features
+
+* **orchestrate:** Lead recaps each subagent's work in the final report ([#13](https://github.com/yanmad27/my-orchestrate-skill/issues/13)) ([8c39849](https://github.com/yanmad27/my-orchestrate-skill/commit/8c398492fadf208f5e65e89c9219c459d5cfa7a6))
+
 ## [1.4.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.3.0...v1.4.0) (2026-09-22)
 
 
