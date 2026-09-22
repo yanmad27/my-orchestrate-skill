@@ -247,3 +247,4 @@ Run `paseo daemon reload` only if the Paseo config actually changed.
 - **Mention constraints:** if a file or area must not be touched, state it in the task.
 - **Watch the sidebar:** if a task spawns multiple concurrent workers on files, worktree tabs appear — avoid switching tabs while they run.
 - **Permission prompts are yours:** the Lead never auto-approves destructive actions; it surfaces them to you for confirmation.
+- **No polling:** the Lead and its workers never `sleep`-loop on CI or each other; long-running checks use `gh pr checks --watch` / `run_in_background` and the harness wakes them. If you see a permission prompt containing `sleep … done`, deny it — it's a spec bug.

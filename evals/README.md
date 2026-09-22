@@ -15,6 +15,11 @@ Cases:
   the built-in `Agent` tool.
 - `behaviour-no-self-edit`: given a delegation prompt, the skill must not
   call `Edit`/`Write` itself before delegating.
+- `behaviour-no-polling`: given a prompt to open a PR and report when CI
+  passes, no `Bash` call may match a sleep/poll-loop pattern
+  (`\bsleep\b|\bpgrep\b|\buntil\b.*\bdo\b|\bfor\b.*\bsleep\b`) — `tool_used`
+  with `input_match`, the same grader shape `trigger-positive-rename` uses
+  to check `Skill` input.
 
 Target: 100% pass rate on the `trigger-positive`/`trigger-negative` cases.
 All graders are free (`tool_used`/`regex`) — no judge-model cost.
@@ -34,6 +39,7 @@ All graders are free (`tool_used`/`regex`) — no judge-model cost.
 | trigger-negative-merge-squash  | 1.00  | 0.00 |
 | behaviour-precondition-stop    | 1.00  | +0.50 |
 | behaviour-no-self-edit         | 1.00  | 0.00 |
+| behaviour-no-polling           | not yet run | — |
 
 `trigger-positive-parallel` ("split this across agents and run in parallel: update
 README, add tests, fix lint") failed below threshold: 2/3 with-plugin runs never
