@@ -154,6 +154,9 @@ The subagent sees none of this conversation. Every `initialPrompt` contains:
 - Constraints: what not to touch, style/library rules, read-only if applicable.
 - Output: exact expected shape (diff, file path, report format).
 - Acceptance criteria: 2-4 checkable conditions.
+Always include this constraint verbatim so the recap is accurate and cheap:
+"End your final message with exactly one line: `RECAP: <what you did> →
+<result/artifact: file path, PR, or answer>`. One line, no transcript."
 Always include this constraint verbatim: "Never poll. Do not use `sleep`,
 `ps`, `pgrep`, `top`, or `until`/`for` retry loops to wait for CI, a
 background job, a PR check, or another agent. Run the command once —
@@ -211,8 +214,13 @@ profile with the diff and the original acceptance criteria. It did not write
 the code. Fix findings via `send_agent_prompt` to the original worker.
 
 # REPORTING
-Report outcome, files changed, and anything unresolved. Mention which agents
-ran only if asked or if something failed.
+Always open with a recap of what each subagent did — one line per worker, in
+launch order, built from each worker's `RECAP:` line:
+`<tier>: <what it did> → <result/artifact>`. Lift the worker's RECAP verbatim;
+if a worker gave none, write the line yourself from its activity. Compress
+ruthlessly but keep enough to understand: task done, result, file/PR touched.
+No transcripts, no restating the spec. Then report overall outcome, files
+changed, and anything unresolved.
 - If a worker had to be nudged, cancelled, or relaunched, say so in one line.
 - State the tier chosen per task and whether Jev or the manual fallback decided it (one line total).
 - If you had to deny a worker's wait loop, say so in one line.
