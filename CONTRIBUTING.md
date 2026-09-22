@@ -9,11 +9,12 @@ Invariants it checks:
   `name == "orchestrate"`, one-line description mentioning `create_agent`,
   orchestrate, delegate.
 - SKILL.md body keeps: `create_agent`, the ban on the built-in `Agent` tool,
-  `list_profiles`, the opus-escalation rule, `Reviewer`, `$ARGUMENTS`.
+  `list_profiles`, the Experienced-worker (opus) gut-feeling ban, `Reviewer`,
+  `$ARGUMENTS`.
 - `.claude-plugin/plugin.json` + `marketplace.json`: valid JSON, matching
   `name`, semver `version`, and `description`.
 - `paseo/config.snippet.json`: exactly the `Lead`/`Cheap worker`/`Worker`/
-  `Reviewer` profiles and the `claude-worker` provider.
+  `Experienced worker`/`Reviewer` profiles and the `claude-worker` provider.
 - `install.sh`: valid syntax/lint, works locally and piped.
 - `README.md`: keeps `## Install`/`## Usage`/`## Troubleshooting` and
   mentions `/orchestrate`.

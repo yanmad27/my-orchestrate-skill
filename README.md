@@ -114,7 +114,7 @@ original first).
 
 ## Paseo configuration
 
-The skill assumes four agent profiles and one provider exist in
+The skill assumes five agent profiles and one provider exist in
 `~/.paseo/config.json` (`daemon.agentProfiles` and `agents.providers`):
 
 | Profile | Provider | Model | Mode | Use for |
@@ -122,6 +122,7 @@ The skill assumes four agent profiles and one provider exist in
 | **Lead** | `claude` | `claude-opus-4-8` | — | Orchestrator: has `create_agent`, delegates instead of implementing. Optional — any `claude`-provider agent can run `/orchestrate`; this is just a high-thinking preset. |
 | **Cheap worker** | `claude-worker` | `claude-haiku-4-5` | — | Extraction, formatting, log triage, mechanical refactors — the default down-tier target |
 | **Worker** | `claude-worker` | `claude-sonnet-5` | — | Default tier for implementation, debugging, and research |
+| **Experienced worker** | `claude-worker` | `claude-opus-4-8` (thinking: high) | — | Hard problems only: architecture decisions, cross-module refactors with invariants, subtle concurrency/data bugs — chosen by Jev routing or escalation, never by default |
 | **Reviewer** | `claude-worker` | `claude-sonnet-5` | `plan` | Read-only review of a worker's diff against the original acceptance criteria |
 
 `claude-worker` (`agents.providers.claude-worker`) is a separate provider,
@@ -153,8 +154,8 @@ paseo daemon restart
 
 Or quit the Paseo desktop app and restart it.
 
-Then check the Paseo agent creation dialog — it should show four profiles:
-**Lead**, **Cheap worker**, **Worker**, and **Reviewer**.
+Then check the Paseo agent creation dialog — it should show five profiles:
+**Lead**, **Cheap worker**, **Worker**, **Experienced worker**, and **Reviewer**.
 
 ## Upgrade
 
@@ -228,11 +229,12 @@ Run `paseo daemon reload` only if the Paseo config actually changed.
 | `/orchestrate add rate limiting to the POST /login endpoint` | **Worker** → **Reviewer** (implementation + review) |
 | `/orchestrate why does CI keep timing out on main?` | **Worker** (investigate) → **Worker** (fix) → **Reviewer** |
 | `/orchestrate review PR #42 for security issues` | **Reviewer** only (read-only audit) |
+| `/orchestrate find the race condition causing duplicate webhook deliveries` | **Experienced worker** (Jev-routed), then **Reviewer** |
 
 ### What happens
 
 1. Lead agent receives the task; plans and decomposes it (≤3 tool calls to locate files/services).
-2. For each unit of work, Lead chooses the lowest capable tier: Cheap worker, Worker, or escalates to Opus only if a same-tier retry fails for capability reasons.
+2. For each unit of work, Lead chooses the lowest capable tier: Cheap worker, Worker, or Experienced worker (opus) — the last picked by Jev routing for genuinely hard tasks (architecture, cross-module invariants, subtle bugs) or reached via escalation if a same-tier retry fails for capability reasons.
 3. Lead delegates via `create_agent` with a sharp spec, acceptance criteria, and output format; a worktree is created only if 2+ workers must edit files at the same time (sidebar tabs appear).
 4. Lead surfaces any permission prompts to you; destructive actions never self-approve.
 5. Implementation work gets an independent **Reviewer** pass (plan mode, read-only) before the Lead reports.
