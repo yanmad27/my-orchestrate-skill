@@ -169,6 +169,18 @@ else
   fail "some agent profile is missing provider, model, or modeId"
 fi
 
+if jq -e '.daemon.agentProfiles | all(has("id") and (.id | type == "string") and (.id | length > 0))' "$SNIPPET" >/dev/null; then
+  ok "every agent profile has a non-empty string id"
+else
+  fail "some agent profile is missing id, or id is not a non-empty string"
+fi
+
+if jq -e '[.daemon.agentProfiles[].id] | length == (unique | length)' "$SNIPPET" >/dev/null; then
+  ok "agent profile ids are unique"
+else
+  fail "agent profile ids are not unique"
+fi
+
 REVIEWER_MODE="$(jq -r '.daemon.agentProfiles[] | select(.name == "Reviewer") | .modeId' "$SNIPPET")"
 if [ "$REVIEWER_MODE" = "plan" ]; then
   ok 'Reviewer profile modeId == "plan"'
@@ -214,6 +226,21 @@ if HOME="$LOCAL_HOME" "$REPO_ROOT/install.sh" --paseo-only >/dev/null 2>&1; then
   fi
 else
   fail "install.sh --paseo-only failed to run"
+fi
+
+HEAL_HOME="$TMP/home-heal"
+mkdir -p "$HEAL_HOME/.paseo"
+jq '.daemon.agentProfiles |= map(del(.id))' "$SNIPPET" | \
+  jq '{version: 1, daemon: {agentProfiles: .daemon.agentProfiles}}' > "$HEAL_HOME/.paseo/config.json"
+if HOME="$HEAL_HOME" "$REPO_ROOT/install.sh" --paseo-only >/dev/null 2>&1; then
+  MISSING_IDS="$(jq -r '[.daemon.agentProfiles[] | select(has("id") | not)] | length' "$HEAL_HOME/.paseo/config.json")"
+  if [ "$MISSING_IDS" = "0" ]; then
+    ok "install.sh --paseo-only heals pre-existing profiles that are missing id"
+  else
+    fail "install.sh --paseo-only left $MISSING_IDS pre-existing profile(s) without id"
+  fi
+else
+  fail "install.sh --paseo-only failed to run against a config with id-less profiles"
 fi
 
 PIPED_HOME="$TMP/home-piped"

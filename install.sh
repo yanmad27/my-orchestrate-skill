@@ -60,9 +60,15 @@ if [ "$DO_PASEO" = 1 ]; then
   MERGED="$(jq --slurpfile snip "$SNIPPET" '
     (.daemon.agentProfiles // []) as $existing
     | ($snip[0].daemon.agentProfiles) as $newProfiles
+    | ($newProfiles | map(select(.id != null)) | map({key: .name, value: .id}) | from_entries) as $idsByName
     | ($existing | map(.name)) as $existingNames
     | ($newProfiles | map(select((.name as $n | $existingNames | index($n)) | not))) as $toAdd
-    | .daemon.agentProfiles = ($existing + $toAdd)
+    | ($existing | map(
+        if (.id == null) and ($idsByName[.name] != null)
+        then . + {id: $idsByName[.name]}
+        else . end
+      )) as $healed
+    | .daemon.agentProfiles = ($healed + $toAdd)
     | (.agents.providers // {}) as $existingProviders
     | ($snip[0].agents.providers) as $newProviders
     | .agents.providers = ($existingProviders + ($newProviders | with_entries(select((.key as $k | $existingProviders | has($k)) | not))))

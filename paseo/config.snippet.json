@@ -2,6 +2,7 @@
   "daemon": {
     "agentProfiles": [
       {
+        "id": "agent_profile_orchestrate_lead",
         "name": "Lead",
         "icon": "compass",
         "provider": "claude",
@@ -11,6 +12,7 @@
         "notes": "Orchestrator only. Has create_agent; delegates every unit of real work to a worker profile and never implements. Use with the /orchestrate skill."
       },
       {
+        "id": "agent_profile_orchestrate_cheap_worker",
         "name": "Cheap worker",
         "icon": "hammer",
         "provider": "claude-worker",
@@ -20,6 +22,7 @@
         "notes": "Extraction, classification, formatting, log triage, renames, doc/comment updates, mechanical refactors, test scaffolding."
       },
       {
+        "id": "agent_profile_orchestrate_worker",
         "name": "Worker",
         "icon": "hammer",
         "provider": "claude-worker",
@@ -29,6 +32,7 @@
         "notes": "DEFAULT for implementation, debugging, multi-file refactors, research, writing."
       },
       {
+        "id": "agent_profile_orchestrate_reviewer",
         "name": "Reviewer",
         "icon": "eye",
         "provider": "claude-worker",
