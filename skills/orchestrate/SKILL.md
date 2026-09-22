@@ -154,6 +154,12 @@ The subagent sees none of this conversation. Every `initialPrompt` contains:
 - Constraints: what not to touch, style/library rules, read-only if applicable.
 - Output: exact expected shape (diff, file path, report format).
 - Acceptance criteria: 2-4 checkable conditions.
+Always include this constraint verbatim: "Never poll. Do not use `sleep`,
+`ps`, `pgrep`, `top`, or `until`/`for` retry loops to wait for CI, a
+background job, a PR check, or another agent. Run the command once —
+foreground with an explicit timeout, `gh pr checks --watch`, `gh run watch`,
+or `run_in_background` — then either continue with other work or end your
+turn; the harness delivers the result when it finishes."
 If you cannot write acceptance criteria, the task is underspecified. Split it.
 
 # WORKSPACES AND PARALLELISM
@@ -168,8 +174,14 @@ If you cannot write acceptance criteria, the task is underspecified. Split it.
 - Sequential tasks share this workspace.
 
 # SUPERVISION
-- Event-driven first: rely on finish/error/permission notifications
-  (`notifyOnFinish` default true). Never busy-poll or hand-write a wait loop.
+- Event-driven only. Finish/error/permission notifications, heartbeat ticks,
+  and background-job completions wake you. NEVER wait with `sleep`, `ps`,
+  `pgrep`, `top`, `until`/`for` retry loops, or repeated `get_agent_status`
+  calls. While a worker runs: do other planning, launch independent workers,
+  or END YOUR REPLY — you will be woken with the result. A permission
+  request from a worker that contains `sleep`/`pgrep`/a wait loop is a spec
+  bug: deny it with the reason and tell the worker to run the command once
+  (foreground with a timeout, or `run_in_background`) and stop.
 - Watchdog: right after launching the FIRST worker of a task, call
   `create_heartbeat` named `orchestrate-watchdog`, cron `*/3 * * * *`,
   `expiresIn` "2h", prompt: "Watchdog tick: for every worker you launched
@@ -203,3 +215,4 @@ Report outcome, files changed, and anything unresolved. Mention which agents
 ran only if asked or if something failed.
 - If a worker had to be nudged, cancelled, or relaunched, say so in one line.
 - State the tier chosen per task and whether Jev or the manual fallback decided it (one line total).
+- If you had to deny a worker's wait loop, say so in one line.
