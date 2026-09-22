@@ -72,6 +72,8 @@ BODY_PHRASES=(
   "Never launch Expensive worker (opus) on gut feeling"
   "Reviewer"
   '$ARGUMENTS'
+  'RECAP:'
+  "Always open with a recap of what each subagent did"
 )
 for phrase in "${BODY_PHRASES[@]}"; do
   if grep -qF -- "$phrase" "$SKILL_MD"; then

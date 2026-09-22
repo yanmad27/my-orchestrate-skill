@@ -21,6 +21,14 @@ Cases:
   with `input_match`, the same grader shape `trigger-positive-rename` uses
   to check `Skill` input.
 
+The subagent-recap contract (Lead opens its report with a one-line recap per
+worker, built from each worker's `RECAP:` line) is a post-delegation output
+behaviour. The free sandbox has no `create_agent`, so the skill stops at the
+precondition and no worker ever runs — a positive "must emit recap" eval can
+never go green here. It is guarded instead by `scripts/validate.sh`
+(`BODY_PHRASES`), which asserts the recap wording stays in `SKILL.md` on every
+CI run, and exercised for real only on Paseo.
+
 Target: 100% pass rate on the `trigger-positive`/`trigger-negative` cases.
 All graders are free (`tool_used`/`regex`) — no judge-model cost.
 
