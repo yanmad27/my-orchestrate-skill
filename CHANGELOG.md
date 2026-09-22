@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.5.0...v1.6.0) (2026-09-22)
+
+
+### Features
+
+* **orchestrate:** review runs on opus, pin opus profiles to Opus 5 ([#15](https://github.com/yanmad27/my-orchestrate-skill/issues/15)) ([67b81d0](https://github.com/yanmad27/my-orchestrate-skill/commit/67b81d001a0d174099d5a20cec1563f930ad1479))
+
 ## [1.5.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.4.0...v1.5.0) (2026-09-22)
 
 
