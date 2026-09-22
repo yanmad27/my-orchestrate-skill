@@ -6,7 +6,7 @@
         "name": "Lead",
         "icon": "compass",
         "provider": "claude",
-        "model": "claude-opus-4-8",
+        "model": "claude-opus-5",
         "modeId": "auto",
         "thinkingOptionId": "high",
         "notes": "Orchestrator only. Has create_agent; delegates every unit of real work to a worker profile and never implements. Use with the /orchestrate skill."
@@ -36,7 +36,7 @@
         "name": "Expensive worker",
         "icon": "hammer",
         "provider": "claude-worker",
-        "model": "claude-opus-4-8",
+        "model": "claude-opus-5",
         "modeId": "auto",
         "thinkingOptionId": "high",
         "notes": "Expensive worker (opus). Hard problems only: architecture decisions, cross-module refactors with invariants, subtle concurrency/data bugs, tasks where a worker retry already failed. Chosen by Jev routing or escalation, never as a default."
@@ -46,7 +46,7 @@
         "name": "Reviewer",
         "icon": "eye",
         "provider": "claude-worker",
-        "model": "claude-sonnet-5",
+        "model": "claude-opus-5",
         "modeId": "plan",
         "thinkingOptionId": "high",
         "notes": "Read-only independent review of diffs against acceptance criteria.\nNever edits files."

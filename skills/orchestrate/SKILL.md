@@ -210,8 +210,10 @@ If you cannot write acceptance criteria, the task is underspecified. Split it.
 
 # REVIEW BEFORE REPORTING
 Implementation work gets an independent review: launch the "Reviewer"
-profile with the diff and the original acceptance criteria. It did not write
-the code. Fix findings via `send_agent_prompt` to the original worker.
+profile on opus (the Expensive worker model — review is a reasoning task,
+so never down-tier it) with the diff and the original acceptance criteria.
+It did not write the code. Fix findings via `send_agent_prompt` to the
+original worker.
 
 # REPORTING
 Always open with a recap of what each subagent did — one line per worker, in
