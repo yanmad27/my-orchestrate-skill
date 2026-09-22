@@ -69,7 +69,7 @@ BODY_PHRASES=(
   "create_agent"
   'Never delegate with the built-in `Agent` tool'
   "list_profiles"
-  "Never launch Experienced worker (opus) on gut feeling"
+  "Never launch Expensive worker (opus) on gut feeling"
   "Reviewer"
   '$ARGUMENTS'
 )
@@ -155,20 +155,20 @@ else
   fail "paseo/config.snippet.json is not valid JSON"
 fi
 
-EXPECTED_PROFILES="Cheap worker,Experienced worker,Lead,Reviewer,Worker"
+EXPECTED_PROFILES="Cheap worker,Expensive worker,Lead,Reviewer,Worker"
 ACTUAL_PROFILES="$(jq -r '[.daemon.agentProfiles[].name] | sort | join(",")' "$SNIPPET")"
 if [ "$ACTUAL_PROFILES" = "$EXPECTED_PROFILES" ]; then
-  ok "config.snippet.json profile names are exactly Lead, Cheap worker, Worker, Experienced worker, Reviewer"
+  ok "config.snippet.json profile names are exactly Lead, Cheap worker, Worker, Expensive worker, Reviewer"
 else
   fail "config.snippet.json profile names are [$ACTUAL_PROFILES], expected [$EXPECTED_PROFILES]"
 fi
 
-EXPERIENCED_MODEL="$(jq -r '.daemon.agentProfiles[] | select(.name == "Experienced worker") | .model' "$SNIPPET")"
-EXPERIENCED_PROVIDER="$(jq -r '.daemon.agentProfiles[] | select(.name == "Experienced worker") | .provider' "$SNIPPET")"
-if [[ "$EXPERIENCED_MODEL" == claude-opus* ]] && [ "$EXPERIENCED_PROVIDER" = "claude-worker" ]; then
-  ok "Experienced worker profile has model claude-opus* and provider claude-worker"
+EXPENSIVE_MODEL="$(jq -r '.daemon.agentProfiles[] | select(.name == "Expensive worker") | .model' "$SNIPPET")"
+EXPENSIVE_PROVIDER="$(jq -r '.daemon.agentProfiles[] | select(.name == "Expensive worker") | .provider' "$SNIPPET")"
+if [[ "$EXPENSIVE_MODEL" == claude-opus* ]] && [ "$EXPENSIVE_PROVIDER" = "claude-worker" ]; then
+  ok "Expensive worker profile has model claude-opus* and provider claude-worker"
 else
-  fail "Experienced worker profile model/provider is '$EXPERIENCED_MODEL'/'$EXPERIENCED_PROVIDER', expected claude-opus*/claude-worker"
+  fail "Expensive worker profile model/provider is '$EXPENSIVE_MODEL'/'$EXPENSIVE_PROVIDER', expected claude-opus*/claude-worker"
 fi
 
 if jq -e '.daemon.agentProfiles | all(has("provider") and has("model") and has("modeId"))' "$SNIPPET" >/dev/null; then
