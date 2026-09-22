@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.3.0...v1.4.0) (2026-09-22)
+
+
+### Features
+
+* **orchestrate:** hard never-poll rule for Lead and workers ([#11](https://github.com/yanmad27/my-orchestrate-skill/issues/11)) ([85cfbd0](https://github.com/yanmad27/my-orchestrate-skill/commit/85cfbd08ea7971829781c95d5ceb4053af85e139))
+
+
+### Bug Fixes
+
+* **orchestrate:** rename Experienced worker tier to Expensive worker ([#8](https://github.com/yanmad27/my-orchestrate-skill/issues/8)) ([f8aec7e](https://github.com/yanmad27/my-orchestrate-skill/commit/f8aec7ef6744a7818a65461fe07a9aa04a9d229c))
+
 ## [1.3.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.2.1...v1.3.0) (2026-09-22)
 
 
