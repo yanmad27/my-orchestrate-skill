@@ -59,6 +59,42 @@ Tier order:
 2. "Worker" (sonnet) — DEFAULT for everything else.
 3. Opus — only by explicit escalation (below). Not a profile on purpose.
 
+Tier decision via ask-jev:
+Resolve the CLI once per session:
+`JEV="$(ls -d "$HOME"/.claude/plugins/cache/ask-jev/ask-jev/*/bin/jev.mjs 2>/dev/null | sort -V | tail -1)"`
+If `$JEV` is set, pipe ONE request per task before delegating, `state: { task: "<the task spec you are about to delegate, verbatim>" }`, a `choice` question named `tier` with exactly two options (opus is never an option here):
+```json
+{
+  "state": { "task": "<verbatim task spec>" },
+  "questions": {
+    "tier": {
+      "type": "choice",
+      "instructions": {
+        "question": "Which worker tier does `task` belong to?",
+        "focus": "Judge the nature of the work, not its size or how many files it touches."
+      },
+      "criteria": {
+        "cheap_worker": {
+          "what": "Mechanical, low-ambiguity work whose correct output is fully determined by the instructions: extraction, classification, formatting, renames, log triage, doc/comment edits, mechanical refactors, test scaffolds",
+          "not_for": "worker",
+          "examples": ["rename UserSvc to UserService across the repo", "split this README code block into two numbered steps", "summarize these CI logs"]
+        },
+        "worker": {
+          "what": "Work that requires understanding or producing behaviour: implementing or debugging code, multi-file changes with invariants, research with judgement, writing new prose from scratch",
+          "not_for": "cheap_worker",
+          "examples": ["add rate limiting to POST /login", "find out why install.sh fails when piped", "write the Upgrade section from the docs"]
+        }
+      }
+    }
+  }
+}
+```
+Run: `echo '<json above>' | node "$JEV"`.
+Confidence ≥ `${JEV_ASK_THRESHOLD:-0.8}` -> launch the returned `choice`. Below
+threshold, `$JEV` empty, or the CLI exits non-zero -> fall back to the manual
+rule: launch cheap_worker if the manual tier-1 list clearly matches, else
+worker (if unsure, launch the lower one). Never ask the user which tier.
+
 Rules:
 - Never launch opus as a first attempt.
 - Never keep work because "it's faster than delegating".
@@ -72,7 +108,31 @@ Escalate one tier only when BOTH hold:
 Not capability-based, do NOT escalate: missing context, vague acceptance
 criteria, wrong files, ambiguous requirements, permission blocks, task too big.
 Fix the spec or split instead.
-Before escalating, state: "Escalating <task> to <model>: <reason>."
+
+Capability gate via ask-jev: before escalating, resolve `$JEV` as above and
+ask a `boolean` question `capability_failure`:
+```json
+{
+  "state": { "spec": "<initialPrompt you sent, verbatim>", "report": "<worker's final output / activity, verbatim>" },
+  "questions": {
+    "capability_failure": {
+      "type": "boolean",
+      "instructions": {
+        "question": "Does `report` show a capability failure given `spec`?",
+        "focus": "Compare `report` against `spec`; ignore tone and length."
+      },
+      "criteria": {
+        "true": "The worker had everything it needed and still produced wrong reasoning, broke stated invariants, or lost track across files — the spec was sufficient",
+        "false": "The output is incomplete or wrong because of missing context, vague acceptance criteria, wrong file paths, ambiguous requirements, a permission block, or a task too large — the spec, not the model, is at fault"
+      }
+    }
+  }
+}
+```
+Escalate only if `probability >= 0.8` AND `confidence >= ${JEV_ASK_THRESHOLD:-0.8}`.
+`$JEV` empty or the CLI exits non-zero -> fall back to the manual BOTH-conditions
+rule above. Otherwise fix the spec or split instead.
+Before escalating, state: "Escalating <task> to <model>: <reason> (jev capability_failure=<probability>)."
 
 # WRITING THE initialPrompt
 The subagent sees none of this conversation. Every `initialPrompt` contains:
@@ -129,3 +189,4 @@ the code. Fix findings via `send_agent_prompt` to the original worker.
 Report outcome, files changed, and anything unresolved. Mention which agents
 ran only if asked or if something failed.
 - If a worker had to be nudged, cancelled, or relaunched, say so in one line.
+- State the tier chosen per task and whether Jev or the manual fallback decided it (one line total).

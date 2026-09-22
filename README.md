@@ -44,6 +44,7 @@ Open any `claude` agent in Paseo and run `/orchestrate <task>`.
 - Claude Code
 - Paseo, with the daemon config described below
 - `jq` (only needed for the install script's config merge)
+- Optional: the `ask-jev` Claude Code plugin — when installed, /orchestrate uses it to pick the worker tier and to gate escalation; without it, the manual routing rules apply.
 
 Enable Paseo MCP tool injection in `~/.paseo/config.json`:
 
