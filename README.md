@@ -11,6 +11,7 @@ writes code itself.
 - Claude Code
 - Paseo, with the daemon config described below
 - `jq` (only needed for the install script's config merge)
+- Optional: the `ask-jev` Claude Code plugin — when installed, /orchestrate uses it to pick the worker tier and to gate escalation; without it, the manual routing rules apply.
 
 Ensure Paseo MCP tool injection is enabled in `~/.paseo/config.json`:
 
