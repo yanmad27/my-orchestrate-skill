@@ -32,6 +32,16 @@
         "notes": "DEFAULT for implementation, debugging, multi-file refactors, research, writing."
       },
       {
+        "id": "agent_profile_orchestrate_experienced_worker",
+        "name": "Experienced worker",
+        "icon": "hammer",
+        "provider": "claude-worker",
+        "model": "claude-opus-4-8",
+        "modeId": "auto",
+        "thinkingOptionId": "high",
+        "notes": "Hard problems only: architecture decisions, cross-module refactors with invariants, subtle concurrency/data bugs, tasks where a worker retry already failed. Chosen by Jev routing or escalation, never as a default."
+      },
+      {
         "id": "agent_profile_orchestrate_reviewer",
         "name": "Reviewer",
         "icon": "eye",

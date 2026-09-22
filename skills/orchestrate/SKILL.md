@@ -57,12 +57,13 @@ Tier order:
 1. "Cheap worker" (haiku) — extraction, classification, formatting, log
    triage, renames, docs/comment updates, mechanical refactors, test scaffolds.
 2. "Worker" (sonnet) — DEFAULT for everything else.
-3. Opus — only by explicit escalation (below). Not a profile on purpose.
+3. "Experienced worker" (opus) — architecture, cross-module refactors with
+   invariants, subtle bugs; only when Jev picks it or via escalation.
 
 Tier decision via ask-jev:
 Resolve the CLI once per session:
 `JEV="$(ls -d "$HOME"/.claude/plugins/cache/ask-jev/ask-jev/*/bin/jev.mjs 2>/dev/null | sort -V | tail -1)"`
-If `$JEV` is set, pipe ONE request per task before delegating, `state: { task: "<the task spec you are about to delegate, verbatim>" }`, a `choice` question named `tier` with exactly two options (opus is never an option here):
+If `$JEV` is set, pipe ONE request per task before delegating, `state: { task: "<the task spec you are about to delegate, verbatim>" }`, a `choice` question named `tier` with exactly three options:
 ```json
 {
   "state": { "task": "<verbatim task spec>" },
@@ -76,13 +77,18 @@ If `$JEV` is set, pipe ONE request per task before delegating, `state: { task: "
       "criteria": {
         "cheap_worker": {
           "what": "Mechanical, low-ambiguity work whose correct output is fully determined by the instructions: extraction, classification, formatting, renames, log triage, doc/comment edits, mechanical refactors, test scaffolds",
-          "not_for": "worker",
+          "not_for": "worker, experienced_worker",
           "examples": ["rename UserSvc to UserService across the repo", "split this README code block into two numbered steps", "summarize these CI logs"]
         },
         "worker": {
           "what": "Work that requires understanding or producing behaviour: implementing or debugging code, multi-file changes with invariants, research with judgement, writing new prose from scratch",
-          "not_for": "cheap_worker",
+          "not_for": "cheap_worker, experienced_worker",
           "examples": ["add rate limiting to POST /login", "find out why install.sh fails when piped", "write the Upgrade section from the docs"]
+        },
+        "experienced_worker": {
+          "what": "Work where the main risk is reasoning failure, not effort: architecture or design decisions, refactors that must preserve invariants across modules, subtle concurrency/data-integrity bugs, or tasks that already failed once at worker tier",
+          "not_for": "cheap_worker, worker",
+          "examples": ["redesign the auth flow to support SSO without breaking existing sessions", "find the race condition causing duplicate payments", "make this migration idempotent across three services"]
         }
       }
     }
@@ -90,17 +96,24 @@ If `$JEV` is set, pipe ONE request per task before delegating, `state: { task: "
 }
 ```
 Run: `echo '<json above>' | node "$JEV"`.
-Confidence ≥ `${JEV_ASK_THRESHOLD:-0.8}` -> launch the returned `choice`. Below
-threshold, `$JEV` empty, or the CLI exits non-zero -> fall back to the manual
-rule: launch cheap_worker if the manual tier-1 list clearly matches, else
-worker (if unsure, launch the lower one). Never ask the user which tier.
+Confidence ≥ `${JEV_ASK_THRESHOLD:-0.8}` -> launch the returned `choice`,
+including `experienced_worker`. Below threshold, `$JEV` empty, or the CLI
+exits non-zero -> fall back to the manual rule: launch cheap_worker if the
+manual tier-1 list clearly matches, else worker (if unsure, launch the lower
+one). Never fall back to experienced_worker without Jev. Never ask the user
+which tier.
 
 Rules:
-- Never launch opus as a first attempt.
+- Never launch Experienced worker (opus) on gut feeling: only when Jev
+  returns `experienced_worker` at confidence ≥ threshold, or via escalation.
 - Never keep work because "it's faster than delegating".
 - If unsure between two tiers, launch the lower one.
 
 # ESCALATION
+Tier ladder: Cheap worker -> Worker -> Experienced worker. A task that
+started at Experienced worker and fails capability-wise has no higher tier —
+report it to the user instead of escalating further.
+
 Escalate one tier only when BOTH hold:
 - a same-tier retry with a sharper spec already failed, AND
 - the failure is capability-based (lost the thread across files, broke
