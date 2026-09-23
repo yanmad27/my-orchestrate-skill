@@ -12,32 +12,14 @@ files or writes code itself.
 
 ## Contents
 
-- [Quick start](#quick-start)
 - [Requirements](#requirements)
+- [Quick start](#quick-start)
 - [Install](#install)
 - [Paseo configuration](#paseo-configuration)
 - [Restart & verify](#restart--verify)
 - [Upgrade](#upgrade)
 - [Troubleshooting](#troubleshooting)
 - [Usage](#usage)
-
-## Quick start
-
-```
-/plugin marketplace add yanmad27/my-orchestrate-skill
-/plugin install orchestrate@my-orchestrate-skill
-```
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/yanmad27/my-orchestrate-skill/main/install.sh | bash -s -- --paseo-only
-paseo daemon reload
-```
-
-Open any `claude` agent in Paseo and run `/orchestrate <task>`.
-
-> [!NOTE]
-> The two `/plugin` commands must run as separate turns in Claude Code.
-> See [Install](#install) for the full walkthrough and the clone/manual paths.
 
 ## Requirements
 
@@ -61,6 +43,30 @@ Enable Paseo MCP tool injection in `~/.paseo/config.json`:
 
 > [!IMPORTANT]
 > Without `injectIntoAgents: true`, the orchestrating agent will not have the `create_agent` tool.
+
+## Quick start
+
+1. Install the plugin. These must be **two separate turns** in Claude Code —
+   pasting both at once does not work:
+
+   ```
+   /plugin marketplace add yanmad27/my-orchestrate-skill
+   ```
+
+   ```
+   /plugin install orchestrate@my-orchestrate-skill
+   ```
+
+2. Add the Paseo profiles, then reload the daemon:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/yanmad27/my-orchestrate-skill/main/install.sh | bash -s -- --paseo-only
+   paseo daemon reload
+   ```
+
+3. Open any `claude` agent in Paseo and run `/orchestrate <task>`.
+
+See [Install](#install) for the full walkthrough and the clone/manual paths.
 
 ## Install
 
