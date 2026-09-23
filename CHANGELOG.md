@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.6.0...v1.7.0) (2026-09-23)
+
+
+### Features
+
+* **orchestrate:** move opus profiles to Claude Opus 5.5 ([#17](https://github.com/yanmad27/my-orchestrate-skill/issues/17)) ([3e045eb](https://github.com/yanmad27/my-orchestrate-skill/commit/3e045ebb59c0bca1a6e55f643b82d16f3f0ad55d))
+
 ## [1.6.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.5.0...v1.6.0) (2026-09-22)
 
 
