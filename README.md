@@ -125,10 +125,10 @@ The skill assumes five agent profiles and one provider exist in
 
 | Profile | Provider | Model | Mode | Use for |
 |---|---|---|---|---|
-| **Lead** | `claude` | `claude-opus-5-5` | — | Orchestrator: has `create_agent`, delegates instead of implementing. Optional — any `claude`-provider agent can run `/orchestrate`; this is just a high-thinking preset. |
-| **Cheap worker** | `claude-worker` | `claude-haiku-4-5` | — | Extraction, formatting, log triage, mechanical refactors — the default down-tier target |
-| **Worker** | `claude-worker` | `claude-sonnet-5` | — | Default tier for implementation, debugging, and research |
-| **Expensive worker** | `claude-worker` | `claude-opus-5-5` (thinking: high) | — | Hard problems only: architecture decisions, cross-module refactors with invariants, subtle concurrency/data bugs — chosen by Jev routing or escalation, never by default |
+| **Lead** | `claude` | `claude-opus-5-5` | `bypassPermissions` | Orchestrator: has `create_agent`, delegates instead of implementing. Optional — any `claude`-provider agent can run `/orchestrate`; this is just a high-thinking preset. |
+| **Cheap worker** | `claude-worker` | `claude-haiku-4-5` | `bypassPermissions` | Extraction, formatting, log triage, mechanical refactors — the default down-tier target |
+| **Worker** | `claude-worker` | `claude-sonnet-5` | `bypassPermissions` | Default tier for implementation, debugging, and research |
+| **Expensive worker** | `claude-worker` | `claude-opus-5-5` (thinking: high) | `bypassPermissions` | Hard problems only: architecture decisions, cross-module refactors with invariants, subtle concurrency/data bugs — chosen by Jev routing or escalation, never by default |
 | **Reviewer** | `claude-worker` | `claude-opus-5-5` | `plan` | Read-only review of a worker's diff against the original acceptance criteria |
 
 `claude-worker` (`agents.providers.claude-worker`) is a separate provider,
