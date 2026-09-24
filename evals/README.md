@@ -29,6 +29,14 @@ never go green here. It is guarded instead by `scripts/validate.sh`
 (`BODY_PHRASES`), which asserts the recap wording stays in `SKILL.md` on every
 CI run, and exercised for real only on Paseo.
 
+The watchdog (`skills/orchestrate/watchdog.mjs`, SUPERVISION) is post-delegation
+too, so this sandbox never reaches it. `scripts/test-watchdog.mjs` covers its
+logic instead: it runs the poller against a fake `paseo` CLI and checks stall
+alerts and their repeat, pending permissions, no delivery into a lead turn,
+lost finish notifications (fast path and `ALL ENDED` backstop), archived and
+earlier-task workers, exit conditions, and idempotent `start`/`stop`. It runs
+from `scripts/validate.sh` on every CI run.
+
 Target: 100% pass rate on the `trigger-positive`/`trigger-negative` cases.
 All graders are free (`tool_used`/`regex`) — no judge-model cost.
 
