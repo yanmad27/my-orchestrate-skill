@@ -213,13 +213,21 @@ else
 fi
 
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck -S warning install.sh; then
-    ok "install.sh passes shellcheck -S warning"
+  if shellcheck -S warning install.sh skills/orchestrate/watchdog.sh; then
+    ok "install.sh and watchdog.sh pass shellcheck -S warning"
   else
-    fail "install.sh has shellcheck warnings"
+    fail "install.sh or watchdog.sh has shellcheck warnings"
   fi
 else
   ok "shellcheck not installed, skipping lint"
+fi
+
+# --- watchdog logic ----------------------------------------------------------
+
+if node scripts/test-watchdog.mjs; then
+  ok "watchdog.mjs passes scripts/test-watchdog.mjs"
+else
+  fail "watchdog.mjs failed scripts/test-watchdog.mjs"
 fi
 
 # --- install.sh functional tests -------------------------------------------
