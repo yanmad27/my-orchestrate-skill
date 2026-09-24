@@ -207,31 +207,40 @@ If you cannot write acceptance criteria, the task is underspecified. Split it.
 - Sequential tasks share this workspace.
 
 # SUPERVISION
-- Event-driven only. Finish/error/permission notifications, heartbeat ticks,
-  and background-job completions wake you. NEVER wait with `sleep`, `ps`,
+- Event-driven only. Finish/error/permission notifications, watchdog
+  alerts, and background-job completions wake you. NEVER wait with `sleep`, `ps`,
   `pgrep`, `top`, `until`/`for` retry loops, or repeated `get_agent_status`
   calls. While a worker runs: do other planning, launch independent workers,
   or END YOUR REPLY — you will be woken with the result. A permission
   request from a worker that contains `sleep`/`pgrep`/a wait loop is a spec
   bug: deny it with the reason and tell the worker to run the command once
   (foreground with a timeout, or `run_in_background`) and stop.
-- Watchdog: right after launching the FIRST worker of a task, call
-  `create_heartbeat` named `orchestrate-watchdog`, cron `*/3 * * * *`,
-  `expiresIn` "2h", prompt: "Watchdog tick: for every worker you launched
-  that has not reported, call get_agent_status; if state is running, call
-  get_agent_activity (limit 5) and compare the newest entry timestamp with
-  your last tick. No new activity across 2 consecutive ticks (~6 min) = stalled."
-- Stalled worker, escalate one step per tick: (1) `send_agent_prompt` —
+- Watchdog: in the same message as EVERY `create_agent` call, also run
+  `sh <this skill's base directory>/watchdog.sh start`. It is idempotent
+  (keeps a live watchdog, restarts a dead one) and returns immediately; a
+  detached poller checks your workers every 60s without spending tokens,
+  survives your own process restarting, and only when you have no turn in
+  flight sends you a prompt starting with `[orchestrate-watchdog]`.
+  Undelivered alerts are kept and retried, never dropped. Each line is one of:
+  `STALLED <id>`: running with no activity for 6 min and no pending
+  permission; repeats every 3 min while it stays silent.
+  `UNREPORTED <id>`: the worker ended but its finish notification never
+  reached you; read its result with `get_agent_activity` and continue as if
+  it had reported.
+  `ALL ENDED …`: every worker has ended while you sat idle; handle any
+  result you have not read, or stop the watchdog if the task is done.
+- Stalled worker, escalate one step per STALLED line for that worker:
+  (1) `send_agent_prompt` —
   "Status check: reply with what you have done, what is blocking you, and
-  continue. If waiting on a permission, say so." (2) still no activity next
-  tick: `cancel_agent`, then `send_agent_prompt` with the original spec plus
+  continue. If waiting on a permission, say so." (2) STALLED again:
+  `cancel_agent`, then `send_agent_prompt` with the original spec plus
   last known progress and "resume from there". (3) second cancel on the same
   worker: `archive_agent`, relaunch fresh with the same spec, same tier —
   this is not a capability failure, do not escalate tier.
 - Pending permission ≠ stalled — surface it to the user, don't nudge/cancel.
-- Task's workers all reported and final report delivered: `delete_heartbeat`
-  `orchestrate-watchdog`. Never leave it running after the task ends; create
-  it fresh on the next task.
+- Task's workers all reported and final report delivered:
+  `sh <this skill's base directory>/watchdog.sh stop`. Never leave it
+  running after the task ends; the next task's first `start` begins fresh.
 - `get_agent_status` / `get_agent_activity`: watchdog and follow-up detail
   only, never a hand-written wait loop. `send_agent_prompt` to correct or
   extend a worker outside the escalation above.
