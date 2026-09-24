@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.7.0...v1.8.0) (2026-09-24)
+
+
+### Features
+
+* **orchestrate:** run lead and worker profiles in bypassPermissions mode ([#20](https://github.com/yanmad27/my-orchestrate-skill/issues/20)) ([7fffb2f](https://github.com/yanmad27/my-orchestrate-skill/commit/7fffb2fa91e6d5216a1939e39e11ff2747899d91))
+* **orchestrate:** size worker tasks to fit the 200k context ([#22](https://github.com/yanmad27/my-orchestrate-skill/issues/22)) ([ff6c4d7](https://github.com/yanmad27/my-orchestrate-skill/commit/ff6c4d7fffa61be9d87d21e05ea7f612c0a22980))
+
 ## [1.7.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.6.0...v1.7.0) (2026-09-23)
 
 
