@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.8.0...v1.9.0) (2026-09-28)
+
+
+### Features
+
+* **orchestrate:** add committee, plan review and Codex advisor profile ([#25](https://github.com/yanmad27/my-orchestrate-skill/issues/25)) ([7aa099e](https://github.com/yanmad27/my-orchestrate-skill/commit/7aa099e42265909c859297337c8efa76767c353f))
+* **orchestrate:** replace heartbeat watchdog with a token-free poller ([#23](https://github.com/yanmad27/my-orchestrate-skill/issues/23)) ([44beb32](https://github.com/yanmad27/my-orchestrate-skill/commit/44beb326322857cd594551d56d2730b7e6f54e0f))
+
 ## [1.8.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.7.0...v1.8.0) (2026-09-24)
 
 
