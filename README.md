@@ -185,11 +185,7 @@ Then check the Paseo agent creation dialog — it should show six profiles:
 
 ### Plugin (Option A)
 
-```
-/plugin marketplace update my-orchestrate-skill
-```
-
-Then, in a terminal (not inside a Claude Code session):
+In a terminal (not inside a Claude Code session):
 
 ```sh
 claude plugin update orchestrate@my-orchestrate-skill
