@@ -12,6 +12,7 @@ const LEAD = 'lead';
 const dir = mkdtempSync(join(tmpdir(), 'watchdog-test-'));
 const stateFile = join(dir, 'state.json');
 const sendsFile = join(dir, 'sends.jsonl');
+const pollsFile = join(dir, 'polls.log'); // one line per `ls` call = one started poll; n+2 => poll n+1 completed
 const taskFile = join(dir, `orchestrate-watchdog-${LEAD}.task`);
 const pidFile = join(dir, `orchestrate-watchdog-${LEAD}.pid`);
 const fake = join(dir, 'paseo');
@@ -28,6 +29,7 @@ if (cmd === 'inspect') {
   if (!a) process.exit(1);
   console.log(JSON.stringify({ Id: args[0], Name: args[0], Archived: false, PendingPermissions: [], ...a }));
 } else if (cmd === 'ls') {
+  fs.appendFileSync(${JSON.stringify(pollsFile)}, '1\\n');
   const parent = args[args.indexOf('--label') + 1].split('=')[1];
   const listed = Object.entries(agents).filter(([, a]) => a.parent === parent && !a.Archived);
   console.log(JSON.stringify(listed.map(([id, a]) => ({ id, status: a.Status }))));
@@ -44,6 +46,16 @@ const within = (p, ms, msg) => {
   let t;
   const timeout = new Promise((_, reject) => (t = setTimeout(() => reject(new Error(msg)), ms)));
   return Promise.race([p, timeout]).finally(() => clearTimeout(t));
+};
+// Re-checks a condition instead of sleeping a fixed duration, so slow hosts (each poll here
+// spawns several node processes) get as long as they need without slowing down fast ones.
+const waitFor = async (check, ms = 20000) => {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await wait(100);
+  }
+  throw new Error(`waitFor timed out after ${ms} ms; sends=${JSON.stringify(sends())}`);
 };
 const env = (extra) => ({
   ...process.env,
@@ -74,9 +86,14 @@ const update = (id, fields) => {
 };
 const sends = () =>
   existsSync(sendsFile) ? readFileSync(sendsFile, 'utf8').split('\n').filter(Boolean).map(JSON.parse) : [];
+const polls = () => (existsSync(pollsFile) ? readFileSync(pollsFile, 'utf8').split('\n').filter(Boolean).length : 0);
+// Proof that the watchdog actually polled again after a precondition was set, so a negative
+// assertion ("nothing was sent") can't pass vacuously just because no poll has run yet.
+const waitForMorePolls = (n) => waitFor(() => polls() >= n + 2);
 
 async function scenario(name, agents, body, extraEnv = {}, lead = {}) {
   rmSync(sendsFile, { force: true });
+  rmSync(pollsFile, { force: true });
   writeFileSync(taskFile, String(Date.now() - 30000));
   state = { agents: { [LEAD]: { Status: 'idle', UpdatedAt: iso(60000), CreatedAt: iso(600000), ...lead }, ...agents } };
   save();
@@ -92,17 +109,29 @@ async function scenario(name, agents, body, extraEnv = {}, lead = {}) {
 
 try {
   await scenario('reports a stalled worker and repeats while it stays silent', { w: worker('running', 5000) }, async () => {
-    await wait(3000);
+    await waitFor(() => sends().filter((m) => m.includes('STALLED w')).length >= 2);
     const stalled = sends().filter((m) => m.includes('STALLED w'));
     assert.ok(stalled.length >= 2, `expected a repeated STALLED alert, got ${stalled.length}`);
   });
 
   await scenario(
+    'gives [Committee]/[Advisor] agents a longer stall threshold',
+    { w: worker('running', 5000), c: worker('running', 5000, { Name: '[Committee] x' }) },
+    async () => {
+      await waitFor(() => sends().some((m) => m.includes('STALLED w')));
+      await wait(300); // one more poll interval before checking the negative
+      assert.ok(sends().some((m) => m.includes('STALLED w')), 'normal worker should have stalled');
+      assert.ok(!sends().some((m) => m.includes('STALLED c')), 'long-thinking agent alerted too early');
+    },
+    { WATCHDOG_LONG_STALL_SEC: '30' },
+  );
+
+  await scenario(
     'does not treat a pending permission as a stall',
     { w: worker('running', 5000, { PendingPermissions: [{}] }) },
     async () => {
-      await wait(800);
-      assert.deepEqual(sends(), []);
+      await waitForMorePolls(polls());
+      assert.deepEqual(sends(), [], 'pending permission should have suppressed the stall alert');
     },
   );
 
@@ -110,10 +139,10 @@ try {
     'holds alerts while the lead has a turn in flight, then delivers them',
     { w: worker('running', 5000) },
     async () => {
-      await wait(800);
+      await waitForMorePolls(polls());
       assert.deepEqual(sends(), [], 'sent into a running turn');
       update(LEAD, { Status: 'idle' });
-      await wait(1500);
+      await waitFor(() => sends().some((m) => m.includes('STALLED w')));
       assert.ok(sends().some((m) => m.includes('STALLED w')), 'held alert was dropped');
     },
     {},
@@ -126,8 +155,8 @@ try {
     async () => {
       await wait(300);
       update('w', { Status: 'idle', UpdatedAt: iso(0) });
-      await wait(2500);
-      assert.ok(sends().some((m) => m.includes('UNREPORTED w')));
+      await waitFor(() => sends().some((m) => m.includes('UNREPORTED w')));
+      assert.ok(sends().some((m) => m.includes('UNREPORTED w')), 'expected an UNREPORTED alert for the ended worker');
     },
     { WATCHDOG_STALL_SEC: '30' },
   );
@@ -142,7 +171,8 @@ try {
       update(LEAD, { UpdatedAt: iso(0) });
       await wait(300);
       update('a', { Status: 'idle', UpdatedAt: iso(0) });
-      await wait(3000);
+      await waitFor(() => sends().some((m) => m.includes('ALL ENDED')));
+      await waitForMorePolls(polls()); // let a would-be duplicate ALL ENDED arrive if dedup is broken
       assert.ok(!sends().some((m) => m.includes('UNREPORTED b')), 'test setup: fast path should have cleared b');
       const allEnded = sends().filter((m) => m.includes('ALL ENDED'));
       assert.equal(allEnded.length, 1, 'expected exactly one ALL ENDED per set of ended workers');
@@ -154,23 +184,23 @@ try {
   );
 
   await scenario('stops reporting a worker once it is archived', { w: worker('running', 5000) }, async () => {
-    await wait(1200);
-    assert.ok(sends().some((m) => m.includes('STALLED w')));
+    await waitFor(() => sends().some((m) => m.includes('STALLED w')));
+    assert.ok(sends().some((m) => m.includes('STALLED w')), 'worker should have stalled before being archived');
     update('w', { Archived: true });
     const before = sends().length;
-    await wait(1500);
-    assert.equal(sends().length, before);
+    await waitForMorePolls(polls());
+    assert.equal(sends().length, before, 'archived worker kept alerting');
   });
 
   await scenario('exits when the lead is archived', {}, async (exited) => {
     update(LEAD, { Archived: true });
-    await within(exited, 2000, 'still running after the lead was archived');
+    await within(exited, 20000, 'still running after the lead was archived');
   });
 
   await scenario(
     'exits after the quiet period when there is nothing to watch',
     {},
-    (exited) => within(exited, 3000, 'did not exit when quiet'),
+    (exited) => within(exited, 20000, 'did not exit when quiet'),
     { WATCHDOG_QUIET_EXIT_SEC: '1' },
   );
 
@@ -178,8 +208,13 @@ try {
     'keeps running past the quiet period while a worker is busy',
     { w: worker('running', 0) },
     async (exited) => {
-      const alive = await Promise.race([exited.then(() => false), wait(2000).then(() => true)]);
-      assert.ok(alive, 'exited while a worker was running');
+      let dead = false;
+      exited.then(() => (dead = true));
+      await wait(1500); // past the 1 s quiet-exit window, so a broken `busy` check would already have exited
+      const n = polls();
+      const deadline = Date.now() + 20000;
+      while (!dead && polls() < n + 2 && Date.now() < deadline) await wait(100);
+      assert.ok(!dead, 'exited while a worker was running');
     },
     { WATCHDOG_QUIET_EXIT_SEC: '1', WATCHDOG_STALL_SEC: '30' },
   );

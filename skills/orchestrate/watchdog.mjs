@@ -12,6 +12,7 @@ const lead = process.env.PASEO_AGENT_ID;
 const paseo = process.env.PASEO_CLI || 'paseo';
 const sec = (name, dflt) => Number(process.env[name] || dflt) * 1000;
 const STALL_MS = sec('WATCHDOG_STALL_SEC', 360);
+const LONG_STALL_MS = sec('WATCHDOG_LONG_STALL_SEC', 1800);
 const REPEAT_MS = sec('WATCHDOG_REPEAT_SEC', 180);
 const POLL_MS = sec('WATCHDOG_POLL_SEC', 60);
 const QUIET_EXIT_MS = sec('WATCHDOG_QUIET_EXIT_SEC', 7200);
@@ -114,7 +115,9 @@ async function run() {
         if (status === 'running') {
           rec.endedAt = undefined;
           const due = !rec.reportedAt || Date.now() - rec.reportedAt >= REPEAT_MS;
-          if (!a.PendingPermissions?.length && Date.now() - updatedAt >= STALL_MS && due) {
+          // Long-thinking agents (committees/advisors) legitimately sit silent longer.
+          const stallMs = /^\[(Committee|Advisor)\]/.test(a.Name || '') ? LONG_STALL_MS : STALL_MS;
+          if (!a.PendingPermissions?.length && Date.now() - updatedAt >= stallMs && due) {
             alerts.set(id, `STALLED ${id} "${a.Name}": no activity for ${minutesSince(updatedAt)} min`);
             rec.reportedAt = Date.now();
           }

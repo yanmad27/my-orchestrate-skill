@@ -63,6 +63,23 @@ compacted mid-task and loses the thread. Size every task before delegating:
   split, or loses track after compaction, gets its task split and the
   pieces relaunched at the same tier.
 
+# PLAN REVIEW
+Trigger: the plan has 3+ tasks/chunks, or any task was routed to
+expensive_worker. Order: decompose -> Jev tier per task -> plan review ->
+launch.
+Launch one agent titled `[Advisor] plan review` on the "Codex advisor"
+profile (`list_profiles`; fallback: "Reviewer") with the user's request
+verbatim and the plan: tasks, one-line spec each, tier, order/dependencies,
+and the files each task owns. Ask for missing or redundant tasks, file
+overlap between parallel tasks, tier misroutes, and risks — concrete
+changes or "LGTM". End with the no-edit suffix from COMMITTEE, verbatim.
+Event-driven: end your reply and wait for its finish notification — never
+poll. Apply the changes you agree with; the advisor advises, the lead
+decides. A suggested tier change goes back through Jev, same as any other
+task — never up-tier to Expensive worker on the advisor's word alone.
+Archive it afterwards. One plan review per plan; skip it for plans that
+come out of a COMMITTEE.
+
 # MODEL ROUTING — ALWAYS LAUNCH DOWN-TIER
 On first delegation, call `list_profiles` and read every profile's `notes`.
 Materialize the chosen profile into `create_agent`:
@@ -136,7 +153,7 @@ Rules:
 # ESCALATION
 Tier ladder: Cheap worker -> Worker -> Expensive worker. A task that
 started at Expensive worker and fails capability-wise has no higher tier —
-report it to the user instead of escalating further.
+convene a COMMITTEE instead of escalating further (see COMMITTEE).
 
 Escalate one tier only when BOTH hold:
 - a same-tier retry with a sharper spec already failed, AND
@@ -171,6 +188,46 @@ Escalate only if `probability >= 0.8` AND `confidence >= ${JEV_ASK_THRESHOLD:-0.
 `$JEV` empty or the CLI exits non-zero -> fall back to the manual BOTH-conditions
 rule above. Otherwise fix the spec or split instead.
 Before escalating, state: "Escalating <task> to <model>: <reason> (jev capability_failure=<probability>)."
+The escalated spec carries What was tried (see WRITING THE initialPrompt).
+
+# COMMITTEE
+Convene when either holds:
+- (a) a task at Expensive worker fails and the capability gate says
+  capability failure (no higher tier to escalate to), or
+- (b) three failed attempts at the same tier whose failures were not
+  capability-based (spec fixes are not converging).
+An attempt: a launch (first run, same-tier retry, or escalation) that
+finished and failed its acceptance criteria; stall relaunches and
+review-fix rounds do not count. Capability failures keep climbing the
+ladder instead of counting toward (b); trigger (a) is what fires once they
+reach the top tier.
+
+Members: two read-only agents launched in the same message with identical
+prompts, titled `[Committee] <task>`: the "Reviewer" profile and the "Codex
+advisor" profile (`list_profiles`). No Codex advisor profile, or codex
+unavailable -> launch a second Reviewer instead and tell the user the
+contrast is reduced.
+
+Prompt: problem statement, the original spec, What was tried (every prior
+attempt with its failure report), relevant file paths (not contents). Ask
+for root cause, a fix plan split into tasks with acceptance criteria, and a
+confidence level. End with, verbatim: "This is analysis only. Do NOT edit,
+create, or delete any files. Do NOT write code. Do NOT spawn agents."
+
+Converge: if the members disagree on root cause or plan, send each the
+other's position via `send_agent_prompt` and ask it to rebut or concede; at
+most 2 exchange rounds.
+- Converged: archive both members, then delegate the plan's tasks through
+  normal routing (Jev tier per task), with the committee's root cause and
+  What was tried in each task's Context.
+- Not converged after 2 rounds: archive both, report both positions to the
+  user, and stop that task.
+
+One committee per task. If the committee's plan also fails, report to the
+user — do not convene a second committee for the same task. Tasks derived
+from a committee plan never convene another committee; their failures go
+to the user.
+The lead still never implements; the committee never edits.
 
 # WRITING THE initialPrompt
 The subagent sees none of this conversation. Every `initialPrompt` contains:
@@ -179,6 +236,10 @@ The subagent sees none of this conversation. Every `initialPrompt` contains:
 - Constraints: what not to touch, style/library rules, read-only if applicable.
 - Output: exact expected shape (diff, file path, report format).
 - Acceptance criteria: 2-4 checkable conditions.
+- What was tried: required whenever this task was attempted before (retry,
+  escalation, stall relaunch, committee, fix after review) — each prior
+  attempt as `<tier>: <approach> → <why it failed, from its report>`, plus
+  decisions already made.
 Always include this constraint verbatim so the recap is accurate and cheap:
 "End your final message with exactly one line: `RECAP: <what you did> →
 <result/artifact: file path, PR, or answer>`. One line, no transcript."
@@ -193,6 +254,12 @@ Always include this constraint verbatim: "Context budget: your window is
 output at the source (`| tail`, `| grep`, `--quiet`); never dump whole
 large files or full logs. If the task clearly will not fit, stop before
 editing and reply with a proposed split instead."
+Always include this constraint verbatim: "Shared working tree: other
+agents and the user may have uncommitted changes here. Never run `git
+stash`, `git checkout -- <path>`, `git restore`, `git reset`, or `git
+clean`, and never switch branches, unless this task explicitly asks for
+it. To compare with the last commit use `git show HEAD:<path>` or a
+separate `git worktree add`."
 If you cannot write acceptance criteria, the task is underspecified. Split it.
 
 # WORKSPACES AND PARALLELISM
@@ -204,6 +271,9 @@ If you cannot write acceptance criteria, the task is underspecified. Split it.
   worktree worker.
 - Read-only tasks (review, research, audit) never get their own workspace;
   use the "Reviewer" profile (plan mode) and still say "do not modify files".
+  Exception: COMMITTEE and PLAN REVIEW members may run on the "Codex
+  advisor" profile (`auto` mode, no plan mode) — read-only is then enforced
+  by the verbatim no-edit suffix instead.
 - Sequential tasks share this workspace.
 
 # SUPERVISION
@@ -223,7 +293,9 @@ If you cannot write acceptance criteria, the task is underspecified. Split it.
   flight sends you a prompt starting with `[orchestrate-watchdog]`.
   Undelivered alerts are kept and retried, never dropped. Each line is one of:
   `STALLED <id>`: running with no activity for 6 min and no pending
-  permission; repeats every 3 min while it stays silent.
+  permission; repeats every 3 min while it stays silent. Agents titled
+  `[Committee] …` or `[Advisor] …` are long-thinking — they only count as
+  stalled after 30 min of silence (`WATCHDOG_LONG_STALL_SEC`), not 6.
   `UNREPORTED <id>`: the worker ended but its finish notification never
   reached you; read its result with `get_agent_activity` and continue as if
   it had reported.
@@ -234,9 +306,10 @@ If you cannot write acceptance criteria, the task is underspecified. Split it.
   "Status check: reply with what you have done, what is blocking you, and
   continue. If waiting on a permission, say so." (2) STALLED again:
   `cancel_agent`, then `send_agent_prompt` with the original spec plus
-  last known progress and "resume from there". (3) second cancel on the same
-  worker: `archive_agent`, relaunch fresh with the same spec, same tier —
-  this is not a capability failure, do not escalate tier.
+  What was tried (last known progress) and "resume from there". (3) second
+  cancel on the same worker: `archive_agent`, relaunch fresh with the same
+  spec and What was tried, same tier — this is not a capability failure, do
+  not escalate tier.
 - Pending permission ≠ stalled — surface it to the user, don't nudge/cancel.
 - Task's workers all reported and final report delivered:
   `sh <this skill's base directory>/watchdog.sh stop`. Never leave it
@@ -251,9 +324,18 @@ If you cannot write acceptance criteria, the task is underspecified. Split it.
 Implementation work gets an independent review: launch the "Reviewer"
 profile on opus (the Expensive worker model — review is a reasoning task,
 so never down-tier it) with the diff and the original acceptance criteria.
-It did not write the code. Fix findings via `send_agent_prompt` to the
-original worker. A diff plus the context needed to judge it that exceeds
-the TASK SIZING budget gets one Reviewer per chunk.
+It did not write the code. Its prompt tells it to load and run the
+`code-review` skill on the diff via the Skill tool, plus `security-review`
+when the diff touches auth, secrets, user-input parsing, shell/SQL
+construction, permissions, or network calls; if a skill is unavailable,
+review manually against the acceptance criteria.
+Fix findings via `send_agent_prompt` to the original worker, then send the
+new diff to the SAME Reviewer via `send_agent_prompt` to re-check only the
+fixes and regressions. At most 2 re-review rounds; then report unresolved
+findings to the user. Archive the Reviewer once it passes, or once the 2nd
+re-review round still fails and the unresolved findings are reported.
+A diff plus the context needed to judge it that exceeds the TASK SIZING
+budget gets one Reviewer per chunk.
 
 # REPORTING
 Always open with a recap of what each subagent did — one line per worker, in
@@ -266,3 +348,4 @@ changed, and anything unresolved.
 - If a worker had to be nudged, cancelled, or relaunched, say so in one line.
 - State the tier chosen per task and whether Jev or the manual fallback decided it (one line total).
 - If you had to deny a worker's wait loop, say so in one line.
+- If a plan review or committee ran, say so in one line with its outcome.
