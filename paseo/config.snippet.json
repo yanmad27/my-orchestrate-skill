@@ -50,6 +50,16 @@
         "modeId": "plan",
         "thinkingOptionId": "high",
         "notes": "Read-only independent review of diffs against acceptance criteria.\nNever edits files."
+      },
+      {
+        "id": "agent_profile_orchestrate_codex_advisor",
+        "name": "Codex advisor",
+        "icon": "eye",
+        "provider": "codex",
+        "model": "gpt-5.6-sol",
+        "modeId": "auto",
+        "thinkingOptionId": "xhigh",
+        "notes": "Second opinion from a different provider family: committee member and plan reviewer for /orchestrate. Analysis only; never edits files or spawns agents. Not a tier in the worker ladder."
       }
     ]
   },

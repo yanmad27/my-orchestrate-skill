@@ -157,10 +157,10 @@ else
   fail "paseo/config.snippet.json is not valid JSON"
 fi
 
-EXPECTED_PROFILES="Cheap worker,Expensive worker,Lead,Reviewer,Worker"
+EXPECTED_PROFILES="Cheap worker,Codex advisor,Expensive worker,Lead,Reviewer,Worker"
 ACTUAL_PROFILES="$(jq -r '[.daemon.agentProfiles[].name] | sort | join(",")' "$SNIPPET")"
 if [ "$ACTUAL_PROFILES" = "$EXPECTED_PROFILES" ]; then
-  ok "config.snippet.json profile names are exactly Lead, Cheap worker, Worker, Expensive worker, Reviewer"
+  ok "config.snippet.json profile names are exactly Lead, Cheap worker, Worker, Expensive worker, Reviewer, Codex advisor"
 else
   fail "config.snippet.json profile names are [$ACTUAL_PROFILES], expected [$EXPECTED_PROFILES]"
 fi

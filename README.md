@@ -73,7 +73,7 @@ See [Install](#install) for the full walkthrough and the clone/manual paths.
 ### Paseo built-in skills
 
 > [!NOTE]
-> You do **not** need Paseo's built-in skills (Settings → Skills: `paseo`, `paseo-committee`, `paseo-advisor`, `paseo-handoff`, …). `/orchestrate` only needs the `create_agent` MCP tool, which comes from `daemon.mcp.injectIntoAgents`. Paseo's former `paseo-orchestrate` skill is deprecated and no longer shipped — this skill replaces it. Leave the built-ins uninstalled to avoid the Lead picking up a competing delegation workflow.
+> You do **not** need Paseo's built-in skills (Settings → Skills: `paseo`, `paseo-committee`, `paseo-advisor`, `paseo-handoff`, …). `/orchestrate` only needs the `create_agent` MCP tool, which comes from `daemon.mcp.injectIntoAgents`. In fact, /orchestrate runs its own committee and plan review using the Reviewer and Codex advisor profiles, so you don't need `paseo-committee` or `paseo-advisor` either. Paseo's former `paseo-orchestrate` skill is deprecated and no longer shipped — this skill replaces it. Leave the built-ins uninstalled to avoid the Lead picking up a competing delegation workflow.
 
 ### Option A: plugin marketplace
 
@@ -120,7 +120,7 @@ original first).
 
 ## Paseo configuration
 
-The skill assumes five agent profiles and one provider exist in
+The skill assumes six agent profiles and one provider exist in
 `~/.paseo/config.json` (`daemon.agentProfiles` and `agents.providers`):
 
 | Profile | Provider | Model | Mode | Use for |
@@ -130,6 +130,7 @@ The skill assumes five agent profiles and one provider exist in
 | **Worker** | `claude-worker` | `claude-sonnet-5` | `bypassPermissions` | Default tier for implementation, debugging, and research |
 | **Expensive worker** | `claude-worker` | `claude-opus-5-5` (thinking: high) | `bypassPermissions` | Hard problems only: architecture decisions, cross-module refactors with invariants, subtle concurrency/data bugs — chosen by Jev routing or escalation, never by default |
 | **Reviewer** | `claude-worker` | `claude-opus-5-5` | `plan` | Read-only review of a worker's diff against the original acceptance criteria |
+| **Codex advisor** | `codex` | `gpt-5.6-sol` | `auto` | Read-only second opinion from another provider family: committee member when a task keeps failing, and plan review before large runs. Codex has no plan mode, so read-only is enforced by the prompt. |
 
 `claude-worker` (`agents.providers.claude-worker`) is a separate provider,
 extending `claude`, with `create_agent`, `send_agent_prompt`, `cancel_agent`,
@@ -177,8 +178,8 @@ paseo daemon restart
 
 Or quit the Paseo desktop app and restart it.
 
-Then check the Paseo agent creation dialog — it should show five profiles:
-**Lead**, **Cheap worker**, **Worker**, **Expensive worker**, and **Reviewer**.
+Then check the Paseo agent creation dialog — it should show six profiles:
+**Lead**, **Cheap worker**, **Worker**, **Expensive worker**, **Reviewer**, and **Codex advisor**.
 
 ## Upgrade
 
