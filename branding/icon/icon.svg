@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Orchestrate project icon</title>
+  <desc id="desc">A central amber hub coordinating three teal worker nodes on a navy rounded-square tile.</desc>
+  <rect width="512" height="512" rx="112" fill="#0B1220"/>
+  <g fill="none" stroke="#2DD4BF" stroke-width="42" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256 250L130 125"/>
+    <path d="M256 250L382 125"/>
+    <path d="M256 250V406"/>
+  </g>
+  <g fill="#2DD4BF" stroke="#0B1220" stroke-width="16">
+    <circle cx="130" cy="125" r="48"/>
+    <circle cx="382" cy="125" r="48"/>
+    <circle cx="256" cy="406" r="48"/>
+  </g>
+  <circle cx="256" cy="250" r="70" fill="#FFB454" stroke="#0B1220" stroke-width="18"/>
+</svg>
