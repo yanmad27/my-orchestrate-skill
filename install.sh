@@ -1,90 +1,334 @@
 #!/usr/bin/env bash
+# Installs — and, run again, updates — the Supervisor → Lead → Peer room:
+#   0. removes v1 (the orchestrate@my-orchestrate-skill plugin, its marketplace, watchdogs)
+#   1. the /supervisor skill            → ~/.claude/skills/supervisor
+#   2. a Claude runtime per seat — Supervisor, Lead, Peer (its role as an output style,
+#      sharing your settings, skills, and one token) and the Codex launcher
+#                                        → ~/.config/slp-room
+#   3. the room's profiles and providers → ~/.paseo/config.json (backup kept alongside)
+#   4. paseo daemon reload
+# From a checkout: ./install.sh   Piped: curl -fsSL <raw>/install.sh | bash
+# Options: --skill-only, --paseo-only, --no-reload. SLP_REF picks a branch or tag.
 set -euo pipefail
 
-RAW_BASE="https://raw.githubusercontent.com/yanmad27/my-orchestrate-skill/main"
-
-if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-else
-  SCRIPT_DIR=""
-fi
+REPO="yanmad27/paseo-slp"
+TARBALL_URL="${SLP_TARBALL_URL:-https://codeload.github.com/$REPO/tar.gz/${SLP_REF:-main}}"
+ROOM_HOME="${SLP_ROOM_HOME:-$HOME/.config/slp-room}"
 
 DO_SKILL=1
 DO_PASEO=1
+RELOAD=1
 for arg in "$@"; do
   case "$arg" in
     --skill-only) DO_PASEO=0 ;;
     --paseo-only) DO_SKILL=0 ;;
+    --no-reload) RELOAD=0 ;;
     *) echo "Unknown option: $arg" >&2; exit 1 ;;
   esac
 done
-
 if [ "$DO_SKILL" = 0 ] && [ "$DO_PASEO" = 0 ]; then
   echo "--skill-only and --paseo-only are mutually exclusive; pass at most one." >&2
   exit 1
 fi
 
-if [ "$DO_SKILL" = 1 ]; then
-  if [ -z "$SCRIPT_DIR" ]; then
-    echo "skill copy requires a local checkout; use --paseo-only or clone the repo" >&2
-    exit 1
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# Source: this checkout, or the repository tarball when piped.
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ] \
+  && [ -d "$(dirname "${BASH_SOURCE[0]}")/skills/supervisor" ]; then
+  SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+  command -v curl >/dev/null 2>&1 || { echo "curl is required to download $REPO." >&2; exit 1; }
+  curl -fsSL "$TARBALL_URL" | tar -xz -C "$WORK" || { echo "Failed to download $TARBALL_URL" >&2; exit 1; }
+  SRC="$(find "$WORK" -mindepth 1 -maxdepth 1 -type d | head -1)"
+fi
+VERSION="$(tr -d '[:space:]' < "$SRC/version.txt")"
+
+# --- 0. v1 cleanup ------------------------------------------------------------------
+# v1 shipped as orchestrate@my-orchestrate-skill; its /orchestrate skill would compete with
+# the Supervisor. Remove the user-scope plugin and its marketplace, and stop any v1 watchdog.
+# Project-scope installs live in other repositories' settings, so they are only reported.
+
+LEGACY_PLUGIN="orchestrate@my-orchestrate-skill"
+LEGACY_MARKETPLACE="my-orchestrate-skill"
+if command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  LEGACY_SCOPES="$(claude plugin list --json 2>/dev/null \
+    | jq -r --arg id "$LEGACY_PLUGIN" '.[]? | select(.id == $id) | .scope // "user"' 2>/dev/null || true)"
+  for scope in $LEGACY_SCOPES; do
+    if [ "$scope" != user ]; then
+      echo "NOTE: $LEGACY_PLUGIN is also installed at $scope scope; remove it from that project with: claude plugin uninstall $LEGACY_PLUGIN --scope $scope" >&2
+    elif claude plugin uninstall "$LEGACY_PLUGIN" --scope user >/dev/null 2>&1; then
+      echo "Removed v1 plugin: $LEGACY_PLUGIN"
+    else
+      echo "WARNING: could not uninstall $LEGACY_PLUGIN; run: claude plugin uninstall $LEGACY_PLUGIN" >&2
+    fi
+  done
+  if claude plugin marketplace list --json 2>/dev/null \
+    | jq -e --arg name "$LEGACY_MARKETPLACE" '.[]? | select(.name == $name)' >/dev/null 2>&1; then
+    if claude plugin marketplace remove "$LEGACY_MARKETPLACE" >/dev/null 2>&1; then
+      echo "Removed v1 marketplace: $LEGACY_MARKETPLACE"
+    else
+      echo "WARNING: could not remove marketplace $LEGACY_MARKETPLACE; run: claude plugin marketplace remove $LEGACY_MARKETPLACE" >&2
+    fi
   fi
-  mkdir -p "$HOME/.claude/skills"
-  rm -rf "$HOME/.claude/skills/orchestrate"
-  cp -R "$SCRIPT_DIR/skills/orchestrate" "$HOME/.claude/skills/orchestrate"
-  echo "Installed skill: $HOME/.claude/skills/orchestrate"
+fi
+if command -v pkill >/dev/null 2>&1 && pkill -f 'skills/orchestrate/watchdog.mjs run' 2>/dev/null; then
+  echo "Stopped v1 watchdog pollers"
+fi
+rm -f "${TMPDIR:-/tmp}"/orchestrate-watchdog-* 2>/dev/null || true
+
+# --- 1. skill -------------------------------------------------------------------
+
+if [ "$DO_SKILL" = 1 ]; then
+  SKILLS="$HOME/.claude/skills"
+  mkdir -p "$SKILLS"
+  rm -rf "$SKILLS/supervisor"
+  cp -R "$SRC/skills/supervisor" "$SKILLS/supervisor"
+  echo "Installed skill: $SKILLS/supervisor"
+  # v1 installed the same role as "orchestrate"; leaving it would compete with /supervisor.
+  if [ -f "$SKILLS/orchestrate/SKILL.md" ] && grep -q '^name: orchestrate$' "$SKILLS/orchestrate/SKILL.md"; then
+    rm -rf "$SKILLS/orchestrate"
+    echo "Removed legacy skill: $SKILLS/orchestrate"
+  fi
 fi
 
 if [ "$DO_PASEO" = 1 ]; then
   command -v jq >/dev/null 2>&1 || { echo "jq is required but not installed. Install jq and re-run." >&2; exit 1; }
 
+  # --- 2. role prompts, Claude runtimes, Codex launcher ---------------------------
+  # Paseo has no per-agent system prompt. Each Claude seat (Supervisor, Lead, Peer) gets
+  # its own Claude Code runtime (CLAUDE_CONFIG_DIR) whose output style carries protocol +
+  # role, sharing the user's settings, skills, plugins, and CLAUDE.md, and one auth token.
+  # Codex gets the Peer prompt as developer instructions through a launcher.
+
+  CLAUDE_HOME="$HOME/.claude"
+  ROOM_FILES="$ROOM_HOME/room"
+  mkdir -p "$ROOM_HOME/bin" "$ROOM_FILES/roles"
+  # A stable copy of the room files: every seat's ROOM_DIR, however the skill was installed.
+  cp "$SRC/skills/supervisor/PROTOCOL.md" "$ROOM_FILES/PROTOCOL.md"
+  cp "$SRC/skills/supervisor/roles/lead.md" "$SRC/skills/supervisor/roles/peer.md" "$ROOM_FILES/roles/"
+
+  HEADER="<!-- Generated by install.sh (paseo-slp $VERSION). Re-run it to update; do not edit. -->"
+  for role in lead peer; do
+    {
+      printf '%s\n\n' "$HEADER"
+      cat "$ROOM_FILES/PROTOCOL.md"
+      printf '\n---\n\n'
+      cat "$ROOM_FILES/roles/$role.md"
+    } > "$ROOM_HOME/$role.md"
+  done
+  {
+    printf '%s\n\n' "$HEADER"
+    printf '# Room role: Supervisor\n\n'
+    printf 'This session is the Supervisor of a Paseo Supervisor → Lead → Peer room, and every user\n'
+    printf 'message comes from Human. ROOM_DIR=%s. The room protocol follows, then the\n' "$ROOM_FILES"
+    printf 'Supervisor role; where the role mentions /supervisor, $ARGUMENTS, or reading PROTOCOL.md,\n'
+    printf 'this system prompt already covers it.\n\n'
+    cat "$ROOM_FILES/PROTOCOL.md"
+    printf '\n---\n\n'
+    awk 'n >= 2 { print; next } /^---$/ { n++ }' "$SRC/skills/supervisor/SKILL.md"  # drop the frontmatter
+  } > "$ROOM_HOME/supervisor.md"
+
+  for role in supervisor lead peer; do
+    RUNTIME="$ROOM_HOME/claude-$role"
+    mkdir -p "$RUNTIME/output-styles" "$RUNTIME/skills"
+    {
+      printf -- '---\nname: slp-%s\ndescription: Supervisor → Lead → Peer room, %s seat\nkeep-coding-instructions: true\n---\n\n' "$role" "$role"
+      cat "$ROOM_HOME/$role.md"
+    } > "$RUNTIME/output-styles/slp-$role.md"
+
+    # The user's settings, with the seat's output style, and without this plugin: no seat
+    # loads the /supervisor skill on top of its own role.
+    USER_SETTINGS='{}'
+    if [ -f "$CLAUDE_HOME/settings.json" ]; then
+      if jq -e 'type == "object"' "$CLAUDE_HOME/settings.json" >/dev/null 2>&1; then
+        USER_SETTINGS="$(cat "$CLAUDE_HOME/settings.json")"
+      else
+        echo "WARNING: $CLAUDE_HOME/settings.json is not a JSON object; the $role runtime starts from empty settings." >&2
+      fi
+    fi
+    printf '%s' "$USER_SETTINGS" | jq --arg style "slp-$role" '
+      .outputStyle = $style
+      | .enabledPlugins = ((.enabledPlugins // {})
+          | with_entries(if (.key | test("^(paseo-slp|orchestrate)@")) then .value = false else . end))
+    ' > "$RUNTIME/settings.json"
+
+    for shared in plugins agents commands CLAUDE.md; do
+      if [ -e "$CLAUDE_HOME/$shared" ] && { [ -L "$RUNTIME/$shared" ] || [ ! -e "$RUNTIME/$shared" ]; }; then
+        ln -sfn "$CLAUDE_HOME/$shared" "$RUNTIME/$shared"
+      fi
+    done
+    find "$RUNTIME/skills" -mindepth 1 -maxdepth 1 -type l -exec rm -f {} +
+    if [ -d "$CLAUDE_HOME/skills" ]; then
+      for skill in "$CLAUDE_HOME/skills"/*; do
+        case "$(basename "$skill")" in supervisor|orchestrate) continue ;; esac
+        [ -e "$skill" ] && ln -sfn "$skill" "$RUNTIME/skills/$(basename "$skill")"
+      done
+    fi
+  done
+  rm -f "$ROOM_HOME/bin/claude-lead" "$ROOM_HOME/bin/claude-peer"  # launchers of an earlier version
+
+  # Shared auth: `claude setup-token` output, saved by the user in $ROOM_HOME/oauth-token.
+  OAUTH_TOKEN="${SLP_CLAUDE_OAUTH_TOKEN:-}"
+  if [ -z "$OAUTH_TOKEN" ] && [ -f "$ROOM_HOME/oauth-token" ]; then
+    OAUTH_TOKEN="$(tr -d '[:space:]' < "$ROOM_HOME/oauth-token")"
+  fi
+  if [ -z "$OAUTH_TOKEN" ]; then
+    echo "WARNING: no Claude token for the room runtimes. Run 'claude setup-token', save the" >&2
+    echo "  sk-ant-oat01-… line to $ROOM_HOME/oauth-token (chmod 600), and re-run install.sh —" >&2
+    echo "  or log in once per runtime: CLAUDE_CONFIG_DIR=$ROOM_HOME/claude-<supervisor|lead|peer> claude." >&2
+  fi
+
+  # Every copy of the agent-spawning CLIs on PATH (and their symlink targets): Claude seats
+  # deny them by name and path (step 3); the Codex runtime forbids them in its rules.
+  SPAWNERS=()
+  for cli in paseo claude codex; do
+    while IFS= read -r found; do
+      [ -n "$found" ] || continue
+      SPAWNERS+=("$found")
+      target="$(readlink -f "$found" 2>/dev/null || true)"
+      [ -z "$target" ] || SPAWNERS+=("$target")
+    done < <(type -ap "$cli" 2>/dev/null || true)
+  done
+  rm -rf "$ROOM_HOME/guard"  # PATH stubs of an earlier version: login shells reorder PATH past them
+
+  # The Codex Peer runtime (CODEX_HOME), as codex-room-setup does it: shared auth, a copy of
+  # the user's config, their AGENTS.md/skills/plugins, and rules that forbid spawning agents.
+  CODEX_USER_HOME="${CODEX_HOME:-$HOME/.codex}"
+  CODEX_RT="$ROOM_HOME/codex-peer"
+  mkdir -p "$CODEX_RT/rules"
+  if [ -f "$CODEX_USER_HOME/config.toml" ]; then
+    cp "$CODEX_USER_HOME/config.toml" "$CODEX_RT/config.toml"
+  fi
+  for shared in auth.json AGENTS.md skills plugins; do
+    if [ -e "$CODEX_USER_HOME/$shared" ] && { [ -L "$CODEX_RT/$shared" ] || [ ! -e "$CODEX_RT/$shared" ]; }; then
+      ln -sfn "$CODEX_USER_HOME/$shared" "$CODEX_RT/$shared"
+    fi
+  done
+  [ -e "$CODEX_RT/auth.json" ] || echo "WARNING: no $CODEX_USER_HOME/auth.json to share; run 'codex login' (file credentials) and re-run install.sh." >&2
+  CODEX_FORBIDDEN="$(jq -rn '["paseo", "claude", "codex"] + $ARGS.positional | unique | map(@json) | join(", ")' \
+    --args ${SPAWNERS[@]+"${SPAWNERS[@]}"})"
+  cat > "$CODEX_RT/rules/room.rules" <<RULES
+# Generated by install.sh: a room seat never starts agents outside create_agent.
+prefix_rule(
+    pattern = [[$CODEX_FORBIDDEN]],
+    decision = "forbidden",
+    justification = "not allowed in a room seat: only the Supervisor and Leads create agents, via create_agent",
+)
+RULES
+
+  CODEX_BIN="$(command -v codex || true)"
+  if [ -z "$CODEX_BIN" ]; then
+    echo "WARNING: codex is not on PATH; the codex-peer launcher will look it up each time it runs." >&2
+    CODEX_BIN=codex
+  fi
+  # Codex takes the prompt as a TOML literal string, which cannot contain '''.
+  if grep -qF "'''" "$ROOM_HOME/peer.md"; then
+    echo "roles/peer.md or PROTOCOL.md contains ''' and cannot be passed to Codex; remove it and re-run." >&2
+    exit 1
+  fi
+  # No native Codex sub-agents either (multi_agent_v2 is a table in some configs, a flag in others).
+  V2_OFF="features.multi_agent_v2=false"
+  if grep -q '^\[features\.multi_agent_v2\]' "$CODEX_RT/config.toml" 2>/dev/null; then
+    V2_OFF="features.multi_agent_v2.enabled=false"
+  fi
+  cat > "$ROOM_HOME/bin/codex-peer" <<LAUNCHER
+#!/bin/sh
+# Generated by install.sh: Codex in the room's Peer runtime — the Peer role as developer
+# instructions, native sub-agents off, and rules that forbid paseo/claude/codex.
+CODEX_HOME="$CODEX_RT" exec "$CODEX_BIN" -c agents.enabled=false -c features.multi_agent=false -c $V2_OFF \\
+  -c "developer_instructions='''\$(cat "$ROOM_HOME/peer.md")'''" "\$@"
+LAUNCHER
+  chmod +x "$ROOM_HOME/bin/codex-peer"
+  echo "Rendered room runtimes and prompts: $ROOM_HOME"
+
+  # --- 3. Paseo config ------------------------------------------------------------
+
+  # Deny every copy of the spawners by absolute path too, so calling
+  # /opt/homebrew/bin/claude is no way around the by-name rules.
+  LEAD_ABS=()
+  SUP_ABS=()
+  for path in ${SPAWNERS[@]+"${SPAWNERS[@]}"}; do
+    LEAD_ABS+=("Bash($path:*)")
+    case "$(basename "$path")" in
+      paseo) SUP_ABS+=("Bash($path run:*)" "Bash($path send:*)" "Bash($path import:*)") ;;
+      *) SUP_ABS+=("Bash($path:*)") ;;
+    esac
+  done
+  LEAD_ABS_JSON="$(jq -cn '$ARGS.positional | unique' --args ${LEAD_ABS[@]+"${LEAD_ABS[@]}"})"
+  SUP_ABS_JSON="$(jq -cn '$ARGS.positional | unique' --args ${SUP_ABS[@]+"${SUP_ABS[@]}"})"
+
+  # With no token the env key is dropped, so a per-runtime login keeps working.
+  jq --arg dir "$ROOM_HOME" --arg token "$OAUTH_TOKEN" \
+    --argjson leadAbs "$LEAD_ABS_JSON" --argjson supAbs "$SUP_ABS_JSON" '
+    walk(if type == "string" then gsub("@@ROOM_HOME@@"; $dir) else . end)
+    | .agents.providers |= map_values(
+        if .env.CLAUDE_CODE_OAUTH_TOKEN == "@@CLAUDE_OAUTH_TOKEN@@" then
+          (if $token == "" then del(.env.CLAUDE_CODE_OAUTH_TOKEN) else .env.CLAUDE_CODE_OAUTH_TOKEN = $token end)
+        else . end)
+    | .agents.providers["claude-lead"].disallowedTools += $leadAbs
+    | .agents.providers["claude-peer"].disallowedTools += $leadAbs
+    | .agents.providers["claude-supervisor"].disallowedTools += $supAbs
+  ' "$SRC/paseo/config.snippet.json" > "$WORK/snippet.json"
+
   PASEO_DIR="$HOME/.paseo"
   CONFIG="$PASEO_DIR/config.json"
-
-  if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/paseo/config.snippet.json" ]; then
-    SNIPPET="$SCRIPT_DIR/paseo/config.snippet.json"
-  else
-    command -v curl >/dev/null 2>&1 || { echo "curl is required to download the Paseo config snippet." >&2; exit 1; }
-    SNIPPET="$(mktemp)"
-    trap 'rm -f "$SNIPPET"' EXIT
-    curl -fsSL "$RAW_BASE/paseo/config.snippet.json" -o "$SNIPPET" || { echo "Failed to download $RAW_BASE/paseo/config.snippet.json" >&2; exit 1; }
-  fi
-
   mkdir -p "$PASEO_DIR"
-  if [ ! -f "$CONFIG" ]; then
-    echo '{"version":1}' > "$CONFIG"
-  fi
-
+  # The config and its backups may hold the Claude token: keep them private.
+  umask 077
+  [ -f "$CONFIG" ] || echo '{"version":1}' > "$CONFIG"
+  chmod 600 "$CONFIG"
   cp "$CONFIG" "$CONFIG.bak-$(date +%Y%m%d%H%M%S)"
 
-  MERGED="$(jq --slurpfile snip "$SNIPPET" '
-    (.daemon.agentProfiles // []) as $existing
-    | ($snip[0].daemon.agentProfiles) as $newProfiles
-    | ($newProfiles | map(select(.id != null)) | map({key: .name, value: .id}) | from_entries) as $idsByName
-    | ($existing | map(.name)) as $existingNames
-    | ($newProfiles | map(select((.name as $n | $existingNames | index($n)) | not))) as $toAdd
-    | ($existing | map(
-        if (.id == null) and ($idsByName[.name] != null)
-        then . + {id: $idsByName[.name]}
-        else . end
-      )) as $healed
-    | .daemon.agentProfiles = ($healed + $toAdd)
-    | (.agents.providers // {}) as $existingProviders
-    | ($snip[0].agents.providers) as $newProviders
-    | .agents.providers = ($existingProviders + ($newProviders | with_entries(select((.key as $k | $existingProviders | has($k)) | not))))
-  ' "$CONFIG")"
-
+  # The snippet's profiles (matched by id, or by name when an old install left no id) and
+  # providers are owned by this script: each run replaces them with the snippet's version.
+  # v1 profiles and the v1 claude-worker provider are removed. Everything else is kept.
+  MERGE='
+    ($snip[0].daemon.agentProfiles) as $new
+    | ["agent_profile_orchestrate_cheap_worker", "agent_profile_orchestrate_worker",
+       "agent_profile_orchestrate_expensive_worker", "agent_profile_orchestrate_reviewer",
+       "agent_profile_orchestrate_codex_advisor"] as $legacyIds
+    | ["Cheap worker", "Worker", "Expensive worker", "Reviewer", "Codex advisor"] as $legacyNames
+    | (($new | map(.id)) + $legacyIds) as $ownedIds
+    | (($new | map(.name)) + $legacyNames) as $ownedNames
+    | def owned: if .id == null then (.name as $n | $ownedNames | index($n)) != null
+                 else (.id as $i | $ownedIds | index($i)) != null end;
+    .daemon.agentProfiles = (((.daemon.agentProfiles // []) | map(select(owned | not))) + $new)
+    | (.daemon.agentProfiles | map(.provider)) as $used
+    | .agents.providers = ((.agents.providers // {}) + $snip[0].agents.providers)
+    | if (.agents.providers["claude-worker"].description // "") == "Delegated worker — cannot spawn or control other agents"
+         and ($used | index("claude-worker")) == null
+      then del(.agents.providers["claude-worker"]) else . end
+  '
   TMP="$(mktemp "$CONFIG.XXXXXX")"
-  printf '%s\n' "$MERGED" > "$TMP"
+  jq --slurpfile snip "$WORK/snippet.json" "$MERGE" "$CONFIG" > "$TMP"
+  REMOVED="$(jq -r --slurpfile after "$TMP" '
+    [.daemon.agentProfiles[]?.name] - [$after[0].daemon.agentProfiles[].name] | join(", ")' "$CONFIG")"
   mv "$TMP" "$CONFIG"
-  echo "Merged Paseo config: $CONFIG (backup saved alongside it)"
+  echo "Updated Paseo config: $CONFIG (backup saved alongside it)"
+  echo "  Room profiles: $(jq -r '[.daemon.agentProfiles[].name] | join(", ")' "$WORK/snippet.json")"
+  echo "  Room providers: $(jq -r '.agents.providers | keys | join(", ")' "$WORK/snippet.json")"
+  [ -z "$OAUTH_TOKEN" ] || echo "  Claude runtimes share the token from $ROOM_HOME/oauth-token"
+  [ -z "$REMOVED" ] || echo "  Removed v1 profiles: $REMOVED"
+  DUPES="$(jq -r '[.daemon.agentProfiles[].name] | group_by(.) | map(select(length > 1)[0]) | join(", ")' "$CONFIG")"
+  [ -z "$DUPES" ] || echo "WARNING: you also have your own profile(s) named $DUPES; rename yours so the room picks the right one." >&2
 
-  INJECT_INTO_AGENTS="$(jq -r '.daemon.mcp.injectIntoAgents // false' "$CONFIG")"
-  if [ "$INJECT_INTO_AGENTS" != "true" ]; then
+  if [ "$(jq -r '.daemon.mcp.injectIntoAgents // false' "$CONFIG")" != "true" ]; then
     echo "WARNING: daemon.mcp.injectIntoAgents is not enabled in $CONFIG" >&2
-    echo "The Lead agent will not have the create_agent tool without it." >&2
+    echo "The Supervisor and Lead agents will not have the create_agent tool without it." >&2
     echo "Enable it by setting daemon.mcp.enabled: true and daemon.mcp.injectIntoAgents: true" >&2
   fi
 
-  echo "Run 'paseo daemon reload' to load the new profiles and provider."
+  # --- 4. reload --------------------------------------------------------------------
+
+  if [ "$RELOAD" = 0 ]; then
+    echo "Run 'paseo daemon reload' to load the updated profiles and providers."
+  elif command -v paseo >/dev/null 2>&1 && paseo daemon reload; then
+    :
+  else
+    echo "WARNING: could not run 'paseo daemon reload'; run it (or restart Paseo) yourself." >&2
+  fi
 fi
+
+echo "paseo-slp $VERSION installed."

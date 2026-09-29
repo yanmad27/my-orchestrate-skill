@@ -6,23 +6,45 @@ pushing: `bash scripts/validate.sh`.
 Invariants it checks:
 
 - SKILL.md frontmatter: valid YAML, exactly `name`/`description`,
-  `name == "orchestrate"`, one-line description mentioning `create_agent`,
-  orchestrate, delegate.
-- SKILL.md body keeps: `create_agent`, the ban on the built-in `Agent` tool,
-  `list_profiles`, the Expensive-worker (opus) gut-feeling ban, `Reviewer`,
-  `$ARGUMENTS`.
+  `name == "supervisor"`, one-line description mentioning `create_agent`,
+  supervisor, orchestrate, delegate.
+- Room files (`skills/supervisor/SKILL.md`, `PROTOCOL.md`, `roles/lead.md`,
+  `roles/peer.md`) exist and keep their contract phrases: `create_agent`,
+  the ban on the built-in `Agent` tool, `list_profiles`, the heartbeat
+  create/delete, the intent record / on-course checks / emergency brake,
+  the Expensive-peer (opus) gut-feeling ban, `Review peer`,
+  the debate signals, the recap contract, `$ARGUMENTS`.
 - `.claude-plugin/plugin.json` + `marketplace.json`: valid JSON, matching
   `name`, semver `version`, and `description`.
-- `paseo/config.snippet.json`: exactly the `Lead`/`Cheap worker`/`Worker`/
-  `Expensive worker`/`Reviewer` profiles and the `claude-worker` provider.
-- `install.sh`: valid syntax/lint, works locally and piped.
+- `paseo/config.snippet.json`: exactly the `Supervisor`/`Lead`/`Cheap peer`/
+  `Peer`/`Expensive peer`/`Review peer`/`Codex peer`/`Codex review peer`
+  profiles; Supervisor and Lead on `claude`; Claude Peers on `claude-peer`
+  (disables `create_agent`); Codex Peers on `codex-peer` (extends `codex`,
+  `paseoTools.enabled: false`).
+- `install.sh` (the one install/update script): valid syntax/lint; builds a
+  Claude runtime per Lead/Peer seat (role as output style, the user's
+  settings with this plugin disabled, every skill but `supervisor`) and the
+  Codex launcher (`-c developer_instructions` before `app-server`); puts the
+  token from `oauth-token` into the provider env, or drops the key without
+  one; leaves no `@@` placeholder and keeps the config at mode 600; migrates
+  a v1 config — resets the room's profiles/providers, removes v1 profiles
+  and `claude-worker`, keeps the user's own, idempotent; `--skill-only`
+  installs only the skill; piped, it installs from the repository tarball.
+  Tests always pass `--no-reload`.
+- Seats: every Lead/Peer profile runs full access (Claude
+  `bypassPermissions`, Codex `full-access`); `claude-lead`/`claude-peer` set
+  `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_OAUTH_TOKEN`, `codex-peer` uses its
+  launcher; Peer providers keep
+  `send_agent_prompt` and disable `create_agent` and schedule control.
 - `README.md`: keeps `## Install`/`## Usage`/`## Troubleshooting` and
-  mentions `/orchestrate`.
+  mentions `/supervisor`.
 - `.release-please-manifest.json`: `.["."]` matches plugin.json `.version`.
 
 PRs need the `validate` check green before merge.
 
 Run `claude plugin eval . --trust-plugin` after changing SKILL.md's description or rules.
+The role files in `skills/supervisor/roles/` are read by Leads and Peers at
+launch — keep them consistent with `PROTOCOL.md` when either changes.
 
 Commits must follow [Conventional Commits](https://www.conventionalcommits.org/):
 `feat:` bumps minor, `fix:`/`docs:`/`chore:` bump patch, `feat!:` or a
