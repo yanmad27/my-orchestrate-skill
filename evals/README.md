@@ -66,7 +66,9 @@ parts a free grader sees: what the model would call, and what its message
 states — where a tool cannot be called, the reply's stated action is graded
 with a regex, which a fluent wrong answer can still satisfy. Negative
 `tool_used` graders (max 0) are vacuous when the model calls nothing, and the
-timeout/seconds pairing is only checked when a `slp-wait` call is made. The rules themselves are guarded
+timeout/seconds pairing is only checked when a `slp-wait` call is made. The adoption grader (`no-own-heartbeat`) catches common affirmative
+phrasings of "I will create my own heartbeat" only; free text cannot be
+matched airtight. The rules themselves are guarded
 by `scripts/validate.sh` and exercised for real only on Paseo.
 
 The recap contract (the Supervisor opens its report with one line per Lead
