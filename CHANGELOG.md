@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/yanmad27/paseo-slp/compare/v2.1.0...v2.2.0) (2026-09-29)
+
+
+### Features
+
+* custom Anthropic-compatible endpoint as a second auth path for Claude seats ([#35](https://github.com/yanmad27/paseo-slp/issues/35)) ([3e463b3](https://github.com/yanmad27/paseo-slp/commit/3e463b3367b25bdbd288e0124bc477e7b4f0ae9c))
+
 ## [2.1.0](https://github.com/yanmad27/paseo-slp/compare/v2.0.1...v2.1.0) (2026-09-29)
 
 
