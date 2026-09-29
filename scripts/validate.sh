@@ -536,6 +536,75 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
   fi
 fi
 
+# --- room helper: slp-wait ---------------------------------------------------
+
+BIN="$RENDER_HOME/.config/slp-room/bin"
+if [ -x "$BIN/slp-wait" ] \
+  && [ "$(stat -c %a "$BIN/slp-wait" 2>/dev/null || stat -f %Lp "$BIN/slp-wait")" = "755" ] \
+  && cmp -s paseo/bin/slp-wait "$BIN/slp-wait" \
+  && jq -e --arg bin "$RENDER_HOME/bin" --arg room "$BIN" '.agents.providers as $p
+      | ($p["claude-lead"].disallowedTools | index("Bash(paseo:*)") != null and index("Bash(" + $bin + "/paseo:*)") != null)
+      and ($p["claude-lead"].disallowedTools == ($p["claude-peer"].disallowedTools | map(select(test("slp-") | not))))
+      and ($p["claude-lead"].disallowedTools | map(select(test("slp-"))) == [])
+      and ($p["claude-peer"].disallowedTools | index("Bash(slp-wait:*)") != null
+           and index("Bash(" + $room + "/slp-wait:*)") != null and index("Bash(paseo:*)") != null)
+      and ($p["claude-supervisor"].disallowedTools | map(select(test("slp-"))) == []
+           and index("Bash(paseo:*)") == null)' \
+    "$RENDER_HOME/.paseo/config.json" >/dev/null \
+  && grep -qF '"slp-wait"' "$RENDER_HOME/.config/slp-room/codex-peer/rules/room.rules" \
+  && grep -qF "\"$BIN/slp-wait\"" "$RENDER_HOME/.config/slp-room/codex-peer/rules/room.rules"; then
+  ok "install.sh installs slp-wait (0755); Peers (Claude and Codex) may not run it; Lead's and Supervisor's denies are unchanged"
+else
+  fail "slp-wait not installed as expected, or Lead/Peer/Supervisor/Codex denies wrong"
+fi
+
+# slp-wait has exactly one CLI invocation, and it is `paseo wait`.
+if [ "$(grep -v '^[[:space:]]*#' paseo/bin/slp-wait | grep -v 'command -v paseo' | grep -c 'paseo')" = 1 ] \
+  && grep -v '^[[:space:]]*#' paseo/bin/slp-wait | grep -q 'paseo wait "\$@"'; then
+  ok "slp-wait invokes only \`paseo wait\`"
+else
+  fail "slp-wait must contain exactly one paseo invocation: paseo wait"
+fi
+
+# Behaviour, with a stub paseo that logs its argv.
+SW="$TMP/slpw"; mkdir -p "$SW/bin"
+cat > "$SW/bin/paseo" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$SLPW_LOG"
+[ "$2" = "--help" ] && exit 0
+[ -n "${SLPW_FAIL:-}" ] && { echo "boom" >&2; exit 1; }
+printf '{\n  "agentId": "x",\n  "status": "%s",\n  "message": "a \\"status\\": \\"error\\""\n}\n' "$SLPW_STATUS"
+STUB
+chmod +x "$SW/bin/paseo"
+export SLPW_LOG="$SW/log"
+WID=807f4913-fffe-4d62-b090-016f1fc6dd7f
+sw() { : > "$SLPW_LOG"; PATH="$SW/bin:$PATH" "$BIN/slp-wait" "$@" 2>/dev/null; }
+SW_OK=1
+out="$(SLPW_STATUS=timeout sw "$WID" 60)" || SW_OK=0
+[ "$out" = "slp-wait: $WID timeout" ] && [ "$(cat "$SLPW_LOG")" = "wait $WID --timeout 60 --json" ] || SW_OK=0
+for st in idle permission; do
+  out="$(SLPW_STATUS=$st sw "$WID" 570)" || SW_OK=0
+  [ "$out" = "slp-wait: $WID $st" ] || SW_OK=0
+done
+SLPW_STATUS=error sw "$WID" 30 >/dev/null && SW_OK=0
+SLPW_FAIL=1 sw "$WID" 30 >/dev/null && SW_OK=0
+for bad in "x; paseo run|60" "abc|60" "$(printf '%s' "$WID" | tr a-f A-F)|60" "$WID|0" "$WID|29" "$WID|571" "$WID|abc" "$WID|" "|60" "|" "$WID|-5" "$WID|60.5"; do
+  rc=0; SLPW_STATUS=idle sw "${bad%%|*}" "${bad#*|}" >/dev/null || rc=$?
+  [ "$rc" = 2 ] && [ ! -s "$SLPW_LOG" ] || { SW_OK=0; echo "  not rejected: $bad"; }
+done
+for args in "$WID 60 extra" "--foo" "$WID --foo" "$WID" "" "--self-test $WID"; do
+  rc=0; SLPW_STATUS=idle sw $args >/dev/null || rc=$?
+  [ "$rc" = 2 ] && [ ! -s "$SLPW_LOG" ] || { SW_OK=0; echo "  not rejected: $args"; }
+done
+sw --self-test >/dev/null && [ "$(cat "$SLPW_LOG")" = "wait --help" ] || SW_OK=0
+rc=0; PATH="/usr/bin:/bin" "$BIN/slp-wait" --self-test >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || SW_OK=0
+if [ "$SW_OK" = 1 ]; then
+  ok "slp-wait runs exactly 'paseo wait <id> --timeout <s> --json', prints one status line, and rejects bad input with exit 2 before calling paseo"
+else
+  fail "slp-wait behaviour with a stub paseo is wrong"
+fi
+
 if [ "$FAILED" -ne 0 ]; then
   echo "validate.sh: FAILED"
   exit 1

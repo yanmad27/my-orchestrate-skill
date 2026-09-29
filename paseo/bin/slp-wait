@@ -1,0 +1,33 @@
+#!/bin/sh
+# slp-wait <agentId> <seconds> — block on ONE agent until it is idle, errors, asks for
+# permission, or <seconds> pass. Prints one status line. --self-test checks the CLI only.
+UUID='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+usage() { echo "usage: slp-wait <agentId> <seconds 30-570> | slp-wait --self-test" >&2; exit 2; }
+# The only place the CLI is invoked: the subcommand is a literal.
+run_wait() { paseo wait "$@"; }
+
+if [ "$#" = 1 ] && [ "$1" = "--self-test" ]; then
+  command -v paseo >/dev/null 2>&1 || { echo "slp-wait: self-test failed: the Paseo CLI is not on PATH" >&2; exit 1; }
+  run_wait --help >/dev/null 2>&1 || { echo "slp-wait: self-test failed: 'wait' is not a known subcommand" >&2; exit 1; }
+  echo "slp-wait: self-test ok"
+  exit 0
+fi
+
+[ "$#" = 2 ] || usage
+id="$1" secs="$2"
+printf '%s\n' "$id" | grep -Eq "$UUID" || usage
+printf '%s\n' "$secs" | grep -Eq '^[0-9]{1,3}$' || usage
+[ "$secs" -ge 30 ] && [ "$secs" -le 570 ] || usage
+
+command -v paseo >/dev/null 2>&1 || { echo "slp-wait: the Paseo CLI is not on PATH" >&2; exit 1; }
+out="$(run_wait "$id" --timeout "$secs" --json 2>&1)" || {
+  echo "slp-wait: wait failed: $(printf '%s' "$out" | head -n 1 | cut -c1-160)" >&2
+  exit 1
+}
+status="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*"status"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' | head -n 1)"
+case "$status" in
+  idle|permission|timeout) echo "slp-wait: $id $status" ;;
+  error) echo "slp-wait: $id error"; exit 1 ;;
+  *) echo "slp-wait: no status in the wait output" >&2; exit 1 ;;
+esac
