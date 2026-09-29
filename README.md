@@ -160,7 +160,7 @@ review peers high, every other Peer medium.
 | **Cheap peer** | `claude-peer` | `claude-haiku-4-5` (thinking: medium) | `bypassPermissions` | Extraction, formatting, log triage, mechanical refactors — the down-tier target |
 | **Peer** | `claude-peer` | `claude-sonnet-5-5` (thinking: medium) | `bypassPermissions` | Default tier for implementation, debugging, and research |
 | **Expensive peer** | `claude-peer` | `claude-opus-5-5` (thinking: medium) | `bypassPermissions` | Hard problems only: architecture decisions, cross-module refactors with invariants, subtle concurrency/data bugs — chosen by Jev routing or escalation, never by default |
-| **Review peer** | `claude-peer` | `claude-opus-5-5` (thinking: high) | `bypassPermissions` | Read-only Peer: reviews Codex-written candidates (and security-sensitive ones with `security-review`), architecture questions, committee member |
+| **Review peer** | `claude-peer` | `claude-sonnet-5-5` (thinking: high) | `bypassPermissions` | Read-only Peer: reviews Codex-written candidates (and security-sensitive ones with `security-review`), architecture questions, committee member |
 | **Codex peer** | `codex-peer` | `gpt-5.6-sol` (thinking: medium) | `full-access` | Writable Peer from another model family — only when you ask for Codex, or to retry a task a Claude Peer already failed. Not a tier. |
 | **Codex review peer** | `codex-peer` | `gpt-5.6-sol` (thinking: high) | `full-access` | Read-only cross-family reviewer of Claude-written candidates, plan reviewer, committee member, debate tie-breaker |
 

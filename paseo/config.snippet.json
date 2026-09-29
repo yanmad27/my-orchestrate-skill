@@ -56,7 +56,7 @@
         "name": "Review peer",
         "icon": "eye",
         "provider": "claude-peer",
-        "model": "claude-opus-5-5",
+        "model": "claude-sonnet-5-5",
         "modeId": "bypassPermissions",
         "thinkingOptionId": "high",
         "notes": "Launched by a Lead. Read-only Peer — read-only by its brief, since every room seat runs with full permissions: independent review of an exact candidate against its acceptance evidence, architecture questions, committee member.\nNever edits files."

@@ -135,7 +135,7 @@ Tier order:
 2. "Peer" (sonnet) — DEFAULT for everything else.
 3. "Expensive peer" (opus) — architecture, cross-module refactors with
    invariants, subtle bugs; only when Jev picks it or via escalation.
-"Review peer" (opus) is the read-only seat for reviews; it is not a rung on
+"Review peer" (Sonnet 5.5, high thinking) is the read-only seat for reviews; it is not a rung on
 this ladder. Every room seat runs with full permissions, so read-only is
 whatever the brief says: every read-only brief says "read-only — do not
 modify files" and ends with the COMMITTEE no-edit suffix, verbatim.
@@ -375,7 +375,7 @@ bounded question; it did not write the code.
 - Claude-written candidate → a fresh "Codex review peer", briefed
   read-only, reviewing against the acceptance evidence.
 - Codex-written candidate, or no Codex review peer available → a fresh
-  "Review peer" (opus). Its brief tells it to load and run the
+  "Review peer" (Sonnet 5.5, high thinking). Its brief tells it to load and run the
   `code-review` skill on the candidate via the Skill tool; if the skill is
   unavailable, review manually against the acceptance evidence.
 - The change touches auth, secrets, user-input parsing, shell/SQL
