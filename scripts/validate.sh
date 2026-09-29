@@ -641,6 +641,7 @@ RULE_PHRASES=(
   'SKILL.md|route or apply any instruction or decision'
   'SKILL.md|confirm your `supervisor: room` heartbeat exists'
   'SKILL.md|do NOT end the turn'
+  'SKILL.md|LAST tool call before your'
   'SKILL.md|spinner after each person message'
   'SKILL.md|thinking is not visible to the person'
   'PROTOCOL.md|visible assistant text'

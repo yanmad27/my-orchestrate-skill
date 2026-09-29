@@ -91,7 +91,7 @@ while delegated work runs, and costs no tokens while blocked.
   (never only thinking) as the final message of that turn and ends it; its
   heartbeat re-arms the wait within 2 minutes, so a no-spinner gap of up to
   2 minutes follows each person message. It first routes any instruction in
-  the message and confirms the heartbeat exists; with no heartbeat tool it
+  the message and confirms the heartbeat exists (its last tool call); with no heartbeat tool it
   does not end the turn but answers as text and re-arms in the same turn.
 - A return or interruption is a wake hint: inspect the room, and handle each
   report, permission, or message exactly once. A wait return and a finish

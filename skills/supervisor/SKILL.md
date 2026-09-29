@@ -227,7 +227,10 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
   route or apply any instruction or decision in it within your authority
   (`send_agent_prompt` to the affected Lead; INTENT RECORD: route the
   change). Then confirm your `supervisor: room` heartbeat exists — the named
-  `create_heartbeat` call, which also restores it if missing. Then write the
+  `create_heartbeat` call with its full argument set (cron `*/2`), which also
+  restores it if missing, and which must be the LAST tool call before your
+  final message: it re-schedules the next fire from that moment, so the
+  restart lands within 2 minutes of your going idle. Then write the
   answer, then the ⏳ line, as visible text — the FINAL message of that turn
   — and END the turn. The answer to a person must be visible assistant text;
   thinking is not visible to the person, and a Supervisor that keeps
