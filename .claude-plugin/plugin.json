@@ -1,7 +1,7 @@
 {
   "name": "paseo-slp",
   "description": "Supervisor → Lead → Peer room for Paseo (requires Paseo) — you talk only to the Supervisor; it pins down your intent, launches Lead agents via create_agent, and keeps them and their Peers on course, watching on a heartbeat for drift and bringing decisions back to you. Each Lead delegates to Peers (Claude at the cheapest capable tier, Codex for cross-family review), debates their evidence-based challenges, and gets an independent review before accepting.",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "author": {
     "name": "yanmad27"
   }
