@@ -450,6 +450,28 @@ else
   fail "install.sh without a token left a placeholder or an empty token in the provider env"
 fi
 
+# v1 cleanup: only the v1 plugin (user scope) and marketplace are removed; a project-scope
+# install is only reported, and other plugins are left alone.
+LEGACY_HOME="$TMP/home-legacy"
+mkdir -p "$LEGACY_HOME/bin"
+cat > "$LEGACY_HOME/bin/claude" <<'FAKE'
+#!/bin/sh
+case "$*" in
+  "plugin list --json")
+    echo '[{"id":"orchestrate@my-orchestrate-skill","scope":"user"},{"id":"orchestrate@my-orchestrate-skill","scope":"project"},{"id":"x@y","scope":"user"}]' ;;
+  "plugin marketplace list --json") echo '[{"name":"my-orchestrate-skill"},{"name":"other"}]' ;;
+  *) echo "$*" >> "$HOME/claude-calls.log" ;;
+esac
+FAKE
+chmod +x "$LEGACY_HOME/bin/claude"
+LEGACY_OUT="$(PATH="$LEGACY_HOME/bin:$PATH" HOME="$LEGACY_HOME" "$REPO_ROOT/install.sh" --skill-only 2>&1 || true)"
+if [ "$(cat "$LEGACY_HOME/claude-calls.log" 2>/dev/null)" = "$(printf 'plugin uninstall orchestrate@my-orchestrate-skill --scope user\nplugin marketplace remove my-orchestrate-skill')" ] \
+  && printf '%s\n' "$LEGACY_OUT" | grep -q 'installed at project scope'; then
+  ok "install.sh removes the v1 plugin and marketplace, reports a project-scope install, and leaves other plugins alone"
+else
+  fail "install.sh v1 cleanup made unexpected claude calls: $(tr '\n' ';' < "$LEGACY_HOME/claude-calls.log" 2>/dev/null)"
+fi
+
 # --skill-only installs just the skill.
 SKILL_HOME="$TMP/home-skill"
 mkdir -p "$SKILL_HOME"

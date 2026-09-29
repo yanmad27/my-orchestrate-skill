@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Installs — and, run again, updates — the Supervisor → Lead → Peer room:
+#   0. removes v1 (the orchestrate@my-orchestrate-skill plugin, its marketplace, watchdogs)
 #   1. the /supervisor skill            → ~/.claude/skills/supervisor
 #   2. a Claude runtime per seat — Supervisor, Lead, Peer (its role as an output style,
 #      sharing your settings, skills, and one token) and the Codex launcher
@@ -43,6 +44,39 @@ else
   SRC="$(find "$WORK" -mindepth 1 -maxdepth 1 -type d | head -1)"
 fi
 VERSION="$(tr -d '[:space:]' < "$SRC/version.txt")"
+
+# --- 0. v1 cleanup ------------------------------------------------------------------
+# v1 shipped as orchestrate@my-orchestrate-skill; its /orchestrate skill would compete with
+# the Supervisor. Remove the user-scope plugin and its marketplace, and stop any v1 watchdog.
+# Project-scope installs live in other repositories' settings, so they are only reported.
+
+LEGACY_PLUGIN="orchestrate@my-orchestrate-skill"
+LEGACY_MARKETPLACE="my-orchestrate-skill"
+if command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  LEGACY_SCOPES="$(claude plugin list --json 2>/dev/null \
+    | jq -r --arg id "$LEGACY_PLUGIN" '.[]? | select(.id == $id) | .scope // "user"' 2>/dev/null || true)"
+  for scope in $LEGACY_SCOPES; do
+    if [ "$scope" != user ]; then
+      echo "NOTE: $LEGACY_PLUGIN is also installed at $scope scope; remove it from that project with: claude plugin uninstall $LEGACY_PLUGIN --scope $scope" >&2
+    elif claude plugin uninstall "$LEGACY_PLUGIN" --scope user >/dev/null 2>&1; then
+      echo "Removed v1 plugin: $LEGACY_PLUGIN"
+    else
+      echo "WARNING: could not uninstall $LEGACY_PLUGIN; run: claude plugin uninstall $LEGACY_PLUGIN" >&2
+    fi
+  done
+  if claude plugin marketplace list --json 2>/dev/null \
+    | jq -e --arg name "$LEGACY_MARKETPLACE" '.[]? | select(.name == $name)' >/dev/null 2>&1; then
+    if claude plugin marketplace remove "$LEGACY_MARKETPLACE" >/dev/null 2>&1; then
+      echo "Removed v1 marketplace: $LEGACY_MARKETPLACE"
+    else
+      echo "WARNING: could not remove marketplace $LEGACY_MARKETPLACE; run: claude plugin marketplace remove $LEGACY_MARKETPLACE" >&2
+    fi
+  fi
+fi
+if command -v pkill >/dev/null 2>&1 && pkill -f 'skills/orchestrate/watchdog.mjs run' 2>/dev/null; then
+  echo "Stopped v1 watchdog pollers"
+fi
+rm -f "${TMPDIR:-/tmp}"/orchestrate-watchdog-* 2>/dev/null || true
 
 # --- 1. skill -------------------------------------------------------------------
 

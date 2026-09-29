@@ -115,10 +115,13 @@ Run the same command again whenever you want the latest version.
 
 `install.sh` is the one script for installing and updating. Each run:
 
+0. removes v1 if it is there — the `orchestrate@my-orchestrate-skill` plugin
+   and marketplace (see [Upgrade](#upgrade));
 1. copies the `/supervisor` skill to `~/.claude/skills/supervisor` (and
    removes a v1 `~/.claude/skills/orchestrate` copy);
-2. builds a Claude runtime for the Lead and for the Peers, and the Codex
-   launcher, in `~/.config/slp-room` (see [Role prompts](#role-prompts));
+2. builds the per-seat runtimes in `~/.config/slp-room` — Claude for the
+   Supervisor, Lead, and Peers, Codex for the Codex Peers (see
+   [Role prompts](#role-prompts));
 3. writes the room's profiles and providers into `~/.paseo/config.json`,
    backing up the old file as `config.json.bak-<timestamp>`;
 4. runs `paseo daemon reload`.
@@ -129,8 +132,8 @@ it uses the checkout.
 
 | Option | Effect |
 |---|---|
-| `--skill-only` | Only step 1 |
-| `--paseo-only` | Only steps 2-4 — e.g. when the skill comes from the plugin marketplace |
+| `--skill-only` | Only steps 0-1 |
+| `--paseo-only` | Only steps 0 and 2-4 — e.g. when the skill comes from the plugin marketplace |
 | `--no-reload` | Skip `paseo daemon reload` |
 | `SLP_REF=<branch or tag>` | Install that version instead of `main` (piped runs) |
 | `SLP_ROOM_HOME=<dir>` | Build the runtimes somewhere other than `~/.config/slp-room` |
@@ -241,22 +244,29 @@ together, then reloads the daemon. With the plugin marketplace instead, run
 `/reload-plugins` in an open session) and `install.sh --paseo-only`.
 
 **From v1 (`/orchestrate`, repo `my-orchestrate-skill`):** the project is now
-`paseo-slp`. The same install command migrates you — it removes the v1 skill
-copy, the **Cheap worker**, **Worker**, **Expensive worker**, **Reviewer**,
-and **Codex advisor** profiles, and the `claude-worker` provider. If you had
-the v1 plugin, swap it for the new one (GitHub redirects the old repo URL,
-but the plugin and marketplace ids changed):
+`paseo-slp`, and the same install command removes v1 for you:
+
+- the v1 plugin `orchestrate@my-orchestrate-skill` (user scope) and its
+  `my-orchestrate-skill` marketplace — via `claude plugin uninstall` /
+  `claude plugin marketplace remove`;
+- a v1 skill copy in `~/.claude/skills/orchestrate`, and any v1 watchdog
+  still polling;
+- the **Cheap worker**, **Worker**, **Expensive worker**, **Reviewer**, and
+  **Codex advisor** profiles and the `claude-worker` provider.
+
+It only reports a v1 plugin installed at *project* scope, since that lives
+in another repository's settings. To remove v1 by hand instead (one command
+per turn in Claude Code):
 
 ```
 /plugin uninstall orchestrate@my-orchestrate-skill
 /plugin marketplace remove my-orchestrate-skill
-/plugin marketplace add yanmad27/paseo-slp
-/plugin install paseo-slp@paseo-slp
 ```
 
-(one command per turn) — or skip the plugin and let `install.sh` install the
-skill. `/orchestrate` is gone: open the Supervisor profile, or use
-`/supervisor`.
+Then install `paseo-slp` as in [Quick start](#quick-start) — or, if you
+prefer the plugin, `/plugin marketplace add yanmad27/paseo-slp`,
+`/plugin install paseo-slp@paseo-slp`, and `install.sh --paseo-only`.
+`/orchestrate` is gone: open the Supervisor profile, or use `/supervisor`.
 
 **Check version:** the last line of `install.sh` output, or the header of
 `~/.config/slp-room/lead.md`. Compare with the
