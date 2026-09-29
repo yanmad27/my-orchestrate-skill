@@ -697,24 +697,42 @@ else
   fail "rendered prompts wrong: the Supervisor must name an existing slp-wait, the Lead must not"
 fi
 
-# claude-lead's rendered denies are an exact set: main's baseline (the four spawners' names, the
-# whole paseo CLI, and each spawner copy found at install time by absolute path) plus exactly
-# slp-wait by basename and by the rendered absolute path.
-if jq -e --arg wait "$WAIT_PATH" --arg bin "$RENDER_HOME/bin" '
-    .agents.providers as $p
-    | ["Agent", "Task", "Bash(claude:*)", "Bash(codex:*)", "Bash(paseo:*)"] as $base
-    | ["Bash(slp-wait:*)", "Bash(" + $wait + ":*)"] as $wait2
-    | ($p["claude-lead"].disallowedTools) as $d
-    | ($d | length) == ($d | unique | length)
-    and (($d - $base - $wait2) | length > 0
-         and all(test("^Bash\\(/.+/(claude|codex|paseo)(\\.[a-z]+)?:\\*\\)$")))
-    and (["Bash(" + $bin + "/claude:*)", "Bash(" + $bin + "/codex:*)", "Bash(" + $bin + "/paseo:*)"] - $d == [])
-    and ($base - $d == []) and ($wait2 - $d == [])
-    and ($p["claude-peer"].disallowedTools | sort) == ($d | sort)' \
-    "$RENDER_HOME/.paseo/config.json" >/dev/null; then
-  ok "claude-lead's rendered denies are exactly main's baseline plus slp-wait by basename and absolute path"
+# claude-lead's rendered denies are an exact set: main's baseline (Agent, Task, and the three
+# spawners by name) plus Bash(<path>:*) for every spawner copy and symlink target install.sh
+# discovers on the render's PATH (mirrored here), plus exactly slp-wait by basename and by the
+# rendered absolute path. Compared as sorted arrays; mutations must fail.
+EXPECT_PATHS=()
+for cli in paseo claude codex; do
+  while IFS= read -r found; do
+    [ -n "$found" ] || continue
+    EXPECT_PATHS+=("Bash($found:*)")
+    target="$(readlink -f "$found" 2>/dev/null || true)"
+    [ -z "$target" ] || EXPECT_PATHS+=("Bash($target:*)")
+  done < <(PATH="$RENDER_HOME/bin:$PATH" type -ap "$cli" 2>/dev/null || true)
+done
+LEAD_DENIES="$(jq -c '.agents.providers["claude-lead"].disallowedTools' "$RENDER_HOME/.paseo/config.json")"
+lead_denies_exact() {  # compare sorted arrays for equality
+  local expected
+  expected="$(jq -cn --arg wait "$WAIT_PATH" '["Agent", "Task", "Bash(claude:*)", "Bash(codex:*)", "Bash(paseo:*)",
+     "Bash(slp-wait:*)", "Bash(" + $wait + ":*)"] + $ARGS.positional | unique' \
+    --args ${EXPECT_PATHS[@]+"${EXPECT_PATHS[@]}"})"
+  [ "$(printf '%s' "$1" | jq -c 'sort')" = "$expected" ]
+}
+DENY_OK=1
+lead_denies_exact "$LEAD_DENIES" || { DENY_OK=0; echo "  claude-lead denies differ from the expected set"; }
+lead_denies_exact "$(printf '%s' "$LEAD_DENIES" | jq -c '. + ["Bash(/tmp/paseo:*)"]')" \
+  && { DENY_OK=0; echo "  an extra Bash(/tmp/paseo:*) was accepted"; }
+[ "${#EXPECT_PATHS[@]}" -gt 0 ] || DENY_OK=0
+lead_denies_exact "$(printf '%s' "$LEAD_DENIES" | jq -c --arg d "${EXPECT_PATHS[0]:-}" 'map(select(. != $d))')" \
+  && { DENY_OK=0; echo "  a missing discovered path was accepted"; }
+lead_denies_exact "$(printf '%s' "$LEAD_DENIES" | jq -c 'map(select(. != "Bash(slp-wait:*)"))')" \
+  && { DENY_OK=0; echo "  a missing slp-wait entry was accepted"; }
+[ "$(jq -c '.agents.providers["claude-peer"].disallowedTools | sort' "$RENDER_HOME/.paseo/config.json")" = "$(printf '%s' "$LEAD_DENIES" | jq -c 'sort')" ] \
+  || { DENY_OK=0; echo "  claude-peer denies differ from claude-lead's"; }
+if [ "$DENY_OK" = 1 ]; then
+  ok "claude-lead's rendered denies equal the expected set (baseline + discovered spawner paths + the two slp-wait entries); extra/missing entries fail"
 else
-  fail "claude-lead's rendered denies must be exactly the baseline (Agent, Task, claude/codex/paseo by name and by absolute path) plus slp-wait by basename and absolute path"
+  fail "claude-lead's rendered denies must equal baseline + discovered spawner paths + slp-wait by basename and absolute path"
 fi
 
 if [ "$FAILED" -ne 0 ]; then
