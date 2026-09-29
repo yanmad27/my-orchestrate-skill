@@ -36,7 +36,7 @@
         "name": "Peer",
         "icon": "hammer",
         "provider": "claude-peer",
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "modeId": "bypassPermissions",
         "thinkingOptionId": "medium",
         "notes": "Launched by a Lead. DEFAULT for implementation, debugging, multi-file refactors, research, writing."
