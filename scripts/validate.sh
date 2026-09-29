@@ -439,6 +439,18 @@ else
   fail "install.sh --paseo-only failed to render the room"
 fi
 
+# --token without a terminal cannot ask, so it keeps the saved token instead of dropping it.
+KEEP_HOME="$TMP/home-keep-token"
+mkdir -p "$KEEP_HOME/.config/slp-room"
+printf 'sk-ant-oat01-keep\n' > "$KEEP_HOME/.config/slp-room/oauth-token"
+if HOME="$KEEP_HOME" "$REPO_ROOT/install.sh" --paseo-only --no-reload --token >/dev/null 2>&1 \
+  && jq -e '.agents.providers["claude-lead"].env.CLAUDE_CODE_OAUTH_TOKEN == "sk-ant-oat01-keep"' \
+    "$KEEP_HOME/.paseo/config.json" >/dev/null; then
+  ok "install.sh --token without a terminal keeps the saved token"
+else
+  fail "install.sh --token without a terminal dropped the saved token"
+fi
+
 # Without a token file the env key is dropped, so per-runtime logins keep working.
 NOTOKEN_HOME="$TMP/home-notoken"
 mkdir -p "$NOTOKEN_HOME"
