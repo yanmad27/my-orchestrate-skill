@@ -8,7 +8,9 @@
 #   3. the room's profiles and providers → ~/.paseo/config.json (backup kept alongside)
 #   4. paseo daemon reload
 # From a checkout: ./install.sh   Piped: curl -fsSL <raw>/install.sh | bash
-# Options: --skill-only, --paseo-only, --no-reload. SLP_REF picks a branch or tag.
+# (Commands that could read stdin get </dev/null, so they never eat a piped script.)
+# Options: --skill-only, --paseo-only, --no-reload, --token (ask for a new Claude token).
+# SLP_REF picks a branch or tag.
 set -euo pipefail
 
 REPO="yanmad27/paseo-slp"
@@ -18,11 +20,13 @@ ROOM_HOME="${SLP_ROOM_HOME:-$HOME/.config/slp-room}"
 DO_SKILL=1
 DO_PASEO=1
 RELOAD=1
+ASK_TOKEN=0
 for arg in "$@"; do
   case "$arg" in
     --skill-only) DO_PASEO=0 ;;
     --paseo-only) DO_SKILL=0 ;;
     --no-reload) RELOAD=0 ;;
+    --token) ASK_TOKEN=1 ;;
     *) echo "Unknown option: $arg" >&2; exit 1 ;;
   esac
 done
@@ -53,20 +57,20 @@ VERSION="$(tr -d '[:space:]' < "$SRC/version.txt")"
 LEGACY_PLUGIN="orchestrate@my-orchestrate-skill"
 LEGACY_MARKETPLACE="my-orchestrate-skill"
 if command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-  LEGACY_SCOPES="$(claude plugin list --json 2>/dev/null \
+  LEGACY_SCOPES="$(claude plugin list --json </dev/null 2>/dev/null \
     | jq -r --arg id "$LEGACY_PLUGIN" '.[]? | select(.id == $id) | .scope // "user"' 2>/dev/null || true)"
   for scope in $LEGACY_SCOPES; do
     if [ "$scope" != user ]; then
       echo "NOTE: $LEGACY_PLUGIN is also installed at $scope scope; remove it from that project with: claude plugin uninstall $LEGACY_PLUGIN --scope $scope" >&2
-    elif claude plugin uninstall "$LEGACY_PLUGIN" --scope user >/dev/null 2>&1; then
+    elif claude plugin uninstall "$LEGACY_PLUGIN" --scope user </dev/null >/dev/null 2>&1; then
       echo "Removed v1 plugin: $LEGACY_PLUGIN"
     else
       echo "WARNING: could not uninstall $LEGACY_PLUGIN; run: claude plugin uninstall $LEGACY_PLUGIN" >&2
     fi
   done
-  if claude plugin marketplace list --json 2>/dev/null \
+  if claude plugin marketplace list --json </dev/null 2>/dev/null \
     | jq -e --arg name "$LEGACY_MARKETPLACE" '.[]? | select(.name == $name)' >/dev/null 2>&1; then
-    if claude plugin marketplace remove "$LEGACY_MARKETPLACE" >/dev/null 2>&1; then
+    if claude plugin marketplace remove "$LEGACY_MARKETPLACE" </dev/null >/dev/null 2>&1; then
       echo "Removed v1 marketplace: $LEGACY_MARKETPLACE"
     else
       echo "WARNING: could not remove marketplace $LEGACY_MARKETPLACE; run: claude plugin marketplace remove $LEGACY_MARKETPLACE" >&2
@@ -169,15 +173,51 @@ if [ "$DO_PASEO" = 1 ]; then
   done
   rm -f "$ROOM_HOME/bin/claude-lead" "$ROOM_HOME/bin/claude-peer"  # launchers of an earlier version
 
-  # Shared auth: `claude setup-token` output, saved by the user in $ROOM_HOME/oauth-token.
+  # Shared auth: one `claude setup-token` token for every Claude seat, kept in
+  # $ROOM_HOME/oauth-token (mode 600). When it is missing — or --token asks to replace it —
+  # and a terminal is attached, ask for it on /dev/tty, which still works when piped.
+  TOKEN_FILE="$ROOM_HOME/oauth-token"
   OAUTH_TOKEN="${SLP_CLAUDE_OAUTH_TOKEN:-}"
-  if [ -z "$OAUTH_TOKEN" ] && [ -f "$ROOM_HOME/oauth-token" ]; then
-    OAUTH_TOKEN="$(tr -d '[:space:]' < "$ROOM_HOME/oauth-token")"
+  HAS_TTY=0
+  if [ -t 2 ] && { : < /dev/tty; } 2>/dev/null; then HAS_TTY=1; fi
+  if [ "$ASK_TOKEN" = 1 ] && [ "$HAS_TTY" = 0 ]; then
+    echo "WARNING: --token needs a terminal to ask on; keeping the saved token." >&2
+    ASK_TOKEN=0
+  fi
+  if [ -z "$OAUTH_TOKEN" ] && [ "$ASK_TOKEN" = 0 ] && [ -f "$TOKEN_FILE" ]; then
+    OAUTH_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+  fi
+  if [ -z "$OAUTH_TOKEN" ] && [ "$HAS_TTY" = 1 ]; then
+    {
+      echo
+      echo "The room's Claude seats share one token. In another terminal run 'claude setup-token',"
+      echo "then paste the sk-ant-oat01-… line it prints (input hidden; Enter skips)."
+      printf 'Token: '
+    } > /dev/tty
+    IFS= read -rs PASTED < /dev/tty || PASTED=""
+    echo > /dev/tty
+    PASTED="$(printf '%s' "$PASTED" | tr -d '[:space:]')"
+    case "$PASTED" in
+      "") ;;
+      sk-ant-oat*)
+        (umask 077 && printf '%s\n' "$PASTED" > "$TOKEN_FILE")
+        chmod 600 "$TOKEN_FILE"
+        OAUTH_TOKEN="$PASTED"
+        echo "Saved the token to $TOKEN_FILE"
+        ;;
+      *) echo "WARNING: that is not a 'claude setup-token' token (sk-ant-oat…); not saved." >&2 ;;
+    esac
+    PASTED=""
+    # Skipping the prompt (or a bad paste) keeps the token that was already saved.
+    if [ -z "$OAUTH_TOKEN" ] && [ -f "$TOKEN_FILE" ]; then
+      OAUTH_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+      [ -z "$OAUTH_TOKEN" ] || echo "Kept the saved token in $TOKEN_FILE"
+    fi
   fi
   if [ -z "$OAUTH_TOKEN" ]; then
-    echo "WARNING: no Claude token for the room runtimes. Run 'claude setup-token', save the" >&2
-    echo "  sk-ant-oat01-… line to $ROOM_HOME/oauth-token (chmod 600), and re-run install.sh —" >&2
-    echo "  or log in once per runtime: CLAUDE_CONFIG_DIR=$ROOM_HOME/claude-<supervisor|lead|peer> claude." >&2
+    echo "WARNING: no Claude token for the room runtimes. Run 'claude setup-token', then re-run" >&2
+    echo "  install.sh with --token and paste it — or log in once per runtime:" >&2
+    echo "  CLAUDE_CONFIG_DIR=$ROOM_HOME/claude-<supervisor|lead|peer> claude" >&2
   fi
 
   # Every copy of the agent-spawning CLIs on PATH (and their symlink targets): Claude seats
@@ -324,7 +364,7 @@ LAUNCHER
 
   if [ "$RELOAD" = 0 ]; then
     echo "Run 'paseo daemon reload' to load the updated profiles and providers."
-  elif command -v paseo >/dev/null 2>&1 && paseo daemon reload; then
+  elif command -v paseo >/dev/null 2>&1 && paseo daemon reload </dev/null; then
     :
   else
     echo "WARNING: could not run 'paseo daemon reload'; run it (or restart Paseo) yourself." >&2

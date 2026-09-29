@@ -68,7 +68,7 @@ A target project can add local rules in its own `docs/WORKSPACE_PROTOCOL.md`.
 
 ## Requirements
 
-- Claude Code (with a subscription, for `claude setup-token`), and the Codex CLI for the Codex Peers
+- Claude Code with a subscription (for `claude setup-token`), and the Codex CLI for the Codex Peers
 - Paseo, with the daemon config described below
 - `jq` and `curl` (used by `install.sh`)
 - Optional: the [`ask-jev`](https://github.com/yanmad27/ask-jev) Claude Code plugin — when installed, each Lead uses it to pick the Peer tier and to gate escalation; without it, the manual routing rules apply.
@@ -91,25 +91,31 @@ Enable Paseo MCP tool injection in `~/.paseo/config.json`:
 
 ## Quick start
 
-1. Create one Claude token for the Lead/Peer runtimes and save it (it never
-   needs to go anywhere else):
+1. Get a Claude token for the room's seats — they all share it:
 
    ```sh
-   claude setup-token        # log in in the browser, paste the code back here
-   # copy the printed sk-ant-oat01-… line, then:
-   mkdir -p ~/.config/slp-room && pbpaste | tr -d '[:space:]' > ~/.config/slp-room/oauth-token && chmod 600 ~/.config/slp-room/oauth-token
+   claude setup-token
    ```
 
-2. Install everything — the `/supervisor` skill, the Lead/Peer runtimes and
-   role prompts, and the Paseo profiles — and reload the Paseo daemon:
+   Log in in the browser, paste the code it shows back into that terminal,
+   and leave the printed `sk-ant-oat01-…` line on screen.
+
+2. In another terminal, install everything — the `/supervisor` skill, the
+   seat runtimes and role prompts, and the Paseo profiles — and reload the
+   Paseo daemon:
 
    ```sh
    curl -fsSL https://raw.githubusercontent.com/yanmad27/paseo-slp/main/install.sh | bash
    ```
 
+   When it asks for the token, copy the `sk-ant-oat01-…` line from step 1 and
+   paste it (input is hidden). It is saved to `~/.config/slp-room/oauth-token`
+   (mode 600) and reused on every later run.
+
 3. Open an agent on the **Supervisor** profile in Paseo and describe the goal — no `/supervisor` needed.
 
-Run the same command again whenever you want the latest version.
+Run the same command again whenever you want the latest version; add
+`-s -- --token` (`./install.sh --token` in a clone) to replace the token.
 
 ## Install
 
@@ -137,7 +143,8 @@ it uses the checkout.
 | `--no-reload` | Skip `paseo daemon reload` |
 | `SLP_REF=<branch or tag>` | Install that version instead of `main` (piped runs) |
 | `SLP_ROOM_HOME=<dir>` | Build the runtimes somewhere other than `~/.config/slp-room` |
-| `SLP_CLAUDE_OAUTH_TOKEN=<token>` | Use this token instead of `~/.config/slp-room/oauth-token` |
+| `--token` | Ask for a new Claude token and replace the saved one (e.g. to rotate it) |
+| `SLP_CLAUDE_OAUTH_TOKEN=<token>` | Use this token instead of `~/.config/slp-room/oauth-token` (no prompt) |
 
 > [!NOTE]
 > Plugin marketplace alternative: `/plugin marketplace add yanmad27/paseo-slp`, then (in a separate turn) `/plugin install paseo-slp@paseo-slp`, then run `install.sh --paseo-only`. Don't combine the plugin with a full `install.sh` run, or you get the skill twice.
@@ -197,13 +204,14 @@ way codex-room-setup does it with one `CODEX_HOME` per role:
   `supervisor`** — no seat loads the `/supervisor` skill on top of its own
   role. Every seat's `ROOM_DIR` is the stable copy in
   `~/.config/slp-room/room`.
-- **Auth** is shared through one token: `install.sh` puts the contents of
-  `~/.config/slp-room/oauth-token` (from `claude setup-token`) into both
-  providers as `CLAUDE_CODE_OAUTH_TOKEN`, and keeps `~/.paseo/config.json`
-  and its backups at mode `600`. Without the file it leaves the variable out;
-  then log in once per runtime instead:
-  `CLAUDE_CONFIG_DIR=~/.config/slp-room/claude-lead claude` → `/login` (same
-  for `claude-peer`).
+- **Auth** is shared through one `claude setup-token` token. `install.sh`
+  asks for it on the terminal when it has none (or with `--token`), keeps it
+  in `~/.config/slp-room/oauth-token` (mode 600), puts it into every Claude
+  seat's provider as `CLAUDE_CODE_OAUTH_TOKEN`, and keeps
+  `~/.paseo/config.json` and its backups at mode `600`. Without a token it
+  leaves the variable out; then log in once per runtime instead:
+  `CLAUDE_CONFIG_DIR=~/.config/slp-room/claude-<supervisor|lead|peer> claude`
+  → `/login`.
 - **`codex-peer`** runs Codex in its own runtime too, `CODEX_HOME=~/.config/slp-room/codex-peer`
   (as codex-room-setup does): `auth.json` linked to yours, a copy of your
   `config.toml`, your `AGENTS.md`/skills/plugins, and `rules/room.rules`
@@ -278,7 +286,7 @@ prefer the plugin, `/plugin marketplace add yanmad27/paseo-slp`,
 |---|---|
 | The Supervisor replies *"This chat's provider has create_agent disabled"* | Your agent's provider isn't `claude-supervisor` or `claude` (e.g. it's `claude-peer`, which strips `create_agent`), or `daemon.mcp.injectIntoAgents` isn't `true` in `~/.paseo/config.json`. Check the config against [Requirements](#requirements). |
 | A Lead ends with `BLOCKED: create_agent unavailable` | The Lead was launched on a provider without agent tools. Check the **Lead** profile uses provider `claude-lead`. |
-| A Lead or Peer answers *"Not logged in · Please run /login"* | Its runtime has no auth: the token file is missing or the token expired. Run `claude setup-token`, save the new line to `~/.config/slp-room/oauth-token`, re-run `install.sh`. |
+| A seat answers *"Not logged in · Please run /login"* | Its runtime has no auth: no token was given, or it expired. Run `claude setup-token`, then re-run the install command with `--token` and paste the new line. |
 | A Lead or Peer doesn't follow its role, or its first action is reading `PROTOCOL.md` | It launched without its role prompt. Re-run `install.sh`; check `~/.config/slp-room/claude-{lead,peer}/output-styles/` and that the providers' `CLAUDE_CONFIG_DIR` points there. |
 | A Lead or Peer lacks a skill or setting you added to `~/.claude` | Runtimes copy your settings at install time. Re-run `install.sh` after changing `~/.claude/settings.json` or adding skills. |
 | A `codex-peer` agent fails to start after moving or reinstalling Codex | The launcher holds the `codex` path from install time. Re-run `install.sh`. |
