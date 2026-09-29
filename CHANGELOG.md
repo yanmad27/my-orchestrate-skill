@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/yanmad27/paseo-slp/compare/v1.9.0...v2.0.0) (2026-09-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* /orchestrate is replaced by the Supervisor (profile or /supervisor); the project, marketplace, and plugin are renamed to paseo-slp (paseo-slp@paseo-slp); v1 worker profiles and the claude-worker provider are replaced, and install.sh now owns and resets the room's Paseo profiles and providers.
+
+### Features
+
+* paseo-slp — replace /orchestrate with a Supervisor → Lead → Peer room ([#29](https://github.com/yanmad27/paseo-slp/issues/29)) ([97d8596](https://github.com/yanmad27/paseo-slp/commit/97d8596551d0cab3b7a8eee6872fdd2e562544b5))
+
 ## [1.9.0](https://github.com/yanmad27/my-orchestrate-skill/compare/v1.8.0...v1.9.0) (2026-09-28)
 
 
