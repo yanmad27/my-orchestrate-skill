@@ -11,8 +11,8 @@
 # (Commands that could read stdin get </dev/null, so they never eat a piped script.)
 # Options: --skill-only, --paseo-only, --no-reload, --token (ask for a new Claude token),
 # --endpoint (ask for a custom Anthropic-compatible base URL + key instead of a token).
-# Non-interactive endpoint: SLP_CLAUDE_BASE_URL, SLP_CLAUDE_API_KEY, and SLP_CLAUDE_AUTH_HEADER
-# (bearer, the default → ANTHROPIC_AUTH_TOKEN; or x-api-key → ANTHROPIC_API_KEY).
+# Non-interactive endpoint: SLP_CLAUDE_BASE_URL, SLP_CLAUDE_AUTH_TOKEN, and SLP_CLAUDE_AUTH_HEADER
+# (SLP_CLAUDE_API_KEY is still accepted as an older alias for SLP_CLAUDE_AUTH_TOKEN) (bearer, the default → ANTHROPIC_AUTH_TOKEN; or x-api-key → ANTHROPIC_API_KEY).
 # SLP_REF picks a branch or tag.
 set -euo pipefail
 
@@ -89,13 +89,20 @@ if [ "$DO_PASEO" = 1 ]; then
 
   ENV_TOKEN="${SLP_CLAUDE_OAUTH_TOKEN:-}"
   EP_URL="${SLP_CLAUDE_BASE_URL:-}"
-  EP_KEY="$(trim "${SLP_CLAUDE_API_KEY:-}")"
+  # The key: SLP_CLAUDE_AUTH_TOKEN, else the older alias SLP_CLAUDE_API_KEY (both set must agree).
+  EP_KEY_VAR=SLP_CLAUDE_AUTH_TOKEN; EP_KEY_RAW="${SLP_CLAUDE_AUTH_TOKEN:-}"
+  if [ -n "${SLP_CLAUDE_AUTH_TOKEN:-}" ] && [ -n "${SLP_CLAUDE_API_KEY:-}" ] \
+    && [ "$(trim "$SLP_CLAUDE_AUTH_TOKEN")" != "$(trim "$SLP_CLAUDE_API_KEY")" ]; then
+    echo "SLP_CLAUDE_AUTH_TOKEN and SLP_CLAUDE_API_KEY are both set and differ; set only SLP_CLAUDE_AUTH_TOKEN." >&2; exit 1
+  fi
+  if [ -z "$EP_KEY_RAW" ]; then EP_KEY_VAR=SLP_CLAUDE_API_KEY; EP_KEY_RAW="${SLP_CLAUDE_API_KEY:-}"; fi
+  EP_KEY="$(trim "$EP_KEY_RAW")"
   EP_HDR="${SLP_CLAUDE_AUTH_HEADER:-}"
   if [ -n "$EP_URL" ]; then
     EP_URL="$(norm_url "$EP_URL")" || { echo "SLP_CLAUDE_BASE_URL must be an http:// or https:// URL without whitespace." >&2; exit 1; }
   fi
-  if [ -n "${SLP_CLAUDE_API_KEY:-}" ] && ! key_ok "$EP_KEY"; then
-    echo "SLP_CLAUDE_API_KEY must not be blank or contain a line break." >&2; exit 1
+  if [ -n "$EP_KEY_RAW" ] && ! key_ok "$EP_KEY"; then
+    echo "$EP_KEY_VAR must not be blank or contain a line break." >&2; exit 1
   fi
   case "$EP_HDR" in ""|bearer|x-api-key) ;; *) echo "SLP_CLAUDE_AUTH_HEADER must be bearer or x-api-key." >&2; exit 1 ;; esac
   TOKEN_REQ=0; EP_REQ=0
@@ -103,7 +110,7 @@ if [ "$DO_PASEO" = 1 ]; then
   { [ -n "$EP_URL$EP_KEY$EP_HDR" ] || [ "$ASK_ENDPOINT" = 1 ]; } && EP_REQ=1
   if [ "$TOKEN_REQ" = 1 ] && [ "$EP_REQ" = 1 ]; then
     echo "Choose one auth mode: a setup-token (--token, SLP_CLAUDE_OAUTH_TOKEN) or a custom endpoint" >&2
-    echo "  (--endpoint, SLP_CLAUDE_BASE_URL / SLP_CLAUDE_API_KEY / SLP_CLAUDE_AUTH_HEADER), not both." >&2
+    echo "  (--endpoint, SLP_CLAUDE_BASE_URL / SLP_CLAUDE_AUTH_TOKEN / SLP_CLAUDE_AUTH_HEADER), not both." >&2
     exit 1
   fi
   HAS_TTY=0
@@ -257,7 +264,7 @@ if [ "$DO_PASEO" = 1 ]; then
       BASE_URL="$CUR_URL"; API_KEY="$CUR_KEY"
       if [ "$CUR_HDR" = bearer ]; then ENDPOINT_KEY_VAR=ANTHROPIC_AUTH_TOKEN; else ENDPOINT_KEY_VAR=ANTHROPIC_API_KEY; fi
     elif [ "$EP_REQ" = 1 ] && { [ -n "$EP_URL$EP_KEY$EP_HDR" ] || [ "$HAS_TTY" = 0 ]; }; then
-      echo "No complete endpoint: set SLP_CLAUDE_BASE_URL and SLP_CLAUDE_API_KEY (or save one first with --endpoint)." >&2
+      echo "No complete endpoint: set SLP_CLAUDE_BASE_URL and SLP_CLAUDE_AUTH_TOKEN (or save one first with --endpoint)." >&2
       exit 1
     else
       echo "WARNING: no complete custom endpoint (base URL + key) for the room runtimes. Re-run" >&2
