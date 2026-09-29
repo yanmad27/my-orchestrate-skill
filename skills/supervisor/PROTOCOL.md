@@ -68,7 +68,7 @@ Peer → Lead         signals, mid-work messages       (final message of each Pe
 
 ### slp-wait — the Supervisor's blocking wait
 
-Only the Supervisor runs `slp-wait <agentId> <seconds 30-570>` (absolute path
+Only the Supervisor runs `slp-wait <agentId> <seconds 30-120>` (absolute path
 in its role); Leads and Peers never do, and their providers deny it. It is a
 foreground Bash call, `timeout` parameter seconds × 1000 + 30000, that
 blocks on ONE agent and prints `slp-wait: <id> <idle|permission|timeout>`
@@ -79,12 +79,14 @@ while delegated work runs, and costs no tokens while blocked.
 - A wait that returns at once with no timeout and no state change is not
   re-armed: re-read state once and report or decide instead.
 - Never call `paseo wait` directly, never wrap `slp-wait` in a shell loop,
-  never pass a timeout above 570.
+  never pass a timeout above 120.
 - Any incoming message or notification (the person typing, a child agent's
   finish or permission notification) cuts the wait short. The tool result
   then reads like a refusal ("The user doesn't want to proceed with this tool
   use…" or "Tool call did not complete…"). It is not a refusal: an event
-  arrived. Handle it, then re-arm.
+  arrived. Handle it, then re-arm in the same turn: a turn that ends after
+  answering the person stops spinning, and a wait moved to the background
+  (or shown as a task notification) no longer holds the turn.
 - A return or interruption is a wake hint: inspect the room, and handle each
   report, permission, or message exactly once. A wait return and a finish
   notification of the same turn are one event.
@@ -170,9 +172,10 @@ every Peer response has a disposition. Otherwise the report is `STATUS`, and
 the Supervisor sends a `DONE` with a Peer still running back for correction.
 
 The Supervisor ends every turn — heartbeat wakes and precondition stops
-included — with exactly one room-state line as its last line (`⏳ Working`,
-`✅ Done`, or `❓ Waiting on you`; see its role). The person always sees the
-state, and no turn ends on a bare acknowledgement.
+included — with exactly one room-state line as its last line: `✅ Done` or
+`❓ Waiting on you`, or `⏳ Working` only when `slp-wait` failed; `⏳ Working`
+otherwise precedes each `slp-wait` and never ends a turn (see its role). The
+person always sees the state, and no turn ends on a bare acknowledgement.
 
 ## Independent judgment and debate
 

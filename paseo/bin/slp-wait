@@ -3,7 +3,7 @@
 # permission, or <seconds> pass. Prints one status line. --self-test checks the CLI only.
 UUID='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
-usage() { echo "usage: slp-wait <agentId> <seconds 30-570> | slp-wait --self-test" >&2; exit 2; }
+usage() { echo "usage: slp-wait <agentId> <seconds 30-120> | slp-wait --self-test" >&2; exit 2; }
 # The only place the CLI is invoked: the subcommand is a literal.
 run_wait() { paseo wait "$@"; }
 
@@ -16,9 +16,13 @@ fi
 
 [ "$#" = 2 ] || usage
 id="$1" secs="$2"
+# Whole-scalar checks first (no CR/LF or other character can reach a line-based grep).
+case "$id" in *[!0-9a-f-]*) usage ;; esac
+[ "${#id}" = 36 ] || usage
 printf '%s\n' "$id" | grep -Eq "$UUID" || usage
-printf '%s\n' "$secs" | grep -Eq '^[0-9]{1,3}$' || usage
-[ "$secs" -ge 30 ] && [ "$secs" -le 570 ] || usage
+case "$secs" in ''|*[!0-9]*) usage ;; esac
+[ "${#secs}" -le 3 ] || usage
+[ "$secs" -ge 30 ] && [ "$secs" -le 120 ] || usage
 
 command -v paseo >/dev/null 2>&1 || { echo "slp-wait: the Paseo CLI is not on PATH" >&2; exit 1; }
 out="$(run_wait "$id" --timeout "$secs" --json 2>&1)" || {

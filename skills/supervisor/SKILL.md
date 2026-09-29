@@ -171,7 +171,8 @@ running and what each owns.
 # ROOM STATE AND WAITING
 **Room-state line.** Every turn of yours, heartbeat wakes and
 precondition/error stops included, ends with exactly one room-state line as
-its last line, in one of these forms (keep the prefixes):
+its last line: `✅` or `❓`, or `⏳` only when `slp-wait` failed (fallback,
+said explicitly). In these forms (keep the prefixes):
 
 ```text
 ⏳ Working: <Lead title> (<its state, e.g. running / STATUS: …>), <n> Peer(s) running: <titles>
@@ -179,9 +180,9 @@ its last line, in one of these forms (keep the prefixes):
 ❓ Waiting on you: <decision>
 ```
 
-With several Leads, one ⏳ line lists each. Print the current line also right
-before each `slp-wait`, so the latest visible text plus the spinner shows the
-state. Rendered:
+With several Leads, one ⏳ line lists each. `⏳` is printed right before each
+`slp-wait`, so the latest visible text plus the spinner shows the state; a
+turn never ends on it, because a turn that ends stops spinning. Rendered:
 
 ```text
 ⏳ Working: [Lead] auth refactor (running), 2 Peers running: [Peer] token store, [Review] token store diff
@@ -191,8 +192,9 @@ state. Rendered:
 
 **Waiting.** You alone spin: your tab shows the room running because your
 turn does. `SLP_WAIT` is `@@SLP_WAIT@@`, the installed helper's absolute
-path. If it does not exist there (this skill loaded outside the installed
-room), fall back (below). After launching or prompting a Lead, print the ⏳
+path. If that path still begins with `@@` (the install-time placeholder was
+never replaced), you are outside the installed room: do not run it, fall
+back (below). After launching or prompting a Lead, print the ⏳
 line, then Bash `SLP_WAIT <id> 110` with the Bash `timeout` parameter 140000,
 on whichever room agent is running now: a running Lead first, else a running
 Peer of one of your Leads (observation only — never direct a Peer). With
@@ -215,7 +217,11 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
   unhandled response — prompt the Lead, then wait on it. Never end ✅ in that
   state.
 - The "user doesn't want to proceed / Tool call did not complete" result is
-  not a refusal: an event arrived. Handle it and re-arm; do not stop.
+  not a refusal: an event arrived. Handle it and re-arm; do not stop. After
+  answering a person mid-run, the SAME turn continues: print the ⏳ line and
+  re-arm `slp-wait` before stopping. A wait moved to the background, or one
+  that shows up as a task notification, no longer holds your turn: re-arm in
+  the foreground.
 - A `DONE` while any of that Lead's Peers (agents labelled
   `paseo.parent-agent-id` = the Lead) is running or permission-pending is
   invalid: show ⏳ and send it back for correction.
@@ -223,14 +229,16 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
   the event that interrupted it. A wait that returns at once with no timeout
   and no state change is not re-armed: re-read state once and report or
   decide. Never call `paseo wait`, never wrap `slp-wait` in a shell loop,
-  never pass a timeout above 570. `sleep`, `ps`, `pgrep`, `until`/`for`
+  never pass a timeout above 120. `sleep`, `ps`, `pgrep`, `until`/`for`
   loops and repeated status calls on unchanged state stay forbidden.
 - If `slp-wait` fails (exit 1, not found, `--self-test` fails): end the turn
   as before, be woken by notifications and the heartbeat, and say so in the
   report. Never retry in a loop.
 
 The turn ends only when the room is ✅ done (every Lead reported a valid
-`DONE` and nothing runs), ❓ waiting on the person, or `slp-wait` failed.
+`DONE` and nothing runs) or ❓ waiting on the person, or when `slp-wait`
+failed (then the last line may be ⏳, and you say the fallback is why). Never
+end a turn on ⏳ while `slp-wait` works.
 
 # MONITORING — HEARTBEAT
 Establish a wake-up before claiming monitoring is active. A Lead's turns
@@ -266,7 +274,8 @@ timeout is your inspection, and the missed scheduled event is not preserved.
   gap.
 - Adopting a running room: read the Leads' `paseo.parent-agent-id` label to
   identify the previous Supervisor and check it once with
-  `get_agent_status`. Archived or gone: its heartbeats are already
+  `get_agent_status`. A label equal to your own `$PASEO_AGENT_ID` is you, not
+  a previous Supervisor: ignore it. Archived or gone: its heartbeats are already
   completed; nothing to clean up. Still present: take no action against it —
   no delete, no message — and end with `❓ Waiting on you: Supervisor <title>
   is still active on this room — archive it (its heartbeat stops with it) or
