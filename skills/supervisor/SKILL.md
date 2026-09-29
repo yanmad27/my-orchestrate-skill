@@ -32,7 +32,7 @@ This skill requires the Paseo `create_agent` tool. If it is not in your tool
 list, STOP immediately. Do NOT fall back to the built-in `Agent` tool: it
 inherits this session's model and ignores every routing rule in the room,
 so the work silently runs on whatever oversized model this chat happens to
-use. Say exactly this, then end with the room-state line
+use. Say exactly this, then end with the room-state block
 `❓ Waiting on you: open a Supervisor-profile agent and ask again`, and stop:
 
   "This chat's provider has create_agent disabled, so I cannot orchestrate.
@@ -164,29 +164,43 @@ Inputs: <accepted inputs, paths, prior decisions>
 Reopen when: <conditions that should bring this back for a decision>
 ```
 
-After launching, set up MONITORING, print the room-state line, and wait on
+After launching, set up MONITORING, print the room-state block, and wait on
 the Lead (ROOM STATE AND WAITING). Say in your first reply which Leads are
 running and what each owns.
 
 # ROOM STATE AND WAITING
-**Room-state line.** Every turn of yours, heartbeat wakes and
-precondition/error stops included, ends with exactly one room-state line as
-its last line: `✅` or `❓`; `⏳` only after answering the person mid-run, or
-when `slp-wait` failed (said explicitly). In these forms (keep the prefixes):
+**Room-state block.** Every turn of yours, heartbeat wakes and
+precondition/error stops included, ends with exactly one room-state block,
+and its last row is the turn's last line: `✅` or `❓`; `⏳` only after
+answering the person mid-run, or when `slp-wait` failed (said explicitly).
+`✅` and `❓` are one row; `⏳` is a header row plus a Lead/Peer tree. In these
+forms (keep the prefixes and the `|_ ` connector):
 
 ```text
-⏳ Working: <Lead title> (<its state, e.g. running / STATUS: …>), <n> Peer(s) running: <titles>
+⏳ Working:
+<Lead title> (<its state, e.g. running / STATUS: …>)
+|_ <Peer title> (running|permission pending)
 ✅ Done: <outcome in one line>
 ❓ Waiting on you: <decision>
 ```
 
-With several Leads, one ⏳ line lists each. `⏳` is printed right before each
-`slp-wait`, so the latest visible text plus the spinner shows the state. A
-turn that ends stops spinning, so it ends on `⏳` only in the two cases above.
+Titles carry their `[Lead]`/`[Peer]`/`[Review]` prefix (Title
+`[Lead] <workstream>`, above), so it is not repeated in the template.
+`⏳ Working:` is its own header row. Each Lead gets one row; beneath it, one
+`|_ ` row per Peer of that Lead that is running or permission-pending
+(finished or archived Peers are omitted); a Lead with none is just its Lead
+row. With several Leads, the tree lists each. `⏳` is printed right before
+each `slp-wait`, so the latest visible text plus the spinner shows the state.
+A turn that ends stops spinning, so it ends on `⏳` only in the two cases above.
 Rendered:
 
 ```text
-⏳ Working: [Lead] auth refactor (running), 2 Peers running: [Peer] token store, [Review] token store diff
+⏳ Working:
+[Lead] auth refactor (running)
+|_ [Peer] token store (running)
+|_ [Review] token store diff (running)
+[Lead] billing export (STATUS: waiting on CI)
+|_ [Peer] csv writer (permission pending)
 ✅ Done: auth refactor committed on feat/auth, 14 tests pass, nothing pushed
 ❓ Waiting on you: push feat/auth to origin, or leave it local?
 ```
@@ -196,7 +210,7 @@ turn does. `SLP_WAIT` is `@@SLP_WAIT@@`, the installed helper's absolute
 path. If that path still begins with `@@` (the install-time placeholder was
 never replaced), you are outside the installed room: do not run it, fall
 back (below). After launching or prompting a Lead, print the ⏳
-line, then Bash `SLP_WAIT <id> 110` with the Bash `timeout` parameter 140000,
+state, then Bash `SLP_WAIT <id> 110` with the Bash `timeout` parameter 140000,
 on whichever room agent is running now: a running Lead first, else a running
 Peer of one of your Leads (observation only — never direct a Peer). With
 several Leads, wait on whichever runs. 110 s keeps a room inspection at least
@@ -210,7 +224,7 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
 3. Handle each event exactly once — a Lead report or permission; a wait
    return and a finish notification for the same turn are one event. If the
    person messaged: go to the person exception below, and do not re-arm.
-4. For every other event: print the room-state line, pick the next running
+4. For every other event: print the room-state block, pick the next running
    room agent, and re-arm.
 - Handoff: when a Peer finishes, its Lead is woken by a notification within
   seconds. If at re-inspection nothing in the room runs but a Lead's latest
@@ -231,14 +245,14 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
   restores it if missing, and which must be the LAST tool call before your
   final message: it re-schedules the next fire from that moment, so the
   restart normally lands within 2 minutes of your going idle. Then write the
-  answer, then the ⏳ line, as visible text — the FINAL message of that turn
+  answer, then the ⏳ state, as visible text — the FINAL message of that turn
   — and END the turn. The answer to a person must be visible assistant text;
   thinking is not visible to the person, and a Supervisor that keeps
   spinning answers only in thinking. Your heartbeat wakes you, inspects the
   room, and re-arms `slp-wait`, so the spin resumes. Say honestly, if asked,
   that the gap with no spinner after each person message is normally up to 2
   minutes, and rarely up to about 4 if Paseo skips a heartbeat slot, while
-  the answer and the ⏳ line stay visible. This is a known Paseo-side limit,
+  the answer and the ⏳ state stay visible. This is a known Paseo-side limit,
   with two causes: a slot that fires while you are still finishing your turn
   is skipped, not queued, and the next slot is 2 minutes later; and Paseo's
   scheduler can occasionally record a skipped slot twice (overlapping
@@ -279,7 +293,7 @@ timeout is your inspection, and the missed scheduled event is not preserved.
   "[supervisor-heartbeat] Inspect changed room state since your last
   checkpoint, check it against the intent record, and contact a Lead only for
   a new actionable deviation. If work is running, wait on it again with
-  slp-wait. End the turn with exactly one room-state line as the last line."
+  slp-wait. End the turn with exactly one room-state block; its last row is the last line."
   The name must stay exactly `supervisor: room`: the upsert is keyed on
   (name, you), so the same name finds your heartbeat and any other name
   creates a second one that keeps firing its old prompt. A named call is a
@@ -321,7 +335,7 @@ checkpoint (`get_agent_activity` with a small `limit`). Find a Lead's Peers
 with `paseo ls -g --label paseo.parent-agent-id=<leadId> --json`. Glance at
 the repo (`git status --short`, `git diff --stat`) to see what is actually
 changing. If everything is on course, send nothing: re-arm the wait if work is running
-(ROOM STATE AND WAITING), and end the turn with the room-state line only
+(ROOM STATE AND WAITING), and end the turn with the room-state block only
 when the room is ✅ or ❓. Healthy work needs no Lead report — never ask for
 one. Never poll unchanged state within a turn; never wait with `sleep`,
 `ps`, `pgrep`, or retry loops.

@@ -656,11 +656,12 @@ else
   fail "slp-wait behaviour with a stub paseo is wrong"
 fi
 
-# --- room rules: Supervisor wait, room-state line, Lead DONE, heartbeat ------
+# --- room rules: Supervisor wait, room-state block, Lead DONE, heartbeat ------
 
 # Static: the rules exist, and the old instructions are gone.
 RULE_PHRASES=(
   'SKILL.md|⏳ Working:'
+  'SKILL.md||_ <Peer title> (running|permission pending)'
   'SKILL.md|✅ Done:'
   'SKILL.md|❓ Waiting on you:'
   'SKILL.md|`supervisor: room`'
