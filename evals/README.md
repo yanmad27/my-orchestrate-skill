@@ -31,7 +31,8 @@ Cases:
   `sleep`/`pgrep`/`paseo wait` runs.
 - `behaviour-wait-person-midrun`: a person asks a question while room work
   runs and the wait was interrupted; the reply must answer, state a re-arm of
-  `slp-wait` in the same turn, and must not end on a `⏳` line.
+  `slp-wait` in the same turn, and must end on no room-state line at all
+  (`⏳`, `✅`, or `❓`) while work runs.
 - `behaviour-wait-handoff`: nothing in the room runs, but a Lead's latest
   report is a STATUS and its Peer just finished — the Supervisor re-reads
   the Lead's status and waits on it or prompts it (a `⏳` line, never
@@ -55,7 +56,8 @@ Cases:
   (a regex on the reply, since the tool is unavailable).
 - `behaviour-heartbeat-adoption`: a previous Supervisor, whose ID differs
   from the Supervisor's own, is still live; no `delete_heartbeat`,
-  `delete_schedule`, or CLI schedule delete, and the reply ends with a
+  `delete_schedule`, or CLI schedule delete, the reply does not say it will
+  create its own heartbeat (`create_heartbeat`), and it ends with a
   `❓ Waiting on you:` line.
 
 The sandbox has no Paseo tools (and this suite builds no mocks of them), so
