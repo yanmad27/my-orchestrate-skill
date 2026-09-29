@@ -16,18 +16,22 @@ Cases:
 - `behaviour-no-self-edit`: given a delegation prompt, the skill must not
   call `Edit`/`Write` itself before delegating.
 - `behaviour-no-polling`: given a prompt to open a PR and report when CI
-  passes (waiting, where needed, with `slp-wait`), no `Bash` call may sleep,
+  passes (the Supervisor waits, where needed, with `slp-wait`), no `Bash` call may sleep,
   poll, or loop (`sleep`, `pgrep`, `ps`, `until`/`while`/`for … do`), call
   `paseo wait` directly, wrap `slp-wait` in a loop, pass it a timeout above
   570, or run it without a Bash `timeout` of at least 30000 ms — all
   `tool_used` with `input_match`, the same grader shape `trigger-positive-rename`
   uses to check `Skill` input.
-- `behaviour-wait-interruption`: told that an `slp-wait` returned the
-  "user doesn't want to proceed / interrupted" text plus a Lead report, the
-  answer must call it an event (not a refusal) and re-arm or resume, and no
-  `sleep`/`pgrep`/`paseo wait` runs.
+- `behaviour-wait-interruption`: told (as the Supervisor) that an `slp-wait`
+  returned the "user doesn't want to proceed / interrupted" text because a
+  Peer finished, the answer must call it an event (not a refusal) and re-arm
+  or resume, and no `sleep`/`pgrep`/`paseo wait` runs.
+- `behaviour-wait-handoff`: nothing in the room runs, but a Lead's latest
+  report is a STATUS and its Peer just finished — the Supervisor re-reads
+  the Lead's status and waits on it or prompts it, and ends with `⏳`, never
+  `✅ Done`.
 - `behaviour-wait-no-rearm`: told that `slp-wait` returned at once with no
-  timeout and no state change, the seat must not call `slp-wait` again
+  timeout and no state change, the Supervisor must not call `slp-wait` again
   (`tool_used` max 0) and must report or decide instead.
 - `behaviour-room-state-{heartbeat,launch,done,decision}`: the Supervisor's
   final message ends with exactly one room-state line as its last line —
@@ -40,7 +44,8 @@ Cases:
   whether it is done, reports `STATUS`, never `DONE`.
 - `behaviour-heartbeat-find-or-create`: monitoring setup never calls
   `list_schedules`, `delete_heartbeat`, `delete_schedule`, or the CLI
-  `paseo heartbeat create` / `paseo schedule delete`.
+  `paseo heartbeat create` / `paseo schedule delete`, and any
+  `create_heartbeat` carries the fixed name `supervisor: room`.
 
 The sandbox has no Paseo tools, so the wait, room-state, DONE, and heartbeat
 cases can only exercise the parts a free grader sees: what the model would

@@ -544,8 +544,10 @@ if [ -x "$BIN/slp-wait" ] \
   && cmp -s paseo/bin/slp-wait "$BIN/slp-wait" \
   && jq -e --arg bin "$RENDER_HOME/bin" --arg room "$BIN" '.agents.providers as $p
       | ($p["claude-lead"].disallowedTools | index("Bash(paseo:*)") != null and index("Bash(" + $bin + "/paseo:*)") != null)
-      and ($p["claude-lead"].disallowedTools == ($p["claude-peer"].disallowedTools | map(select(test("slp-") | not))))
-      and ($p["claude-lead"].disallowedTools | map(select(test("slp-"))) == [])
+      and ($p["claude-lead"].disallowedTools | index("Bash(slp-wait:*)") != null
+           and index("Bash(" + $room + "/slp-wait:*)") != null)
+      and ($p["claude-lead"].disallowedTools | map(select(test("slp-") | not)))
+          == ($p["claude-peer"].disallowedTools | map(select(test("slp-") | not)))
       and ($p["claude-peer"].disallowedTools | index("Bash(slp-wait:*)") != null
            and index("Bash(" + $room + "/slp-wait:*)") != null and index("Bash(paseo:*)") != null)
       and ($p["claude-supervisor"].disallowedTools | map(select(test("slp-"))) == []
@@ -553,7 +555,7 @@ if [ -x "$BIN/slp-wait" ] \
     "$RENDER_HOME/.paseo/config.json" >/dev/null \
   && grep -qF '"slp-wait"' "$RENDER_HOME/.config/slp-room/codex-peer/rules/room.rules" \
   && grep -qF "\"$BIN/slp-wait\"" "$RENDER_HOME/.config/slp-room/codex-peer/rules/room.rules"; then
-  ok "install.sh installs slp-wait (0755); Peers (Claude and Codex) may not run it; Lead's and Supervisor's denies are unchanged"
+  ok "install.sh installs slp-wait (0755); Leads and Peers (Claude and Codex) may not run it; the Supervisor's denies are unchanged"
 else
   fail "slp-wait not installed as expected, or Lead/Peer/Supervisor/Codex denies wrong"
 fi
@@ -605,29 +607,27 @@ else
   fail "slp-wait behaviour with a stub paseo is wrong"
 fi
 
-# --- room rules: waiting, room-state line, Lead DONE, heartbeat -------------
+# --- room rules: Supervisor wait, room-state line, Lead DONE, heartbeat ------
 
 # Static: the rules exist, and the old instructions are gone.
 RULE_PHRASES=(
   'SKILL.md|⏳ Working:'
   'SKILL.md|✅ Done:'
   'SKILL.md|❓ Waiting on you:'
-  'SKILL.md|name `supervisor: <scope>`'
-  'SKILL.md|The name must stay exactly `supervisor: <scope>`'
+  'SKILL.md|`supervisor: room`'
+  'SKILL.md|The name must stay exactly `supervisor: room`'
   'SKILL.md|paseo.parent-agent-id'
-  'SKILL.md|Never remove another session'
+  'SKILL.md|schedule. Leave Leads unarchived'
+  'SKILL.md|Never remove'
   'SKILL.md|not a refusal: an event arrived'
   'SKILL.md|never wrap `slp-wait` in a shell loop'
-  'PROTOCOL.md|slp-wait — the one blocking wait'
+  'SKILL.md|Never end ✅ in that'
+  'PROTOCOL.md|slp-wait — the Supervisor'
   'PROTOCOL.md|never wrap `slp-wait` in a shell loop'
+  'PROTOCOL.md|Leads and Peers never do'
   'PROTOCOL.md|is valid only when, at report time, no Peer'
-  'PROTOCOL.md|an in-flight `slp-wait`'
-  'roles/lead.md|@@SLP_WAIT@@'
-  'roles/lead.md|is NOT a refusal'
-  'roles/lead.md|never wrap `slp-wait` in a'
   'roles/lead.md|no Peer of'
-  'roles/peer.md|an in-flight'
-  'roles/peer.md|You never run `slp-wait`'
+  'roles/peer.md|`slp-wait` is the Supervisor'
 )
 for entry in "${RULE_PHRASES[@]}"; do
   file="$ROOM_DIR/${entry%%|*}"
@@ -641,28 +641,53 @@ done
 
 if ! grep -q 'no change' "$ROOM_DIR/SKILL.md" \
   && ! grep -qE 'list_schedules`? *and reuse|reuse a heartbeat' "$ROOM_DIR/SKILL.md" \
-  && ! grep -rq 'END YOUR TURN' "$ROOM_DIR" \
-  && ! grep -rqE 'only when its Lead is idle \(|waiting on Peer events' "$ROOM_DIR"; then
-  ok "SKILL.md has no bare no-change turn end or list_schedules reuse rule; no seat rule still ends a turn while Peers run or gates Peer messages on an idle Lead"
+  && ! grep -q 'Do not wait on a Peer' "$ROOM_DIR/SKILL.md" \
+  && ! grep -rq 'in-flight `slp-wait`' "$ROOM_DIR/roles" "$ROOM_DIR/PROTOCOL.md" \
+  && ! grep -qE 'slp-wait|@@SLP_WAIT@@' "$ROOM_DIR/roles/lead.md"; then
+  ok "no bare no-change turn end, list_schedules reuse rule, Lead-side slp-wait, or Peer send rule keyed on a Lead wait survives"
 else
-  fail "a superseded rule survives: a bare no-change turn end, a list_schedules reuse, END YOUR TURN, an idle-only Peer send, or STATUS as waiting on Peer events"
+  fail "a superseded rule survives: a bare no-change turn end, a list_schedules reuse, Lead-side slp-wait, or an in-flight-wait Peer send rule"
 fi
 
-# Rendered: the Supervisor and Lead prompts of the temp install name a slp-wait that exists there,
-# with no token left in any rendered room file; the Peer prompt never names it as a tool to run.
+# The Supervisor's wait timeout keeps a room inspection at least every 2 minutes (<= 120 s).
+WAIT_SECS="$(grep -oE 'SLP_WAIT <id> [0-9]+' "$ROOM_DIR/SKILL.md" | awk '{print $3}')"
+if [ -n "$WAIT_SECS" ] && [ "$(printf '%s\n' "$WAIT_SECS" | awk '$1 > 120 || $1 < 30 { bad = 1 } END { print bad + 0 }')" = 0 ]; then
+  ok "SKILL.md's slp-wait timeout ($(printf '%s' "$WAIT_SECS" | tr '\n' ' ')s) is within 30-120"
+else
+  fail "SKILL.md's slp-wait timeout must be present and within 30-120 s (got: '$WAIT_SECS')"
+fi
+
+# Rendered: the Supervisor prompt of the temp install names a slp-wait that exists there; the Lead
+# and Peer prompts never name it (their providers deny it); no token is left in any rendered file.
 ROOM="$RENDER_HOME/.config/slp-room"
 WAIT_PATH="$ROOM/bin/slp-wait"
 RENDER_OK=1
-for f in "$ROOM/claude-supervisor/output-styles/slp-supervisor.md" "$ROOM/claude-lead/output-styles/slp-lead.md" \
-  "$ROOM/supervisor.md" "$ROOM/lead.md" "$ROOM/room/roles/lead.md"; do
+for f in "$ROOM/claude-supervisor/output-styles/slp-supervisor.md" "$ROOM/supervisor.md"; do
   grep -qF "$WAIT_PATH" "$f" || { RENDER_OK=0; echo "  $f does not name $WAIT_PATH"; }
 done
+for f in "$ROOM/claude-lead/output-styles/slp-lead.md" "$ROOM/lead.md" "$ROOM/room/roles/lead.md"; do
+  if grep -qF "$WAIT_PATH" "$f" || grep -qF '@@SLP_WAIT@@' "$f"; then RENDER_OK=0; echo "  $f names slp-wait"; fi
+done
+cmp -s skills/supervisor/roles/lead.md "$ROOM/room/roles/lead.md" || { RENDER_OK=0; echo "  room/roles/lead.md is not a plain copy"; }
 [ -x "$WAIT_PATH" ] || RENDER_OK=0
 if grep -rq '@@SLP_WAIT@@' "$ROOM" --include='*.md'; then RENDER_OK=0; echo "  a rendered file still has @@SLP_WAIT@@"; fi
 if [ "$RENDER_OK" = 1 ]; then
-  ok "rendered Supervisor and Lead prompts name $WAIT_PATH, which exists and is executable, with no token left"
+  ok "rendered Supervisor prompt names $WAIT_PATH (exists, executable); the Lead prompt does not; no token left"
 else
-  fail "rendered Supervisor/Lead prompts do not name an existing slp-wait path"
+  fail "rendered prompts wrong: the Supervisor must name an existing slp-wait, the Lead must not"
+fi
+
+# claude-lead denies slp-wait (basename and rendered absolute path); its other denies are main's.
+if jq -e --arg wait "$WAIT_PATH" '.agents.providers["claude-lead"].disallowedTools as $d
+    | ($d | index("Bash(slp-wait:*)") != null and index("Bash(" + $wait + ":*)") != null)
+    and ($d | map(select(test("slp-") | not)) | index("Bash(paseo:*)") != null
+        and index("Agent") != null and index("Task") != null
+        and index("Bash(claude:*)") != null and index("Bash(codex:*)") != null)' \
+    "$RENDER_HOME/.paseo/config.json" >/dev/null \
+  && ! jq -e '.agents.providers["claude-lead"].disallowedTools | index("Bash(paseo run:*)")' "$RENDER_HOME/.paseo/config.json" >/dev/null; then
+  ok "claude-lead denies slp-wait by basename and absolute path, and keeps main's whole-paseo denies"
+else
+  fail "claude-lead must deny slp-wait (basename + absolute path) and keep Bash(paseo:*) and the spawner denies"
 fi
 
 if [ "$FAILED" -ne 0 ]; then
