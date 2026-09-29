@@ -238,7 +238,11 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
   room, and re-arms `slp-wait`, so the spin resumes. Say honestly, if asked,
   that the gap with no spinner after each person message is normally up to 2
   minutes, and rarely up to about 4 if Paseo skips a heartbeat slot, while
-  the answer and the ⏳ line stay visible. If `create_heartbeat` is
+  the answer and the ⏳ line stay visible. This is a known Paseo-side limit,
+  with two causes: a slot that fires while you are still finishing your turn
+  is skipped, not queued, and the next slot is 2 minutes later; and Paseo's
+  scheduler can occasionally record a skipped slot twice (overlapping
+  ticks), which pushes the next fire one more slot. If `create_heartbeat` is
   unavailable or the call returns an error, do NOT end the turn: answer as
   visible text, then re-arm `slp-wait` in the same turn, and say that the
   answer may be less visible in this degraded mode.

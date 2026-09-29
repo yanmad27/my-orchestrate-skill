@@ -91,7 +91,9 @@ while delegated work runs, and costs no tokens while blocked.
   (never only thinking) as the final message of that turn and ends it; its
   heartbeat re-arms the wait, so a no-spinner gap follows each person
   message: normally up to 2 minutes, rarely up to about 4 if Paseo skips a
-  slot. It first routes any instruction in the message and confirms the
+  slot (a known Paseo-side limit: a slot firing while the turn is still
+  ending is skipped, not queued, and the scheduler can record a skipped slot
+  twice). It first routes any instruction in the message and confirms the
   heartbeat exists (its last tool call); with no heartbeat tool, or if that
   call errors, it does not end the turn but answers as text and re-arms in
   the same turn.
