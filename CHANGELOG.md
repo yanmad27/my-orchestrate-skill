@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/yanmad27/paseo-slp/compare/v2.0.0...v2.0.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* ask for the Claude token in install.sh instead of a clipboard dance ([#31](https://github.com/yanmad27/paseo-slp/issues/31)) ([121e2f1](https://github.com/yanmad27/paseo-slp/commit/121e2f16b4fc8ba2425356eb40ea516f33149a8e))
+
 ## [2.0.0](https://github.com/yanmad27/paseo-slp/compare/v1.9.0...v2.0.0) (2026-09-29)
 
 
