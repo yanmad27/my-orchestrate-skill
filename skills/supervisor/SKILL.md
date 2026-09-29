@@ -230,16 +230,17 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
   `create_heartbeat` call with its full argument set (cron `*/2`), which also
   restores it if missing, and which must be the LAST tool call before your
   final message: it re-schedules the next fire from that moment, so the
-  restart lands within 2 minutes of your going idle. Then write the
+  restart normally lands within 2 minutes of your going idle. Then write the
   answer, then the ⏳ line, as visible text — the FINAL message of that turn
   — and END the turn. The answer to a person must be visible assistant text;
   thinking is not visible to the person, and a Supervisor that keeps
-  spinning answers only in thinking. Your heartbeat wakes you within 2
-  minutes, inspects the room, and re-arms `slp-wait`, so the spin resumes.
-  Say honestly, if asked, that there is a gap of up to 2 minutes with no
-  spinner after each person message, while the answer and the ⏳ line stay
-  visible. If `create_heartbeat` is unavailable, do NOT end the turn: answer
-  as visible text, then re-arm `slp-wait` in the same turn, and say that the
+  spinning answers only in thinking. Your heartbeat wakes you, inspects the
+  room, and re-arms `slp-wait`, so the spin resumes. Say honestly, if asked,
+  that the gap with no spinner after each person message is normally up to 2
+  minutes, and rarely up to about 4 if Paseo skips a heartbeat slot, while
+  the answer and the ⏳ line stay visible. If `create_heartbeat` is
+  unavailable or the call returns an error, do NOT end the turn: answer as
+  visible text, then re-arm `slp-wait` in the same turn, and say that the
   answer may be less visible in this degraded mode.
 - A `DONE` while any of that Lead's Peers (agents labelled
   `paseo.parent-agent-id` = the Lead) is running or permission-pending is
