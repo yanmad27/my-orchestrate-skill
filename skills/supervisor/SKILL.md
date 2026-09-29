@@ -207,10 +207,11 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
    `paseo ls -g --label paseo.parent-agent-id=<leadId> --json`), plus each
    Lead's latest report.
 2. Run the drift check (KEEPING THE ROOM ON COURSE).
-3. Handle each event exactly once — a Lead report, permission, or person
-   message; a wait return and a finish notification for the same turn are one
-   event. If the person messaged, answer them first.
-4. Print the room-state line, pick the next running room agent, and re-arm.
+3. Handle each event exactly once — a Lead report or permission; a wait
+   return and a finish notification for the same turn are one event. If the
+   person messaged: go to the person exception below, and do not re-arm.
+4. For every other event: print the room-state line, pick the next running
+   room agent, and re-arm.
 - Handoff: when a Peer finishes, its Lead is woken by a notification within
   seconds. If at re-inspection nothing in the room runs but a Lead's latest
   report is not terminal (`DONE`, `DECISION_NEEDED`, `BLOCKED`), read that
@@ -222,15 +223,21 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
   permission notification, then re-arm in the same turn; do not stop. A wait
   moved to the background, or one that shows up as a task notification, no
   longer holds your turn: re-arm in the foreground.
-- A message from the person while room work runs is the one exception: write
-  the answer, then the ⏳ line, as visible text — the FINAL message of that
-  turn — and END the turn. The answer to a person must be visible assistant
-  text; thinking is not visible to the person, and a Supervisor that keeps
+- A message from the person while room work runs is the one exception. First
+  route or apply any instruction or decision in it within your authority
+  (`send_agent_prompt` to the affected Lead; INTENT RECORD: route the
+  change). Then confirm your `supervisor: room` heartbeat exists — the named
+  `create_heartbeat` call, which also restores it if missing. Then write the
+  answer, then the ⏳ line, as visible text — the FINAL message of that turn
+  — and END the turn. The answer to a person must be visible assistant text;
+  thinking is not visible to the person, and a Supervisor that keeps
   spinning answers only in thinking. Your heartbeat wakes you within 2
   minutes, inspects the room, and re-arms `slp-wait`, so the spin resumes.
   Say honestly, if asked, that there is a gap of up to 2 minutes with no
   spinner after each person message, while the answer and the ⏳ line stay
-  visible.
+  visible. If `create_heartbeat` is unavailable, do NOT end the turn: answer
+  as visible text, then re-arm `slp-wait` in the same turn, and say that the
+  answer may be less visible in this degraded mode.
 - A `DONE` while any of that Lead's Peers (agents labelled
   `paseo.parent-agent-id` = the Lead) is running or permission-pending is
   invalid: show ⏳ and send it back for correction.
