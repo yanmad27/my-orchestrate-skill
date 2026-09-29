@@ -646,6 +646,7 @@ RULE_PHRASES=(
   'SKILL.md|or the call returns an error, do NOT end the turn'
   'SKILL.md|known Paseo-side limit'
   'SKILL.md|skipped, not queued'
+  'SKILL.md|record a skipped slot twice (overlapping'
   'SKILL.md|thinking is not visible to the person'
   'PROTOCOL.md|visible assistant text'
   'PROTOCOL.md|the one exception'
@@ -653,6 +654,8 @@ RULE_PHRASES=(
   'PROTOCOL.md|rarely up to about 4 if Paseo skips a'
   'PROTOCOL.md|call errors, it does not end the turn'
   'PROTOCOL.md|a known Paseo-side limit'
+  'PROTOCOL.md|ending is skipped, not queued'
+  'PROTOCOL.md|can record a skipped slot'
   'SKILL.md|begins with `@@`'
   'SKILL.md|$PASEO_AGENT_ID'
   'PROTOCOL.md|never ends a turn'
@@ -670,6 +673,14 @@ for entry in "${RULE_PHRASES[@]}"; do
     ok "$file keeps the room rule '$phrase'"
   else
     fail "$file missing room rule '$phrase'"
+  fi
+done
+
+for phrase in 'skipped, not queued' 'record a skipped slot twice' 'the next slot usually resumes it'; do
+  if grep -qF -- "$phrase" README.md; then
+    ok "README.md states the heartbeat-restart limit: '$phrase'"
+  else
+    fail "README.md missing heartbeat-restart limit wording '$phrase'"
   fi
 done
 
