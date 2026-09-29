@@ -2,84 +2,167 @@
   "daemon": {
     "agentProfiles": [
       {
-        "id": "agent_profile_orchestrate_lead",
-        "name": "Lead",
+        "id": "agent_profile_slp_supervisor",
+        "name": "Supervisor",
         "icon": "compass",
         "provider": "claude",
         "model": "claude-opus-5-5",
         "modeId": "bypassPermissions",
-        "thinkingOptionId": "high",
-        "notes": "Orchestrator only. Has create_agent; delegates every unit of real work to a worker profile and never implements. Use with the /orchestrate skill."
+        "thinkingOptionId": "xhigh",
+        "notes": "The only seat the user talks to. Run /supervisor here: pins down intent, launches Lead agents, keeps Leads and Peers on course on a heartbeat, and brings decisions back to the user. Never implements. Do not launch it from another agent."
       },
       {
-        "id": "agent_profile_orchestrate_cheap_worker",
-        "name": "Cheap worker",
+        "id": "agent_profile_orchestrate_lead",
+        "name": "Lead",
+        "icon": "compass",
+        "provider": "claude-lead",
+        "model": "claude-opus-5-5",
+        "modeId": "bypassPermissions",
+        "thinkingOptionId": "high",
+        "notes": "Launched by the Supervisor only. Owns one project's technical outcome: plans, dispatches Peer profiles, debates their challenges, reviews, and accepts or rejects candidates. Never implements; never launches another Lead."
+      },
+      {
+        "id": "agent_profile_slp_cheap_peer",
+        "name": "Cheap peer",
         "icon": "hammer",
-        "provider": "claude-worker",
+        "provider": "claude-peer",
         "model": "claude-haiku-4-5",
         "modeId": "bypassPermissions",
-        "thinkingOptionId": "low",
-        "notes": "Extraction, classification, formatting, log triage, renames, doc/comment updates, mechanical refactors, test scaffolding."
+        "thinkingOptionId": "medium",
+        "notes": "Launched by a Lead. Extraction, classification, formatting, log triage, renames, doc/comment updates, mechanical refactors, test scaffolding."
       },
       {
-        "id": "agent_profile_orchestrate_worker",
-        "name": "Worker",
+        "id": "agent_profile_slp_peer",
+        "name": "Peer",
         "icon": "hammer",
-        "provider": "claude-worker",
+        "provider": "claude-peer",
         "model": "claude-sonnet-5",
         "modeId": "bypassPermissions",
-        "thinkingOptionId": "high",
-        "notes": "DEFAULT for implementation, debugging, multi-file refactors, research, writing."
+        "thinkingOptionId": "medium",
+        "notes": "Launched by a Lead. DEFAULT for implementation, debugging, multi-file refactors, research, writing."
       },
       {
-        "id": "agent_profile_orchestrate_expensive_worker",
-        "name": "Expensive worker",
+        "id": "agent_profile_slp_expensive_peer",
+        "name": "Expensive peer",
         "icon": "hammer",
-        "provider": "claude-worker",
+        "provider": "claude-peer",
+        "model": "claude-opus-5-5",
+        "modeId": "bypassPermissions",
+        "thinkingOptionId": "medium",
+        "notes": "Launched by a Lead. Hard problems only: architecture decisions, cross-module refactors with invariants, subtle concurrency/data bugs, tasks where a Peer retry already failed. Chosen by Jev routing or escalation, never as a default."
+      },
+      {
+        "id": "agent_profile_slp_review_peer",
+        "name": "Review peer",
+        "icon": "eye",
+        "provider": "claude-peer",
         "model": "claude-opus-5-5",
         "modeId": "bypassPermissions",
         "thinkingOptionId": "high",
-        "notes": "Expensive worker (opus). Hard problems only: architecture decisions, cross-module refactors with invariants, subtle concurrency/data bugs, tasks where a worker retry already failed. Chosen by Jev routing or escalation, never as a default."
+        "notes": "Launched by a Lead. Read-only Peer — read-only by its brief, since every room seat runs with full permissions: independent review of an exact candidate against its acceptance evidence, architecture questions, committee member.\nNever edits files."
       },
       {
-        "id": "agent_profile_orchestrate_reviewer",
-        "name": "Reviewer",
-        "icon": "eye",
-        "provider": "claude-worker",
-        "model": "claude-opus-5-5",
-        "modeId": "plan",
-        "thinkingOptionId": "high",
-        "notes": "Read-only independent review of diffs against acceptance criteria.\nNever edits files."
-      },
-      {
-        "id": "agent_profile_orchestrate_codex_advisor",
-        "name": "Codex advisor",
-        "icon": "eye",
-        "provider": "codex",
+        "id": "agent_profile_slp_codex_peer",
+        "name": "Codex peer",
+        "icon": "hammer",
+        "provider": "codex-peer",
         "model": "gpt-5.6-sol",
-        "modeId": "auto",
-        "thinkingOptionId": "xhigh",
-        "notes": "Second opinion from a different provider family: committee member and plan reviewer for /orchestrate. Analysis only; never edits files or spawns agents. Not a tier in the worker ladder."
+        "modeId": "full-access",
+        "thinkingOptionId": "medium",
+        "notes": "Launched by a Lead. Writable Peer from another model family: used when the instruction asks for Codex, or to retry a task a Claude Peer already failed. Not a rung on the tier ladder."
+      },
+      {
+        "id": "agent_profile_slp_codex_review_peer",
+        "name": "Codex review peer",
+        "icon": "eye",
+        "provider": "codex-peer",
+        "model": "gpt-5.6-sol",
+        "modeId": "full-access",
+        "thinkingOptionId": "high",
+        "notes": "Launched by a Lead. Read-only Peer from another model family — read-only by its brief, since every room seat runs with full permissions: cross-family review of Claude-written candidates, plan review, committee member, debate tie-breaker.\nNever edits files."
       }
     ]
   },
   "agents": {
     "providers": {
-      "claude-worker": {
+      "claude-lead": {
         "extends": "claude",
-        "label": "Claude Worker",
-        "description": "Delegated worker — cannot spawn or control other agents",
+        "label": "Claude Lead",
+        "description": "Lead seat — its own Claude runtime whose output style carries the room protocol and Lead role; launches Peers only",
+        "env": {
+          "CLAUDE_CONFIG_DIR": "@@ROOM_HOME@@/claude-lead",
+          "CLAUDE_CODE_OAUTH_TOKEN": "@@CLAUDE_OAUTH_TOKEN@@"
+        },
+        "paseoTools": {
+          "disabledTools": [
+            "create_schedule",
+            "create_heartbeat",
+            "delete_schedule",
+            "delete_heartbeat",
+            "update_schedule",
+            "pause_schedule",
+            "resume_schedule",
+            "run_schedule_once"
+          ]
+        }
+      },
+      "claude-peer": {
+        "extends": "claude",
+        "label": "Claude Peer",
+        "description": "Peer seat — its own Claude runtime whose output style carries the room protocol and Peer role; can message its Lead (send_agent_prompt) but cannot spawn or control agents",
+        "env": {
+          "CLAUDE_CONFIG_DIR": "@@ROOM_HOME@@/claude-peer",
+          "CLAUDE_CODE_OAUTH_TOKEN": "@@CLAUDE_OAUTH_TOKEN@@"
+        },
         "paseoTools": {
           "disabledTools": [
             "create_agent",
-            "send_agent_prompt",
             "cancel_agent",
             "kill_agent",
             "archive_agent",
+            "update_agent",
+            "set_agent_mode",
             "create_workspace",
             "archive_workspace",
+            "rename_workspace",
             "create_schedule",
             "create_heartbeat",
+            "delete_schedule",
+            "delete_heartbeat",
+            "update_schedule",
+            "pause_schedule",
+            "resume_schedule",
+            "run_schedule_once",
+            "respond_to_permission"
+          ]
+        }
+      },
+      "codex-peer": {
+        "extends": "codex",
+        "label": "Codex Peer",
+        "description": "Peer seat on Codex — the room protocol and Peer role are its developer instructions; can message its Lead (send_agent_prompt) but cannot spawn or control agents",
+        "command": [
+          "@@ROOM_HOME@@/bin/codex-peer"
+        ],
+        "paseoTools": {
+          "disabledTools": [
+            "create_agent",
+            "cancel_agent",
+            "kill_agent",
+            "archive_agent",
+            "update_agent",
+            "set_agent_mode",
+            "create_workspace",
+            "archive_workspace",
+            "rename_workspace",
+            "create_schedule",
+            "create_heartbeat",
+            "delete_schedule",
+            "delete_heartbeat",
+            "update_schedule",
+            "pause_schedule",
+            "resume_schedule",
+            "run_schedule_once",
             "respond_to_permission"
           ]
         }

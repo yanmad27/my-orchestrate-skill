@@ -1,11 +1,11 @@
-# orchestrate eval suite
+# supervisor eval suite
 
 Run: `claude plugin eval . --trust-plugin --allow-tools Edit Write`
 (Edit/Write must be granted so the `no-self-edit` case's checks are non-vacuous.)
 
 Cases:
 
-- `trigger-positive-*` (4): a prompt that should make the `orchestrate` skill
+- `trigger-positive-*` (5): a prompt that should make the `supervisor` skill
   fire — `tool_used: Skill` grader, matched by regex against the skill name.
 - `trigger-negative-*` (3): a prompt that should NOT fire it — same grader
   with `min: 0, max: 0, arm: both` (this plugin has no `not_tool_used` type;
@@ -21,26 +21,19 @@ Cases:
   with `input_match`, the same grader shape `trigger-positive-rename` uses
   to check `Skill` input.
 
-The subagent-recap contract (Lead opens its report with a one-line recap per
-worker, built from each worker's `RECAP:` line) is a post-delegation output
-behaviour. The free sandbox has no `create_agent`, so the skill stops at the
-precondition and no worker ever runs — a positive "must emit recap" eval can
-never go green here. It is guarded instead by `scripts/validate.sh`
-(`BODY_PHRASES`), which asserts the recap wording stays in `SKILL.md` on every
-CI run, and exercised for real only on Paseo.
-
-The watchdog (`skills/orchestrate/watchdog.mjs`, SUPERVISION) is post-delegation
-too, so this sandbox never reaches it. `scripts/test-watchdog.mjs` covers its
-logic instead: it runs the poller against a fake `paseo` CLI and checks stall
-alerts and their repeat, pending permissions, no delivery into a lead turn,
-lost finish notifications (fast path and `ALL ENDED` backstop), archived and
-earlier-task workers, exit conditions, and idempotent `start`/`stop`. It runs
-from `scripts/validate.sh` on every CI run.
+The recap contract (the Supervisor opens its report with one line per Lead
+and its Peers, built from each Peer's `RECAP:` line) and the whole
+Lead ⇄ Peer debate protocol are post-delegation behaviour. The free sandbox
+has no `create_agent`, so the skill stops at the precondition and no Lead or
+Peer ever runs — a positive eval for them can never go green here. They are
+guarded instead by `scripts/validate.sh` (`ROOM_PHRASES`), which asserts the
+contract wording stays in `SKILL.md`, `PROTOCOL.md`, and `roles/*.md` on
+every CI run, and exercised for real only on Paseo.
 
 Target: 100% pass rate on the `trigger-positive`/`trigger-negative` cases.
 All graders are free (`tool_used`/`regex`) — no judge-model cost.
 
-## Latest run (2026-09-22, v1.3.0, Claude Code 2.1.270)
+## Latest run (2026-09-22, v1.3.0 — the `orchestrate` skill, before the SLP rename)
 
 8/9 cases at threshold 1.0, overall score 0.926, mean Δ +0.426, $5.99, 191s.
 
