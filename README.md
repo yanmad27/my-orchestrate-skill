@@ -121,6 +121,12 @@ Run the same command again whenever you want the latest version; add
 gateway (9router, OmniRoute, CLIProxyAPI, LiteLLM, …) instead: at the prompt
 choose *2*, or run with `--endpoint` (`-s -- --endpoint` when piped), then give
 its base URL and key. See [Custom endpoint](#custom-endpoint-instead-of-a-token).
+Or skip the prompts and pass both in one command — the variables go after the
+pipe, on the `bash` side:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yanmad27/paseo-slp/main/install.sh | SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY=<key> bash
+```
 
 ## Install
 
@@ -254,8 +260,13 @@ Interactive: choose *2* at the sign-in prompt, or run `install.sh --endpoint`
 what is saved). Non-interactive:
 
 ```sh
-SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY=<key> ./install.sh
+curl -fsSL https://raw.githubusercontent.com/yanmad27/paseo-slp/main/install.sh | SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY=<key> bash
 ```
+
+The variables sit on the `bash` side of the pipe; placed before `curl` they
+would never reach the script. Add `SLP_CLAUDE_AUTH_HEADER=x-api-key` there to
+send the key as `x-api-key`. From a clone:
+`SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY=<key> ./install.sh`
 
 The Claude CLI appends `/v1/messages` itself, so the base URL normally has no
 `/v1`; check your proxy's docs for Anthropic clients. It must be an `http://`
