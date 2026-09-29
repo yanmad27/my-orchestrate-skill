@@ -546,11 +546,11 @@ if [ -x "$BIN/slp-wait" ] \
       | ($p["claude-lead"].disallowedTools | index("Bash(paseo:*)") != null and index("Bash(" + $bin + "/paseo:*)") != null)
       and ($p["claude-lead"].disallowedTools | index("Bash(slp-wait:*)") != null
            and index("Bash(" + $room + "/slp-wait:*)") != null)
-      and ($p["claude-lead"].disallowedTools | map(select(test("slp-") | not)))
-          == ($p["claude-peer"].disallowedTools | map(select(test("slp-") | not)))
+      and ($p["claude-lead"].disallowedTools | map(select(. != "Bash(slp-wait:*)" and . != "Bash(" + $room + "/slp-wait:*)")))
+          == ($p["claude-peer"].disallowedTools | map(select(. != "Bash(slp-wait:*)" and . != "Bash(" + $room + "/slp-wait:*)")))
       and ($p["claude-peer"].disallowedTools | index("Bash(slp-wait:*)") != null
            and index("Bash(" + $room + "/slp-wait:*)") != null and index("Bash(paseo:*)") != null)
-      and ($p["claude-supervisor"].disallowedTools | map(select(test("slp-"))) == []
+      and ($p["claude-supervisor"].disallowedTools | map(select(. == "Bash(slp-wait:*)" or . == "Bash(" + $room + "/slp-wait:*)")) == []
            and index("Bash(paseo:*)") == null)' \
     "$RENDER_HOME/.paseo/config.json" >/dev/null \
   && grep -qF '"slp-wait"' "$RENDER_HOME/.config/slp-room/codex-peer/rules/room.rules" \
@@ -585,14 +585,28 @@ SW_OK=1
 out="$(SLPW_STATUS=timeout sw "$WID" 60)" || SW_OK=0
 [ "$out" = "slp-wait: $WID timeout" ] && [ "$(cat "$SLPW_LOG")" = "wait $WID --timeout 60 --json" ] || SW_OK=0
 for st in idle permission; do
-  out="$(SLPW_STATUS=$st sw "$WID" 570)" || SW_OK=0
+  out="$(SLPW_STATUS=$st sw "$WID" 120)" || SW_OK=0
   [ "$out" = "slp-wait: $WID $st" ] || SW_OK=0
 done
 SLPW_STATUS=error sw "$WID" 30 >/dev/null && SW_OK=0
 SLPW_FAIL=1 sw "$WID" 30 >/dev/null && SW_OK=0
-for bad in "x; paseo run|60" "abc|60" "$(printf '%s' "$WID" | tr a-f A-F)|60" "$WID|0" "$WID|29" "$WID|571" "$WID|abc" "$WID|" "|60" "|" "$WID|-5" "$WID|60.5"; do
+for bad in "x; paseo run|60" "abc|60" "$(printf '%s' "$WID" | tr a-f A-F)|60" "$WID|0" "$WID|29" "$WID|121" "$WID|570" "$WID|571" "$WID|0060" "$WID|1200" "$WID|abc" "$WID|" "|60" "|" "$WID|-5" "$WID|60.5"; do
   rc=0; SLPW_STATUS=idle sw "${bad%%|*}" "${bad#*|}" >/dev/null || rc=$?
   [ "$rc" = 2 ] && [ ! -s "$SLPW_LOG" ] || { SW_OK=0; echo "  not rejected: $bad"; }
+done
+# Embedded CR/LF must be rejected as a whole (no line-by-line pass), with nothing logged
+# and no stray shell error on stderr.
+NL='
+'
+for bad_id in "$WID${NL}x" "x${NL}$WID" "${WID}${NL}" "$(printf '%s\r' "$WID")"; do
+  rc=0; err="$(: > "$SLPW_LOG"; PATH="$SW/bin:$PATH" SLPW_STATUS=idle "$BIN/slp-wait" "$bad_id" 60 2>&1 >/dev/null)" || rc=$?
+  [ "$rc" = 2 ] && [ ! -s "$SLPW_LOG" ] && [ "$(printf '%s\n' "$err" | head -1 | cut -c1-6)" = "usage:" ] && [ "$(printf '%s\n' "$err" | wc -l | tr -d ' ')" = 1 ] \
+    || { SW_OK=0; echo "  id with CR/LF not rejected cleanly"; }
+done
+for bad_secs in "60${NL}60" "${NL}60" "60${NL}" "$(printf '60\r')"; do
+  rc=0; err="$(: > "$SLPW_LOG"; PATH="$SW/bin:$PATH" SLPW_STATUS=idle "$BIN/slp-wait" "$WID" "$bad_secs" 2>&1 >/dev/null)" || rc=$?
+  [ "$rc" = 2 ] && [ ! -s "$SLPW_LOG" ] && [ "$(printf '%s\n' "$err" | head -1 | cut -c1-6)" = "usage:" ] && [ "$(printf '%s\n' "$err" | wc -l | tr -d ' ')" = 1 ] \
+    || { SW_OK=0; echo "  seconds with CR/LF not rejected cleanly"; }
 done
 for args in "$WID 60 extra" "--foo" "$WID --foo" "$WID" "" "--self-test $WID"; do
   rc=0; SLPW_STATUS=idle sw $args >/dev/null || rc=$?
@@ -622,6 +636,11 @@ RULE_PHRASES=(
   'SKILL.md|not a refusal: an event arrived'
   'SKILL.md|never wrap `slp-wait` in a shell loop'
   'SKILL.md|Never end ✅ in that'
+  'SKILL.md|turn never ends on it, because a turn that ends stops spinning'
+  'SKILL.md|the SAME turn continues'
+  'SKILL.md|begins with `@@`'
+  'SKILL.md|$PASEO_AGENT_ID'
+  'PROTOCOL.md|never ends a turn'
   'PROTOCOL.md|slp-wait — the Supervisor'
   'PROTOCOL.md|never wrap `slp-wait` in a shell loop'
   'PROTOCOL.md|Leads and Peers never do'
@@ -642,11 +661,12 @@ done
 if ! grep -q 'no change' "$ROOM_DIR/SKILL.md" \
   && ! grep -qE 'list_schedules`? *and reuse|reuse a heartbeat' "$ROOM_DIR/SKILL.md" \
   && ! grep -q 'Do not wait on a Peer' "$ROOM_DIR/SKILL.md" \
-  && ! grep -rq 'in-flight `slp-wait`' "$ROOM_DIR/roles" "$ROOM_DIR/PROTOCOL.md" \
-  && ! grep -qE 'slp-wait|@@SLP_WAIT@@' "$ROOM_DIR/roles/lead.md"; then
-  ok "no bare no-change turn end, list_schedules reuse rule, Lead-side slp-wait, or Peer send rule keyed on a Lead wait survives"
+  && ! grep -qE 'slp-wait|@@SLP_WAIT@@' "$ROOM_DIR/roles/lead.md" \
+  && ! grep -rqiE 'in-flight `?slp-wait|sitting in its `?slp-wait|Leads? (may|can|must|should|will)? ?(run|use|wait with|waits? with|waits? through) `?slp-wait|(Supervisor|Peers?) and Leads? (run|wait|may run|may use)|seats wait through|Lead is idle or|Lead waits there|Peers? (run|runs|may run) `?slp-wait' \
+       "$ROOM_DIR" README.md CONTRIBUTING.md evals; then
+  ok "no bare no-change turn end, list_schedules reuse rule, Lead/Peer-side slp-wait, or idle-Lead Peer send exception survives in skills/, README, CONTRIBUTING, or evals/"
 else
-  fail "a superseded rule survives: a bare no-change turn end, a list_schedules reuse, Lead-side slp-wait, or an in-flight-wait Peer send rule"
+  fail "a superseded rule survives in skills/, README, CONTRIBUTING, or evals/: a bare no-change turn end, a list_schedules reuse, Lead/Peer-side slp-wait, or an idle-Lead Peer send exception"
 fi
 
 # The Supervisor's wait timeout keeps a room inspection at least every 2 minutes (<= 120 s).
@@ -677,17 +697,24 @@ else
   fail "rendered prompts wrong: the Supervisor must name an existing slp-wait, the Lead must not"
 fi
 
-# claude-lead denies slp-wait (basename and rendered absolute path); its other denies are main's.
-if jq -e --arg wait "$WAIT_PATH" '.agents.providers["claude-lead"].disallowedTools as $d
-    | ($d | index("Bash(slp-wait:*)") != null and index("Bash(" + $wait + ":*)") != null)
-    and ($d | map(select(test("slp-") | not)) | index("Bash(paseo:*)") != null
-        and index("Agent") != null and index("Task") != null
-        and index("Bash(claude:*)") != null and index("Bash(codex:*)") != null)' \
-    "$RENDER_HOME/.paseo/config.json" >/dev/null \
-  && ! jq -e '.agents.providers["claude-lead"].disallowedTools | index("Bash(paseo run:*)")' "$RENDER_HOME/.paseo/config.json" >/dev/null; then
-  ok "claude-lead denies slp-wait by basename and absolute path, and keeps main's whole-paseo denies"
+# claude-lead's rendered denies are an exact set: main's baseline (the four spawners' names, the
+# whole paseo CLI, and each spawner copy found at install time by absolute path) plus exactly
+# slp-wait by basename and by the rendered absolute path.
+if jq -e --arg wait "$WAIT_PATH" --arg bin "$RENDER_HOME/bin" '
+    .agents.providers as $p
+    | ["Agent", "Task", "Bash(claude:*)", "Bash(codex:*)", "Bash(paseo:*)"] as $base
+    | ["Bash(slp-wait:*)", "Bash(" + $wait + ":*)"] as $wait2
+    | ($p["claude-lead"].disallowedTools) as $d
+    | ($d | length) == ($d | unique | length)
+    and (($d - $base - $wait2) | length > 0
+         and all(test("^Bash\\(/.+/(claude|codex|paseo)(\\.[a-z]+)?:\\*\\)$")))
+    and (["Bash(" + $bin + "/claude:*)", "Bash(" + $bin + "/codex:*)", "Bash(" + $bin + "/paseo:*)"] - $d == [])
+    and ($base - $d == []) and ($wait2 - $d == [])
+    and ($p["claude-peer"].disallowedTools | sort) == ($d | sort)' \
+    "$RENDER_HOME/.paseo/config.json" >/dev/null; then
+  ok "claude-lead's rendered denies are exactly main's baseline plus slp-wait by basename and absolute path"
 else
-  fail "claude-lead must deny slp-wait (basename + absolute path) and keep Bash(paseo:*) and the spawner denies"
+  fail "claude-lead's rendered denies must be exactly the baseline (Agent, Task, claude/codex/paseo by name and by absolute path) plus slp-wait by basename and absolute path"
 fi
 
 if [ "$FAILED" -ne 0 ]; then
