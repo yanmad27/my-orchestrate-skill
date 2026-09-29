@@ -116,7 +116,8 @@
           "Task",
           "Bash(claude:*)",
           "Bash(codex:*)",
-          "Bash(paseo:*)"
+          "Bash(paseo:*)",
+          "Bash(slp-wait:*)"
         ],
         "paseoTools": {
           "disabledTools": [

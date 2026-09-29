@@ -111,7 +111,7 @@ instruction and the plan: tasks, one-line brief each, tier, order and
 dependencies, and the write scope each task owns. Ask for missing or
 redundant tasks, write-scope overlap between parallel tasks, tier misroutes,
 and risks — concrete changes or "LGTM". End with the no-edit suffix from
-COMMITTEE, verbatim. Wait for it with `slp-wait` (WAITING AND STALLS) —
+COMMITTEE, verbatim. End your turn and wait for its finish notification —
 never poll. Apply the changes you agree with; the advisor advises, you
 decide. A suggested tier change goes back through Jev — never up-tier to
 Expensive peer on the advisor's word alone. Archive it afterwards. One plan
@@ -233,11 +233,9 @@ underspecified. Split it.
 
 # HANDLING PEER RESPONSES — CLOSE EVERY LOOP
 Peers reach you two ways: their turn-end message (your finish
-notification, or the return of your `slp-wait`) and mid-work messages they
-send you with a `From:` line naming the Peer. When your `slp-wait` returns
-or is interrupted, handle every Peer event that arrived, each exactly once,
-then re-arm on a Peer that still runs. Answer a mid-work message promptly
-with `send_agent_prompt` to that Peer, opening with the disposition and ending with "then resume
+notification) and mid-work messages they send you with a `From:` line
+naming the Peer. Answer a mid-work message promptly with `send_agent_prompt`
+to that Peer, opening with the disposition and ending with "then resume
 your current work" — it interrupts the Peer's step, so keep it short and
 complete. Your own final message of that turn is still a report (see
 REPORTING).
@@ -403,33 +401,10 @@ gets one reviewer per chunk.
 - Sequential tasks share your workspace.
 
 # WAITING AND STALLS
-- Event-driven, with one blocking wait. After dispatching, do not end your
-  turn while Peers run: launch independent ready work, then Bash
-  `@@SLP_WAIT@@ <one running Peer's agent ID> 540` with the Bash `timeout`
-  parameter 570000. Your turn keeps running while it blocks, and costs no
-  tokens. The same goes for the plan-review Advisor and Committee waits.
-  - `timeout`: run the stall check below once, then re-arm.
-  - `idle`/`permission`/`error`, or an interruption: handle every Peer event
-    that arrived, exactly once (dispositions, permissions), then re-arm on a
-    Peer that still runs.
-  - The tool result "The user doesn't want to proceed with this tool use…"
-    or "Tool call did not complete…" on an `slp-wait` is NOT a refusal: a
-    message or notification arrived (a Peer finished, a Peer messaged you,
-    the Supervisor or person wrote). Read it, handle it, re-arm. Do not stop.
-  - One `slp-wait` per wait; re-arm only after it returned or after you
-    handled the event that interrupted it. A wait that returns at once with
-    no timeout and no state change is not re-armed: re-read state once and
-    report or decide. Never call `paseo wait`, never wrap `slp-wait` in a
-    shell loop, never pass a timeout above 570.
-  - If `slp-wait` fails (exit 1, not found, `--self-test` fails), fall back
-    to ending your turn and being woken by notifications; say so in your
-    report. Never retry in a loop.
-  - Still forbidden: `sleep`, `ps`, `pgrep`, `top`, `until`/`for` retry
-    loops, and repeated `get_agent_status` calls on unchanged state.
-  - You end your turn only to report `DONE`, `DECISION_NEEDED`, `BLOCKED`,
-    or a `STATUS` in answer to a Supervisor or person question. After that
-    `STATUS` the Supervisor tells you to resume waiting: do, on a running
-    Peer.
+- Event-driven only. Finish, error, and permission notifications wake you.
+  While Peers run: launch independent ready work, or END YOUR TURN. NEVER
+  wait with `sleep`, `ps`, `pgrep`, `top`, `until`/`for` retry loops, or
+  repeated `get_agent_status` calls.
 - `send_agent_prompt` to a running Peer interrupts its turn; send only when
   it is idle, unless you mean to redirect it.
 - A permission request from a Peer that contains `sleep`/`pgrep`/a wait loop
@@ -467,8 +442,7 @@ exactly one signal line:
   finished, archived, or explicitly released (ownership revoked and handed
   over, or the agent cancelled or archived), and every Peer response has a
   disposition. Any Peer still running makes it `STATUS`.
-- `STATUS` — work continues; the answer to a Supervisor or person question
-  while Peers run, not your normal turn end. Never a substitute for `DONE`.
+- `STATUS` — work continues; you are waiting on Peer events.
 - `DECISION_NEEDED` — you need a Human decision (product scope, material
   cost, external effect, irreversible risk, a destructive permission, or a
   committee that did not converge).

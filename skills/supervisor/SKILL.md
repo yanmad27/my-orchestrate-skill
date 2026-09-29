@@ -189,26 +189,33 @@ state. Rendered:
 ❓ Waiting on you: push feat/auth to origin, or leave it local?
 ```
 
-**Waiting.** `SLP_WAIT` is `@@SLP_WAIT@@`, the installed helper's absolute
+**Waiting.** You alone spin: your tab shows the room running because your
+turn does. `SLP_WAIT` is `@@SLP_WAIT@@`, the installed helper's absolute
 path. If it does not exist there (this skill loaded outside the installed
-room), fall back (below). After launching or prompting a
-Lead, print the ⏳ line, then Bash `SLP_WAIT <leadId> 120` with the Bash
-`timeout` parameter 150000 (120 s matches the heartbeat cadence). Your turn
-keeps running, and costs no tokens, while it blocks. PROTOCOL.md defines the
-wait; for you:
-- `timeout`: do the heartbeat inspection once (KEEPING THE ROOM ON COURSE),
-  print the room-state line, re-arm.
-- `idle`/`permission`/`error`, or an interruption: only a wake hint. Re-read
-  state once (`get_agent_status` / `get_agent_activity` for that Lead) and
-  handle each Lead report, permission, or person message exactly once — a
-  wait return and a finish notification for the same Lead turn are one
-  event. Then re-arm, or end the turn with ✅/❓. If the person messaged,
-  answer them first, then print the line and re-arm.
+room), fall back (below). After launching or prompting a Lead, print the ⏳
+line, then Bash `SLP_WAIT <id> 110` with the Bash `timeout` parameter 140000,
+on whichever room agent is running now: a running Lead first, else a running
+Peer of one of your Leads (observation only — never direct a Peer). With
+several Leads, wait on whichever runs. 110 s keeps a room inspection at least
+every 2 minutes while you spin. Your turn keeps running, and costs no
+tokens, while it blocks. PROTOCOL.md defines the wait; for you, after EVERY
+return — `timeout`, `idle`, `permission`, `error`, or an interruption:
+1. Inspect the room once: each Lead's and each Peer's state (`list_agents`, or
+   `paseo ls -g --label paseo.parent-agent-id=<leadId> --json`), plus each
+   Lead's latest report.
+2. Run the drift check (KEEPING THE ROOM ON COURSE).
+3. Handle each event exactly once — a Lead report, permission, or person
+   message; a wait return and a finish notification for the same turn are one
+   event. If the person messaged, answer them first.
+4. Print the room-state line, pick the next running room agent, and re-arm.
+- Handoff: when a Peer finishes, its Lead is woken by a notification within
+  seconds. If at re-inspection nothing in the room runs but a Lead's latest
+  report is not terminal (`DONE`, `DECISION_NEEDED`, `BLOCKED`), read that
+  Lead's status once more. Running now: wait on it. Still idle: that is an
+  unhandled response — prompt the Lead, then wait on it. Never end ✅ in that
+  state.
 - The "user doesn't want to proceed / Tool call did not complete" result is
   not a refusal: an event arrived. Handle it and re-arm; do not stop.
-- A Lead that ends with `STATUS` while its Peers still run: `send_agent_prompt`
-  it to resume its wait, then wait on the Lead. Do not wait on a Peer; that
-  is for explicit Lead recovery only.
 - A `DONE` while any of that Lead's Peers (agents labelled
   `paseo.parent-agent-id` = the Lead) is running or permission-pending is
   invalid: show ⏳ and send it back for correction.
@@ -222,30 +229,33 @@ wait; for you:
   as before, be woken by notifications and the heartbeat, and say so in the
   report. Never retry in a loop.
 
-The turn ends only when the room is ✅ done or ❓ waiting on the person.
+The turn ends only when the room is ✅ done (every Lead reported a valid
+`DONE` and nothing runs), ❓ waiting on the person, or `slp-wait` failed.
 
 # MONITORING — HEARTBEAT
 Establish a wake-up before claiming monitoring is active. A Lead's turns
 that you did not start do not notify you, and you are not always waiting
-(❓ turns end); the heartbeat covers that gap. It is a fallback cadence, not
-a real-time guarantee. A scheduled heartbeat that fires while your own turn
-is running is dropped, not queued (the schedule stays active): while you
-wait, the `slp-wait` timeout is your inspection checkpoint, and the missed
-scheduled event is not preserved.
-- Always `create_heartbeat` with name `supervisor: <scope>`, cron
-  `*/2 * * * *`, and this prompt, plus `maxRuns`/`expiresIn` if you use them
-  (omitted arguments reset): "[supervisor-heartbeat] Inspect changed room
-  state since your last checkpoint, check it against the intent record, and
-  contact a Lead only for a new actionable deviation. If work is running, wait
-  on it again with slp-wait. End the turn with exactly one room-state line as
-  the last line." The name must stay exactly `supervisor: <scope>`, with the
-  same scope wording every time (and as earlier versions wrote it): the
-  find-or-create matches on the exact name, so any other name creates a
-  second heartbeat that keeps firing its old prompt. A named call is a
-  find-or-create on (name, you): it updates your existing heartbeat in place, returns its ID, migrates an older
-  heartbeat's prompt, and survives summarization. Never rely on a remembered
-  ID or on `list_schedules` — it does not list heartbeats. Never use
-  `paseo heartbeat create` or `paseo schedule delete`.
+(❓ turns end, and `slp-wait` can fail); the heartbeat is the fallback while
+you are idle. It is a fallback cadence, not a real-time guarantee. A
+scheduled heartbeat that fires while your own turn is running is dropped,
+not queued (the schedule stays active): while you spin, the 110 s `slp-wait`
+timeout is your inspection, and the missed scheduled event is not preserved.
+- One heartbeat per Supervisor: always `create_heartbeat` with the fixed name
+  `supervisor: room`, cron `*/2 * * * *`, and this prompt, plus
+  `maxRuns`/`expiresIn` if you use them (omitted arguments reset):
+  "[supervisor-heartbeat] Inspect changed room state since your last
+  checkpoint, check it against the intent record, and contact a Lead only for
+  a new actionable deviation. If work is running, wait on it again with
+  slp-wait. End the turn with exactly one room-state line as the last line."
+  The name must stay exactly `supervisor: room`: the upsert is keyed on
+  (name, you), so the same name finds your heartbeat and any other name
+  creates a second one that keeps firing its old prompt. A named call is a
+  find-or-create: it updates your existing heartbeat in place, returns its
+  ID, and survives summarization. Never rely on a remembered ID or on
+  `list_schedules` — it does not list heartbeats. Never use
+  `paseo heartbeat create` or `paseo schedule delete`. Heartbeats an older
+  version created under `supervisor: <free-form scope>` are not matched;
+  they stop when that Supervisor agent is archived.
 - Use finish, error, and permission notifications too. For a necessary Lead
   message use `send_agent_prompt` with background=true and
   notifyOnFinish=true so the reply wakes you; never message a Lead solely to
@@ -339,8 +349,8 @@ in `package.json` serve?" Let the Lead choose the technical correction. Do
 not demand routine handoffs, prescribe a solution disguised as a question,
 or interrupt healthy work for reassurance. `send_agent_prompt` to a running
 Lead interrupts its turn: allow an active turn time to handle a newly
-arrived response. A Lead sitting in its `slp-wait` is at a safe point;
-message it there, or when it is idle.
+arrived response, and message the Lead when it is idle unless you mean to
+redirect it.
 
 Keep a private open item per deviation: evidence, missing obligation,
 pending question, next checkpoint. Do not repeat the question without new
@@ -414,8 +424,8 @@ separately from Human permission to proceed.
 # ENDING SUPERVISION
 When every Lead has reported `DONE` (or waits on a Human decision you have
 presented) and no Peer is running, or when Human stops supervision:
-repeat the same named `create_heartbeat` call to get its ID, `delete_heartbeat`
-it, and confirm the monitoring stopped. Never remove another session's
-schedule. Leave Leads unarchived — they hold the context for follow-ups —
-unless Human asks. When work resumes,
-set the heartbeat up again.
+repeat the same `create_heartbeat` call (name `supervisor: room`) to get its
+ID, `delete_heartbeat` it, and confirm the monitoring stopped. Never remove
+another session's schedule. Leave Leads unarchived — they hold the context
+for follow-ups — unless Human asks. When work resumes, set the heartbeat up
+again.
