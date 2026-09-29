@@ -117,6 +117,11 @@ Enable Paseo MCP tool injection in `~/.paseo/config.json`:
 Run the same command again whenever you want the latest version; add
 `-s -- --token` (`./install.sh --token` in a clone) to replace the token.
 
+**No subscription token?** Point the seats at any Anthropic-compatible proxy or
+gateway (9router, OmniRoute, CLIProxyAPI, LiteLLM, …) instead: at the prompt
+choose *2*, or run with `--endpoint` (`-s -- --endpoint` when piped), then give
+its base URL and key. See [Custom endpoint](#custom-endpoint-instead-of-a-token).
+
 ## Install
 
 `install.sh` is the one script for installing and updating. Each run:
@@ -145,6 +150,9 @@ it uses the checkout.
 | `SLP_ROOM_HOME=<dir>` | Build the runtimes somewhere other than `~/.config/slp-room` |
 | `--token` | Ask for a new Claude token and replace the saved one (e.g. to rotate it) |
 | `SLP_CLAUDE_OAUTH_TOKEN=<token>` | Use this token instead of `~/.config/slp-room/oauth-token` (no prompt) |
+| `--endpoint` | Ask for a custom Anthropic-compatible base URL and key (and how to send it) instead of a token |
+| `SLP_CLAUDE_BASE_URL=<url>` `SLP_CLAUDE_API_KEY=<key>` | Use this endpoint and key, saved for later runs (no prompt; the key is never taken as an argument) |
+| `SLP_CLAUDE_AUTH_HEADER=bearer\|x-api-key` | How the key is sent; default `bearer` |
 
 > [!NOTE]
 > Plugin marketplace alternative: `/plugin marketplace add yanmad27/paseo-slp`, then (in a separate turn) `/plugin install paseo-slp@paseo-slp`, then run `install.sh --paseo-only`. Don't combine the plugin with a full `install.sh` run, or you get the skill twice.
@@ -214,7 +222,7 @@ way codex-room-setup does it with one `CODEX_HOME` per role:
   `~/.paseo/config.json` and its backups at mode `600`. Without a token it
   leaves the variable out; then log in once per runtime instead:
   `CLAUDE_CONFIG_DIR=~/.config/slp-room/claude-<supervisor|lead|peer> claude`
-  → `/login`.
+  → `/login`. Instead of a token you can use a custom endpoint, below.
 - **`codex-peer`** runs Codex in its own runtime too, `CODEX_HOME=~/.config/slp-room/codex-peer`
   (as codex-room-setup does): `auth.json` linked to yours, a copy of your
   `config.toml`, your `AGENTS.md`/skills/plugins, and `rules/room.rules`
@@ -225,12 +233,68 @@ way codex-room-setup does it with one `CODEX_HOME` per role:
 Briefs still name the room files, so a seat launched without its prompt
 reads them instead.
 
+### Custom endpoint instead of a token
+
+Any Anthropic-compatible proxy or gateway works (examples: 9router, OmniRoute,
+CLIProxyAPI, LiteLLM); nothing about it is assumed beyond a base URL and a key,
+and model names are not remapped. Every Claude seat's provider then gets
+`ANTHROPIC_BASE_URL` plus exactly one key variable, and never
+`CLAUDE_CODE_OAUTH_TOKEN`:
+
+| Key sent as | Provider env | Pick with |
+|---|---|---|
+| `Authorization: Bearer <key>` (default) | `ANTHROPIC_AUTH_TOKEN` | `SLP_CLAUDE_AUTH_HEADER=bearer`, or option 1 at the prompt |
+| `x-api-key: <key>` | `ANTHROPIC_API_KEY` | `SLP_CLAUDE_AUTH_HEADER=x-api-key`, or option 2 |
+
+`x-api-key` renders `ANTHROPIC_API_KEY`, which Claude may ask to approve in an
+interactive session; Bearer, the default, avoids that.
+
+Interactive: choose *2* at the sign-in prompt, or run `install.sh --endpoint`
+(base URL, then the key with hidden input, then the header form; Enter keeps
+what is saved). Non-interactive:
+
+```sh
+SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY=<key> ./install.sh
+```
+
+The Claude CLI appends `/v1/messages` itself, so the base URL normally has no
+`/v1`; check your proxy's docs for Anthropic clients. It must be an `http://`
+or `https://` URL without whitespace (a trailing `/` is dropped; credentials in
+it are kept but never printed). The key is opaque: surrounding whitespace,
+including a trailing newline, is trimmed; the key may not be empty or contain
+a line break inside it. Both
+are saved in `~/.config/slp-room/anthropic-base-url` / `anthropic-api-key` /
+`anthropic-auth-header` (mode 600), the mode in `auth-mode`. In this mode the
+`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_*` keys in your `~/.claude/settings.json`
+`env` are left out of the runtimes' copies (with a warning naming the keys).
+
+Which mode applies:
+
+- `SLP_CLAUDE_*` and `--token` / `--endpoint` pick the mode; with none of them
+  the saved mode is used (`token` when nothing is saved, so existing installs
+  behave as before). Asking for both kinds at once (for example
+  `SLP_CLAUDE_OAUTH_TOKEN` with `SLP_CLAUDE_BASE_URL`, or `--token` with
+  `--endpoint`) is an error, reported before anything is changed.
+- Without a terminal, `--token` keeps the saved token and `--endpoint` uses the
+  saved endpoint (an error if none is complete).
+- A token request that yields no token (Enter, a bad paste, nothing saved)
+  keeps the saved endpoint when the saved mode is `endpoint`, and says so.
+- `auth-mode` becomes `token` only when a token is saved in `oauth-token`
+  (pasted, or `--token` with one already there). `SLP_CLAUDE_OAUTH_TOKEN` is
+  used for that run only, as before, and changes nothing saved.
+- The header form, in order: `SLP_CLAUDE_AUTH_HEADER` if set (which also skips
+  the header prompt, like `SLP_CLAUDE_BASE_URL` and `SLP_CLAUDE_API_KEY` skip
+  theirs); otherwise the interactive choice, when the prompt runs (Enter keeps
+  what the next rules give); otherwise `bearer` when `SLP_CLAUDE_BASE_URL` is
+  set; otherwise the saved one; otherwise `bearer`. Rotating only
+  `SLP_CLAUDE_API_KEY` keeps the saved header.
+
 ### What the installer owns
 
 Each run resets the room's profiles (matched by `id`, or by name for
 profiles an old installer left without one), the `claude-lead`/`claude-peer`/
 `codex-peer` providers, `~/.claude/skills/supervisor`, and the generated
-files in `~/.config/slp-room` to this version (your `oauth-token` and each
+files in `~/.config/slp-room` to this version (your `oauth-token`, saved endpoint files, and each
 runtime's session history stay); removes the v1 profiles and the v1
 `claude-worker` provider; and leaves every other profile and provider alone.
 A model you change in the Paseo UI on a room profile is overwritten on the
