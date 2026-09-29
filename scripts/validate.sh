@@ -265,6 +265,20 @@ else
   fail "claude-supervisor/claude-lead/claude-peer must set env CLAUDE_CONFIG_DIR=@@ROOM_HOME@@/<provider> and CLAUDE_CODE_OAUTH_TOKEN=@@CLAUDE_OAUTH_TOKEN@@ (no command); codex-peer must launch through @@ROOM_HOME@@/bin/codex-peer"
 fi
 
+# Spawning is controlled: no Claude seat has the built-in Agent/Task tool or can start nested
+# claude/codex runs from Bash; Leads and Peers cannot touch the paseo CLI, and the Supervisor
+# keeps only its read-only commands.
+if jq -e '.agents.providers as $p
+    | (["claude-supervisor", "claude-lead", "claude-peer"]
+        | all(. as $k | ["Agent", "Task", "Bash(claude:*)", "Bash(codex:*)"] - ($p[$k].disallowedTools // []) == []))
+    and (["claude-lead", "claude-peer"] | all(. as $k | $p[$k].disallowedTools | index("Bash(paseo:*)") != null))
+    and ($p["claude-supervisor"].disallowedTools | index("Bash(paseo run:*)") != null and index("Bash(paseo:*)") == null)' \
+    "$SNIPPET" >/dev/null; then
+  ok "Claude seats cannot spawn outside create_agent: no Agent/Task tool, no nested claude/codex or paseo run from Bash"
+else
+  fail "claude-supervisor/claude-lead/claude-peer must disallow Agent, Task, Bash(claude:*), Bash(codex:*); Lead/Peer also Bash(paseo:*), Supervisor Bash(paseo run:*)"
+fi
+
 # Peers talk back to their Lead (send_agent_prompt) but must not spawn or control agents.
 for pair in claude-peer:claude codex-peer:codex; do
   prov="${pair%%:*}" base="${pair#*:}"
@@ -390,7 +404,7 @@ if PATH="$RENDER_HOME/bin:$PATH" HOME="$RENDER_HOME" "$REPO_ROOT/install.sh" --p
       "$ROOM/claude-lead/settings.json" >/dev/null \
     && [ -L "$ROOM/claude-peer/skills/other" ] && [ ! -e "$ROOM/claude-peer/skills/supervisor" ] \
     && [ "$(readlink "$ROOM/claude-lead/CLAUDE.md")" = "$RENDER_HOME/.claude/CLAUDE.md" ] \
-    && [ "$(printf '%s\n' "$CODEX_ARGS" | head -1)" = "[-c]" ] \
+    && [ "$(printf '%s\n' "$CODEX_ARGS" | head -6 | tr -d '\n')" = "[-c][agents.enabled=false][-c][features.multi_agent=false][-c][features.multi_agent_v2=false]" ] \
     && printf '%s\n' "$CODEX_ARGS" | grep -qF "[developer_instructions='''" \
     && printf '%s\n' "$CODEX_ARGS" | grep -q 'Room role: Peer' \
     && [ "$(printf '%s\n' "$CODEX_ARGS" | tail -1)" = "[app-server]" ] \

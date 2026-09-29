@@ -92,7 +92,16 @@
         "env": {
           "CLAUDE_CONFIG_DIR": "@@ROOM_HOME@@/claude-supervisor",
           "CLAUDE_CODE_OAUTH_TOKEN": "@@CLAUDE_OAUTH_TOKEN@@"
-        }
+        },
+        "disallowedTools": [
+          "Agent",
+          "Task",
+          "Bash(claude:*)",
+          "Bash(codex:*)",
+          "Bash(paseo run:*)",
+          "Bash(paseo send:*)",
+          "Bash(paseo import:*)"
+        ]
       },
       "claude-lead": {
         "extends": "claude",
@@ -102,6 +111,13 @@
           "CLAUDE_CONFIG_DIR": "@@ROOM_HOME@@/claude-lead",
           "CLAUDE_CODE_OAUTH_TOKEN": "@@CLAUDE_OAUTH_TOKEN@@"
         },
+        "disallowedTools": [
+          "Agent",
+          "Task",
+          "Bash(claude:*)",
+          "Bash(codex:*)",
+          "Bash(paseo:*)"
+        ],
         "paseoTools": {
           "disabledTools": [
             "create_schedule",
@@ -123,6 +139,13 @@
           "CLAUDE_CONFIG_DIR": "@@ROOM_HOME@@/claude-peer",
           "CLAUDE_CODE_OAUTH_TOKEN": "@@CLAUDE_OAUTH_TOKEN@@"
         },
+        "disallowedTools": [
+          "Agent",
+          "Task",
+          "Bash(claude:*)",
+          "Bash(codex:*)",
+          "Bash(paseo:*)"
+        ],
         "paseoTools": {
           "disabledTools": [
             "create_agent",

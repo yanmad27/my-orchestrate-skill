@@ -163,9 +163,17 @@ review peers high, every other Peer medium.
 
 | Provider | Extends | Agent tools |
 |---|---|---|
-| `claude-supervisor` | `claude` | Every Paseo tool: launching Leads, heartbeats, recovery |
+| `claude-supervisor` | `claude` | Every Paseo tool: launching Leads, heartbeats, recovery. No `paseo run`/`send`/`import` from Bash — agents only come from `create_agent` |
 | `claude-lead` | `claude` | Everything a Lead needs to launch and steer Peers; no heartbeat/schedule control (monitoring is the Supervisor's) |
 | `claude-peer`, `codex-peer` | `claude`, `codex` | `send_agent_prompt` (to talk back to the Lead) and the read-only status tools; no `create_agent`, `cancel_agent`, `kill_agent`, `archive_agent`, `update_agent`, `set_agent_mode`, workspace creation, schedule/heartbeat control, or `respond_to_permission` |
+
+**Spawning is controlled.** Only `create_agent` creates agents, and only
+the Supervisor (Leads) and Leads (Peers) have it. Every Claude seat also
+loses the built-in `Agent`/`Task` sub-agent tool and cannot start nested
+`claude`/`codex` runs from Bash; Leads and Peers cannot use the `paseo` CLI
+at all (so no `paseo run` around the MCP tools); the Codex launcher turns
+off Codex's native sub-agents (`agents.enabled`, `features.multi_agent`,
+`features.multi_agent_v2`).
 
 ### Role prompts
 
