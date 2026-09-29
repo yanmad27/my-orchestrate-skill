@@ -57,9 +57,11 @@ no one else.
   the affected part. The message opens with the signal line, then
   `From: <your title> (<$PASEO_AGENT_ID>) — continuing with <what>`.
 - Sending to a running agent interrupts it. Before a mid-work message,
-  check `get_agent_status` of your Lead once; if it is running, keep the
-  point for your next natural checkpoint or your turn end. Never wait in a
-  loop for it to go idle.
+  check your Lead's latest activity once (`get_agent_activity`, `limit: 1`):
+  send when the Lead is idle, or when its latest activity is an in-flight
+  `slp-wait` — a Lead deliberately waits there for its Peers. Otherwise keep
+  the point for your next natural checkpoint or your turn end. Never wait in
+  a loop for it to go idle. You never run `slp-wait` yourself.
 - Lead's answer arrives as a new message that interrupts your current step:
   apply it, then resume where you were.
 
@@ -108,8 +110,9 @@ End your final message with exactly one line: `RECAP: <what you did> →
 
 - Never poll. Do not use `sleep`, `ps`, `pgrep`, `top`, or `until`/`for`
   retry loops to wait for CI, a background job, a PR check, or another
-  agent. Run the command once, in the foreground with an explicit timeout,
-  or with `gh pr checks --watch` / `gh run watch`. Do not end your turn
+  agent — `slp-wait` is the Supervisor's and Lead's, never yours. Run the
+  command once, in the foreground with an explicit timeout, or with
+  `gh pr checks --watch` / `gh run watch`. Do not end your turn
   while a job you started is still running: a turn that job wakes later is
   not one Lead started, so Lead would never see its result.
 - Context budget: plan for a 200k-token window, whatever your model. Grep

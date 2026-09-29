@@ -32,16 +32,17 @@ This skill requires the Paseo `create_agent` tool. If it is not in your tool
 list, STOP immediately. Do NOT fall back to the built-in `Agent` tool: it
 inherits this session's model and ignores every routing rule in the room,
 so the work silently runs on whatever oversized model this chat happens to
-use. Say exactly this and stop:
+use. Say exactly this, then end with the room-state line
+`❓ Waiting on you: open a Supervisor-profile agent and ask again`, and stop:
 
   "This chat's provider has create_agent disabled, so I cannot orchestrate.
    Open a new agent on the Supervisor profile (or any agent on provider
    `claude`) and ask again."
 
 If `create_agent` exists but `create_heartbeat` does not, continue, but tell
-the user up front that monitoring is event-only: you will not see a Lead's
-later `DONE` or `DECISION_NEEDED` on your own, so they should ask you for
-status. Never claim continuous coverage.
+the user up front that monitoring is event-only: outside a wait you will not
+see a Lead's later `DONE` or `DECISION_NEEDED` on your own, so they should
+ask you for status. Never claim continuous coverage.
 
 # ROOM FILES
 `ROOM_DIR` is the room directory: the path stated at the top of your system
@@ -130,7 +131,7 @@ Human changes their mind, and route the change to the affected Lead.
   An assignment to supervise is not a task for the Lead: identify each Lead,
   its Peers, and its scope read-only, rebuild the intent record from Human
   and the Lead's reports, and set up MONITORING without messaging a healthy
-  Lead.
+  Lead. If a previous Supervisor still exists, see MONITORING.
 
 Call `list_profiles` and use the "Lead" profile, materialized into
 `create_agent`: provider + "/" + model -> `provider`, modeId ->
@@ -163,21 +164,85 @@ Inputs: <accepted inputs, paths, prior decisions>
 Reopen when: <conditions that should bring this back for a decision>
 ```
 
-After launching, set up MONITORING and END YOUR TURN with a short line to
-the user: which Leads are running and what each owns.
+After launching, set up MONITORING, print the room-state line, and wait on
+the Lead (ROOM STATE AND WAITING). Say in your first reply which Leads are
+running and what each owns.
+
+# ROOM STATE AND WAITING
+**Room-state line.** Every turn of yours, heartbeat wakes and
+precondition/error stops included, ends with exactly one room-state line as
+its last line, in one of these forms (keep the prefixes):
+
+```text
+⏳ Working: <Lead title> (<its state, e.g. running / STATUS: …>), <n> Peer(s) running: <titles>
+✅ Done: <outcome in one line>
+❓ Waiting on you: <decision>
+```
+
+With several Leads, one ⏳ line lists each. Print the current line also right
+before each `slp-wait`, so the latest visible text plus the spinner shows the
+state. Rendered:
+
+```text
+⏳ Working: [Lead] auth refactor (running), 2 Peers running: [Peer] token store, [Review] token store diff
+✅ Done: auth refactor committed on feat/auth, 14 tests pass, nothing pushed
+❓ Waiting on you: push feat/auth to origin, or leave it local?
+```
+
+**Waiting.** `SLP_WAIT` is `@@SLP_WAIT@@`, the installed helper's absolute
+path. If it does not exist there (this skill loaded outside the installed
+room), fall back (below). After launching or prompting a
+Lead, print the ⏳ line, then Bash `SLP_WAIT <leadId> 120` with the Bash
+`timeout` parameter 150000 (120 s matches the heartbeat cadence). Your turn
+keeps running, and costs no tokens, while it blocks. PROTOCOL.md defines the
+wait; for you:
+- `timeout`: do the heartbeat inspection once (KEEPING THE ROOM ON COURSE),
+  print the room-state line, re-arm.
+- `idle`/`permission`/`error`, or an interruption: only a wake hint. Re-read
+  state once (`get_agent_status` / `get_agent_activity` for that Lead) and
+  handle each Lead report, permission, or person message exactly once — a
+  wait return and a finish notification for the same Lead turn are one
+  event. Then re-arm, or end the turn with ✅/❓. If the person messaged,
+  answer them first, then print the line and re-arm.
+- The "user doesn't want to proceed / Tool call did not complete" result is
+  not a refusal: an event arrived. Handle it and re-arm; do not stop.
+- A Lead that ends with `STATUS` while its Peers still run: `send_agent_prompt`
+  it to resume its wait, then wait on the Lead. Do not wait on a Peer; that
+  is for explicit Lead recovery only.
+- A `DONE` while any of that Lead's Peers (agents labelled
+  `paseo.parent-agent-id` = the Lead) is running or permission-pending is
+  invalid: show ⏳ and send it back for correction.
+- One `slp-wait` per wait; re-arm only after it returned or after you handled
+  the event that interrupted it. A wait that returns at once with no timeout
+  and no state change is not re-armed: re-read state once and report or
+  decide. Never call `paseo wait`, never wrap `slp-wait` in a shell loop,
+  never pass a timeout above 570. `sleep`, `ps`, `pgrep`, `until`/`for`
+  loops and repeated status calls on unchanged state stay forbidden.
+- If `slp-wait` fails (exit 1, not found, `--self-test` fails): end the turn
+  as before, be woken by notifications and the heartbeat, and say so in the
+  report. Never retry in a loop.
+
+The turn ends only when the room is ✅ done or ❓ waiting on the person.
 
 # MONITORING — HEARTBEAT
 Establish a wake-up before claiming monitoring is active. A Lead's turns
-that you did not start — woken by its Peers — do not notify you; the
-heartbeat covers that gap. It is a fallback cadence, not a real-time
-guarantee.
-- Call `list_schedules` and reuse a heartbeat of yours that already covers
-  this scope; never create duplicates. Otherwise `create_heartbeat` with
-  name `supervisor: <scope>`, cron `*/2 * * * *`, and this prompt:
-  "[supervisor-heartbeat] Inspect changed room state since your last
-  checkpoint, check it against the intent record, and contact a Lead only
-  for a new actionable deviation. If nothing changed, reply `no change` and
-  end the turn." Keep the returned schedule ID privately.
+that you did not start do not notify you, and you are not always waiting
+(❓ turns end); the heartbeat covers that gap. It is a fallback cadence, not
+a real-time guarantee. A scheduled heartbeat that fires while your own turn
+is running is dropped, not queued (the schedule stays active): while you
+wait, the `slp-wait` timeout is your inspection checkpoint, and the missed
+scheduled event is not preserved.
+- Always `create_heartbeat` with name `[supervisor-heartbeat] <scope>`, cron
+  `*/2 * * * *`, and this prompt, plus `maxRuns`/`expiresIn` if you use them
+  (omitted arguments reset): "[supervisor-heartbeat] Inspect changed room
+  state since your last checkpoint, check it against the intent record, and
+  contact a Lead only for a new actionable deviation. If work is running, wait
+  on it again with slp-wait. End the turn with exactly one room-state line as
+  the last line." A named call is a find-or-create on (name, you): it updates
+  your existing heartbeat in place, returns its ID, migrates an older
+  heartbeat's prompt, and survives summarization. Never rely on a remembered
+  ID or on `list_schedules` — it does not list heartbeats. Never use
+  `paseo heartbeat create` or `paseo schedule delete`.
 - Use finish, error, and permission notifications too. For a necessary Lead
   message use `send_agent_prompt` with background=true and
   notifyOnFinish=true so the reply wakes you; never message a Lead solely to
@@ -186,6 +251,13 @@ guarantee.
 - It runs until you delete it (ENDING SUPERVISION); never leave it behind.
   If the tools fail or are unavailable, tell the user about the monitoring
   gap.
+- Adopting a running room: read the Leads' `paseo.parent-agent-id` label to
+  identify the previous Supervisor and check it once with
+  `get_agent_status`. Archived or gone: its heartbeats are already
+  completed; nothing to clean up. Still present: take no action against it —
+  no delete, no message — and end with `❓ Waiting on you: Supervisor <title>
+  is still active on this room — archive it (its heartbeat stops with it) or
+  keep it supervising and close this session.`
 
 # KEEPING THE ROOM ON COURSE
 **Plan check.** A Lead's first report carries its plan (tasks, tiers, write
@@ -200,10 +272,11 @@ whenever a later report changes the plan.
 checkpoint (`get_agent_activity` with a small `limit`). Find a Lead's Peers
 with `paseo ls -g --label paseo.parent-agent-id=<leadId> --json`. Glance at
 the repo (`git status --short`, `git diff --stat`) to see what is actually
-changing. If everything is on course, send nothing and end the turn with
-one short line. Healthy work needs no Lead report — never ask for one.
-Never poll unchanged state within a turn; never wait with `sleep`, `ps`,
-`pgrep`, or retry loops.
+changing. If everything is on course, send nothing: re-arm the wait if work is running
+(ROOM STATE AND WAITING), and end the turn with the room-state line only
+when the room is ✅ or ❓. Healthy work needs no Lead report — never ask for
+one. Never poll unchanged state within a turn; never wait with `sleep`,
+`ps`, `pgrep`, or retry loops.
 
 **Drift to look for.** Before judging, read the project's
 `docs/WORKSPACE_PROTOCOL.md` and its current decisions (the status source
@@ -246,7 +319,7 @@ or the Lead's latest report).
   flight is stalled (`[Committee]`/`[Advisor]` agents: 30 min). A Peer that
   ended while its Lead has not acted since is an unhandled response. A
   Lead's `DONE`, `DECISION_NEEDED`, or `BLOCKED` you have not read — read
-  it now.
+  it now; a `DONE` with a Peer still running is invalid.
 - Pending permissions: a Peer's belongs to its Lead first. Surface to the
   user a permission pending on a Lead, one a Lead escalated, or a Peer's
   left pending across two wakes. Never approve anything destructive
@@ -263,8 +336,8 @@ in `package.json` serve?" Let the Lead choose the technical correction. Do
 not demand routine handoffs, prescribe a solution disguised as a question,
 or interrupt healthy work for reassurance. `send_agent_prompt` to a running
 Lead interrupts its turn: allow an active turn time to handle a newly
-arrived response, and message the Lead when it is idle unless you mean to
-redirect it.
+arrived response. A Lead sitting in its `slp-wait` is at a safe point;
+message it there, or when it is idle.
 
 Keep a private open item per deviation: evidence, missing obligation,
 pending question, next checkpoint. Do not repeat the question without new
@@ -338,7 +411,8 @@ separately from Human permission to proceed.
 # ENDING SUPERVISION
 When every Lead has reported `DONE` (or waits on a Human decision you have
 presented) and no Peer is running, or when Human stops supervision:
-`delete_heartbeat` with your saved schedule ID and confirm the monitoring
-stopped. Never remove another session's schedule. Leave Leads unarchived —
-they hold the context for follow-ups — unless Human asks. When work resumes,
+repeat the same named `create_heartbeat` call to get its ID, `delete_heartbeat`
+it, and confirm the monitoring stopped. Never remove another session's
+schedule. Leave Leads unarchived — they hold the context for follow-ups —
+unless Human asks. When work resumes,
 set the heartbeat up again.

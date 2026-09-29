@@ -52,17 +52,49 @@ Peer → Lead         signals, mid-work messages       (final message of each Pe
   on the `claude-peer` or `codex-peer` provider, which allow
   `send_agent_prompt` but no agent-control tools.
 - Sending to a running agent replaces its current turn. A Peer sends
-  mid-work only when its Lead is idle (`get_agent_status`, checked once at a
-  natural checkpoint, never in a loop); otherwise it keeps the point for
-  its next checkpoint or its turn end. Lead answers a mid-work message with
-  `send_agent_prompt`, accepting that it interrupts the Peer's current step;
-  the Peer then resumes.
-- Lead → Supervisor: the final message of each Lead turn. Only turns the
-  Supervisor started notify it; turns woken by a Peer reach it through its
-  heartbeat. Healthy work needs no report beyond that.
+  mid-work only when its Lead is idle, or when the Lead's latest activity is
+  an in-flight `slp-wait` (`get_agent_activity` with `limit: 1`, checked once
+  at a natural checkpoint, never in a loop) — a Lead deliberately waits
+  there, so an idle-only rule would never let a Peer through. Otherwise it
+  keeps the point for its next checkpoint or its turn end. Lead answers a
+  mid-work message with `send_agent_prompt`, accepting that it interrupts
+  the Peer's current step; the Peer then resumes. Peers never run `slp-wait`.
+- Lead → Supervisor: the final message of each Lead turn. The Supervisor
+  waits on its Lead with `slp-wait`, so the wait return (and the finish
+  notification of the same turn — one event) delivers it. A Lead ends a turn
+  only to report `DONE`, `DECISION_NEEDED`, `BLOCKED`, or `STATUS` in answer
+  to a Supervisor or person question. Healthy work needs no report beyond
+  that.
 - Everything is event-driven: finish, error, permission, and heartbeat events
-  wake a seat. Never wait with `sleep`, `ps`, `pgrep`, `until`/`for` retry
-  loops, or repeated status calls on unchanged state.
+  wake a seat, and the one blocking wait is `slp-wait` (below). Never wait
+  with `sleep`, `ps`, `pgrep`, `until`/`for` retry loops, or repeated status
+  calls on unchanged state.
+
+### slp-wait — the one blocking wait
+
+Supervisor and Lead keep their turn running while delegated work runs with
+`slp-wait <agentId> <seconds 30-570>` (absolute path in the role), a
+foreground Bash call whose `timeout` parameter is seconds × 1000 + 30000. It
+blocks on ONE agent and prints `slp-wait: <id> <idle|permission|timeout>`
+(exit 0) or `... error` (exit 1). It costs no tokens while blocked.
+- One `slp-wait` per wait. Re-arm only after it returned (`timeout`, `idle`,
+  `permission`, `error`) or after you handled the event that interrupted it.
+- A wait that returns at once with no timeout and no state change is not
+  re-armed: re-read state once and report or decide instead.
+- Never call `paseo wait` directly, never wrap `slp-wait` in a shell loop,
+  never pass a timeout above 570.
+- Any incoming message or notification (the person typing, a child agent's
+  finish or permission notification, a `send_agent_prompt`) cuts the wait
+  short. The tool result then reads like a refusal ("The user doesn't want to
+  proceed with this tool use…" or "Tool call did not complete…"). It is not
+  a refusal: an event arrived. Handle it, then re-arm.
+- A return or interruption is a wake hint. Re-read state once and handle each
+  report, permission, or message exactly once; a wait return and a finish
+  notification of the same turn are one event.
+- If `slp-wait` itself fails (exit 1, not found, `--self-test` fails), fall
+  back to ending the turn and being woken by notifications; say so in the
+  report. Never retry in a loop.
+- Peers never run it.
 
 ## Ownership and dispatch
 
@@ -134,7 +166,17 @@ Lead → Peer (via `send_agent_prompt`):
 | `DEFER` | names the owner and the return event or checkpoint |
 
 Lead → Supervisor (final message of a Lead turn): `DONE`, `STATUS`,
-`DECISION_NEEDED`, or `BLOCKED` — see the Lead role for the shape.
+`DECISION_NEEDED`, or `BLOCKED` — see the Lead role for the shape. `DONE`
+is valid only when, at report time, no Peer of that Lead is running or
+permission-pending: every Peer is finished, archived, or explicitly released
+(ownership revoked and handed over, or the agent cancelled or archived), and
+every Peer response has a disposition. Otherwise the report is `STATUS`, and
+the Supervisor sends a `DONE` with a Peer still running back for correction.
+
+The Supervisor ends every turn — heartbeat wakes and precondition stops
+included — with exactly one room-state line as its last line (`⏳ Working`,
+`✅ Done`, or `❓ Waiting on you`; see its role). The person always sees the
+state, and no turn ends on a bare acknowledgement.
 
 ## Independent judgment and debate
 
@@ -191,7 +233,8 @@ answers the question, resolves the dependency or ownership, requests specific
 missing evidence, or explicitly accepts/rejects the identified candidate with
 a reason. Silence, DONE, or passing tests do not close the loop. A deferral
 names an owner and a return event or checkpoint. Keep dependent work waiting
-for resolution while unrelated ready work continues.
+for resolution while unrelated ready work continues; wait with `slp-wait`, not
+by ending the turn.
 
 The Supervisor checks briefs, actual Peer responses, and Lead dispositions,
 intervenes through Lead on a concrete gap, and follows it until a repaired
