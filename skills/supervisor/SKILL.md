@@ -277,7 +277,8 @@ timeout is your inspection, and the missed scheduled event is not preserved.
   `get_agent_status`. A label equal to your own `$PASEO_AGENT_ID` is you, not
   a previous Supervisor: ignore it. Archived or gone: its heartbeats are already
   completed; nothing to clean up. Still present: take no action against it —
-  no delete, no message — and end with `❓ Waiting on you: Supervisor <title>
+  no delete, no message, and do not start your own heartbeat either until
+  the person decides — and end with `❓ Waiting on you: Supervisor <title>
   is still active on this room — archive it (its heartbeat stops with it) or
   keep it supervising and close this session.`
 
