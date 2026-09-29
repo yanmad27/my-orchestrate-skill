@@ -112,6 +112,7 @@ End your final message with exactly one line: `RECAP: <what you did> →
   or with `gh pr checks --watch` / `gh run watch`. Do not end your turn
   while a job you started is still running: a turn that job wakes later is
   not one Lead started, so Lead would never see its result.
+  `slp-wait` is the Supervisor's, never a Peer's.
 - Context budget: plan for a 200k-token window, whatever your model. Grep
   for the spot, then read
   files by range; filter command output at the source (`| tail`, `| grep`,

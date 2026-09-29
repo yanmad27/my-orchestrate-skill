@@ -437,7 +437,11 @@ outcome without waiting for reminders.
 # REPORTING
 Your final message of every turn is your report. It opens with
 exactly one signal line:
-- `DONE` — the delegated outcome is delivered and accepted.
+- `DONE` — the delegated outcome is delivered and accepted, and no Peer of
+  yours is running or permission-pending at report time: every Peer is
+  finished, archived, or explicitly released (ownership revoked and handed
+  over, or the agent cancelled or archived), and every Peer response has a
+  disposition. Any Peer still running makes it `STATUS`.
 - `STATUS` — work continues; you are waiting on Peer events.
 - `DECISION_NEEDED` — you need a Human decision (product scope, material
   cost, external effect, irreversible risk, a destructive permission, or a

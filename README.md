@@ -49,8 +49,8 @@ Peer → Lead         signals at turn end, plus mid-work messages
 its Lead mid-work (`send_agent_prompt`; the brief names the Lead's agent ID)
 with a question, a missing dependency, or an early challenge while it keeps
 working on unaffected parts. Because Paseo delivers a message to a running
-agent by interrupting its turn, a Peer only sends when its Lead is idle, and
-the Lead's short answer lets the Peer resume where it was.
+agent by interrupting its turn, a Peer only sends when its Lead is idle,
+and the Lead's short answer lets the Peer resume where it was.
 
 **Debate.** A Peer that finds the Lead's premise wrong answers with a signal
 instead of complying: `REOPEN_REQUEST` (failed premise), `DEPENDENCY_REQUEST`
@@ -162,7 +162,7 @@ review peers high, every other Peer medium.
 
 | Profile | Provider | Model | Mode | Use for |
 |---|---|---|---|---|
-| **Supervisor** | `claude-supervisor` | `claude-opus-5-5` (thinking: xhigh) | `bypassPermissions` | The seat you talk to; the Supervisor role is its system prompt. Extra-high thinking for judging drift; every 2-minute heartbeat tick is a turn at that level. |
+| **Supervisor** | `claude-supervisor` | `claude-opus-5-5` (thinking: xhigh) | `bypassPermissions` | The seat you talk to; the Supervisor role is its system prompt. Extra-high thinking for judging drift; every inspection (each `slp-wait` timeout or heartbeat wake, about every 2 minutes) is a turn at that level. |
 | **Lead** | `claude-lead` | `claude-opus-5-5` (thinking: high) | `bypassPermissions` | Launched by the Supervisor: owns one project's technical outcome, dispatches Peers, accepts or rejects candidates |
 | **Cheap peer** | `claude-peer` | `claude-haiku-4-5` (thinking: medium) | `bypassPermissions` | Extraction, formatting, log triage, mechanical refactors — the down-tier target |
 | **Peer** | `claude-peer` | `claude-sonnet-5-5` (thinking: medium) | `bypassPermissions` | Default tier for implementation, debugging, and research |
@@ -173,9 +173,9 @@ review peers high, every other Peer medium.
 
 | Provider | Extends | Agent tools |
 |---|---|---|
-| `claude-supervisor` | `claude` | Every Paseo tool: launching Leads, heartbeats, recovery. No `paseo run`/`send`/`import` from Bash — agents only come from `create_agent` |
-| `claude-lead` | `claude` | Everything a Lead needs to launch and steer Peers; no heartbeat/schedule control (monitoring is the Supervisor's) |
-| `claude-peer`, `codex-peer` | `claude`, `codex` | `send_agent_prompt` (to talk back to the Lead) and the read-only status tools; no `create_agent`, `cancel_agent`, `kill_agent`, `archive_agent`, `update_agent`, `set_agent_mode`, workspace creation, schedule/heartbeat control, or `respond_to_permission` |
+| `claude-supervisor` | `claude` | Every Paseo tool: launching Leads, heartbeats, recovery. No `paseo run`/`send`/`import` from Bash — agents only come from `create_agent`. The only seat that runs `slp-wait` |
+| `claude-lead` | `claude` | Everything a Lead needs to launch and steer Peers; no heartbeat/schedule control (monitoring is the Supervisor's); no `slp-wait` |
+| `claude-peer`, `codex-peer` | `claude`, `codex` | `send_agent_prompt` (to talk back to the Lead) and the read-only status tools; no `create_agent`, `cancel_agent`, `kill_agent`, `archive_agent`, `update_agent`, `set_agent_mode`, workspace creation, schedule/heartbeat control, `respond_to_permission`, or `slp-wait` |
 
 **Spawning is controlled.** Only `create_agent` creates agents, and only
 the Supervisor (Leads) and Leads (Peers) have it. Every Claude seat also
@@ -183,7 +183,10 @@ loses the built-in `Agent`/`Task` sub-agent tool and cannot start nested
 `claude`/`codex` runs from Bash — by name or by the absolute path of any copy
 on your `PATH` (and its symlink target), found at install time; Leads and
 Peers cannot use the `paseo` CLI at all (so no `paseo run` around the MCP
-tools). Codex Peers get the same through their runtime's execpolicy rules
+tools). The Supervisor's one extra is `slp-wait`, installed beside the room
+files (`~/.config/slp-room/bin/slp-wait`), which blocks on a single agent and
+only ever calls `paseo wait`; Leads and Peers are denied it by name and by
+path. Codex Peers get the same through their runtime's execpolicy rules
 (enforced even in full access, and through `zsh -lc` wrappers), plus
 native sub-agents off (`agents.enabled`, `features.multi_agent`,
 `features.multi_agent_v2`). What remains is prompt-level: a script that
@@ -276,6 +279,11 @@ prefer the plugin, `/plugin marketplace add yanmad27/paseo-slp`,
 `/plugin install paseo-slp@paseo-slp`, and `install.sh --paseo-only`.
 `/orchestrate` is gone: open the Supervisor profile, or use `/supervisor`.
 
+**Supervisor heartbeat name:** the Supervisor now keeps one heartbeat per
+session under the fixed name `supervisor: room`. Heartbeats an older version
+created under `supervisor: <free-form scope>` are not matched by it; they stop
+when that Supervisor agent is archived.
+
 **Check version:** the last line of `install.sh` output, or the header of
 `~/.config/slp-room/lead.md`. Compare with the
 [releases page](https://github.com/yanmad27/paseo-slp/releases).
@@ -291,7 +299,11 @@ prefer the plugin, `/plugin marketplace add yanmad27/paseo-slp`,
 | A Lead or Peer lacks a skill or setting you added to `~/.claude` | Runtimes copy your settings at install time. Re-run `install.sh` after changing `~/.claude/settings.json` or adding skills. |
 | A `codex-peer` agent fails to start after moving or reinstalling Codex | The launcher holds the `codex` path from install time. Re-run `install.sh`. |
 | A Codex Peer is not logged in | Its runtime links `~/.codex/auth.json`. Run `codex login` (file credentials, not the keyring) and re-run `install.sh`. |
-| The Supervisor posts a `no change` line every 2 minutes | That is its heartbeat (`*/2 * * * *`) checking the room. It deletes the heartbeat when every Lead is done; ask it to stop supervising to remove it sooner. If a Supervisor session was closed mid-run, delete its leftover heartbeat from Paseo's schedules. |
+| The Supervisor tab keeps spinning, with a line like `⏳ Working: …` | Expected: it is waiting on a running room agent with `slp-wait` (110 s, then it inspects the room and waits again), so only the Supervisor tab spins. The Supervisor prints `⏳ Working` before each wait and ends a turn only with `✅ Done` or `❓ Waiting on you`, or on `⏳` if `slp-wait` failed or it just answered you. |
+| The Supervisor tab stops spinning for a while after I send a message | Expected. A Supervisor that keeps spinning after a message answers only in hidden thinking, so it writes its answer and a `⏳ Working: …` line as visible text and ends the turn; its heartbeat (every 2 minutes, only while it is idle) wakes it, inspects the room, and re-arms the wait. The gap is normally up to 2 minutes, rarely up to about 4 if Paseo skips a heartbeat slot; answer and state stay visible during it. This is a known Paseo-side limit: a slot that fires while the Supervisor is still finishing its turn is skipped, not queued (the next is 2 minutes later), and the scheduler can occasionally record a skipped slot twice, pushing the next fire one more slot. |
+| A Supervisor heartbeat (`*/2 * * * *`, named `supervisor: room`) is left after the session closed | Archiving the Supervisor agent completes its heartbeats. A new Supervisor adopting the room checks the old one once and, if it is still active, asks you to archive it or close the new session; it never deletes another session's heartbeat. Heartbeats do not show in Paseo's schedule list. |
+| A seat stops with "The user doesn't want to proceed with this tool use" on an `slp-wait` | That text means a message or notification arrived and cut the wait short — nothing was refused. The Supervisor handles the event and waits again. After a message from you its spinner pauses and the heartbeat resumes it: normally within 2 minutes, rarely up to about 4 if Paseo skips a heartbeat slot (the next slot usually resumes it; rarely the scheduler pushes it one more slot, about 4 minutes in all; any message to the Supervisor also resumes it). Known Paseo-side limit: a slot firing while the turn is still ending is skipped, not queued, and the scheduler can occasionally record a skipped slot twice, which pushes the next fire one more slot. Only a longer idle stretch while work runs is a fault (then tell it to resume). |
+| `slp-wait` fails (exit 1, not found) | The Supervisor falls back to ending its turn and being woken by notifications and the heartbeat, and says so. Check `~/.config/slp-room/bin/slp-wait --self-test` and re-run `install.sh`. |
 | `/supervisor` is not found after a plugin install | Plugin skills are namespaced: try `/paseo-slp:supervisor`, or just ask in plain language ("supervisor: …", "delegate this …"). |
 | A room profile lost a model you set in the Paseo UI | Expected: the installer resets room profiles. Copy the profile under a new name for a personal variant. |
 | Profiles missing after install | `paseo daemon reload` failed or was skipped, or `~/.paseo/config.json` has invalid JSON. Verify with `jq . ~/.paseo/config.json`, then run `paseo daemon reload`. |
@@ -346,8 +358,10 @@ interrupting their work.
    gap would let the room drift.
 2. It splits the goal into Lead workstreams (usually one), launches each
    Lead with that intent as a self-contained project instruction, starts a
-   2-minute Paseo heartbeat, and checks each Lead's plan against your intent
-   as soon as the Lead reports it.
+   2-minute Paseo heartbeat (`supervisor: room`, the fallback while it is
+   idle), waits on the running room agent so its own tab shows the room
+   running, and checks each Lead's plan against your intent as soon as the
+   Lead reports it.
 3. Each Lead plans, picks a Peer tier per task (Jev or the manual rule), gets
    a plan review for larger plans, and dispatches Peers with a brief that
    names their write scope and acceptance evidence.
@@ -355,13 +369,13 @@ interrupting their work.
    concedes or holds with evidence (max two rounds). Implementation work gets
    a read-only review from the other model family — Codex reviews Claude's
    work, Claude reviews Codex's — before the Lead `ACCEPT`s it.
-5. On each heartbeat the Supervisor checks what changed — in agent activity
-   and in the repo — for drift: wrong target, scope creep, rabbit holes,
+5. After every `slp-wait` return (at most 110 s) and on each heartbeat wake,
+   the Supervisor inspects the room — Leads, Peers, and the repo — for drift: wrong target, scope creep, rabbit holes,
    unauthorized actions, acceptance without evidence, open loops, stalls. It
    asks the Lead an evidence-based question only when there is a concrete
    gap, brings drift that changes what you get to you, and pulls an
    emergency brake on unauthorized external or destructive actions.
-   Otherwise it stays quiet.
+   Otherwise it stays quiet and ends with a room-state line.
 6. Decisions that are yours (scope, cost, external effects, irreversible
    risk, destructive permissions) come back to you as a recommendation with
    its consequence.
@@ -376,4 +390,5 @@ interrupting their work.
 - **Say "read-only"** if you want an audit, investigation, or code review without file changes.
 - **Watch the sidebar:** parallel Leads or parallel writing Peers get worktree tabs — avoid switching tabs while they run.
 - **Permission prompts are yours:** nobody in the room auto-approves destructive actions.
-- **No polling:** no seat `sleep`-loops on CI or on each other; the heartbeat is the only periodic wake. If you see a permission prompt containing `sleep … done`, deny it — it's a brief bug.
+- **No polling:** no seat `sleep`-loops on CI or on each other. Only the Supervisor waits, with `slp-wait` (one blocking call on one agent, woken by any message); the heartbeat covers the times it is not waiting. Leads end their turn and are woken by notifications. If you see a permission prompt containing `sleep … done`, deny it — it's a brief bug.
+- **A Lead reports `DONE` only when none of its Peers is still running** — otherwise `STATUS`, and the Supervisor sends a premature `DONE` back.

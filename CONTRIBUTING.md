@@ -14,6 +14,13 @@ Invariants it checks:
   create/delete, the intent record / on-course checks / emergency brake,
   the Expensive-peer (opus) gut-feeling ban, `Review peer`,
   the debate signals, the recap contract, `$ARGUMENTS`.
+- Wait / state rules (static): `SKILL.md` names `slp-wait`, carries the three
+  room-state prefixes (`⏳ Working:`, `✅ Done:`, `❓ Waiting on you:`), the
+  fixed-name `supervisor: room` find-or-create and adoption rule, and has no
+  instruction to reply with a bare no-change line or to reuse a heartbeat via
+  `list_schedules`; `PROTOCOL.md`, `lead.md`, and `peer.md` keep the
+  Supervisor-only `slp-wait` rules and the Lead's DONE-only-with-no-Peer-running
+  rule; `lead.md` names no `slp-wait`; the wait timeout is within 30-120 s.
 - `.claude-plugin/plugin.json` + `marketplace.json`: valid JSON, matching
   `name`, semver `version`, and `description`.
 - `paseo/config.snippet.json`: exactly the `Supervisor`/`Lead`/`Cheap peer`/
@@ -36,6 +43,14 @@ Invariants it checks:
   `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_OAUTH_TOKEN`, `codex-peer` uses its
   launcher; Peer providers keep
   `send_agent_prompt` and disable `create_agent` and schedule control.
+- `slp-wait`: installed at `$HOME/.config/slp-room/bin/slp-wait` (0755),
+  behaves per its contract (seconds 30-120, whole-scalar ID checks) against a stub `paseo`, and only the Supervisor
+  may run it: `claude-lead` and `claude-peer` deny it by basename and by the
+  rendered absolute path (Codex Peers by execpolicy). The rendered Supervisor
+  prompt names that path (the `@@SLP_WAIT@@` token, replaced by
+  `install.sh`), it exists in the temp install, and no token is left; the
+  rendered Lead prompt names no `slp-wait`, and `claude-lead`'s other denies
+  (whole `Bash(paseo:*)` included) stay main's.
 - `README.md`: keeps `## Install`/`## Usage`/`## Troubleshooting` and
   mentions `/supervisor`.
 - `.release-please-manifest.json`: `.["."]` matches plugin.json `.version`.
@@ -44,7 +59,10 @@ PRs need the `validate` check green before merge.
 
 Run `claude plugin eval . --trust-plugin` after changing SKILL.md's description or rules.
 The role files in `skills/supervisor/roles/` are read by Leads and Peers at
-launch — keep them consistent with `PROTOCOL.md` when either changes.
+launch — keep them consistent with `PROTOCOL.md` when either changes. Never
+loosen the provider denies to make a wait work: the Supervisor waits through
+`slp-wait`, never `paseo wait` directly; Leads and Peers end their turns and
+rely on notifications.
 
 Commits must follow [Conventional Commits](https://www.conventionalcommits.org/):
 `feat:` bumps minor, `fix:`/`docs:`/`chore:` bump patch, `feat!:` or a
