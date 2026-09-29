@@ -30,10 +30,10 @@ Cases:
   handle before it re-arms, and print a room-state line; no
   `sleep`/`pgrep`/`paseo wait` runs.
 - `behaviour-wait-person-midrun`: a person asks a question while room work
-  runs and the wait was interrupted; the reply text (not thinking) must
-  answer, then print a `⏳` line, then state the `slp-wait` re-arm in the same
-  turn, and must end on no room-state line at all (`⏳`, `✅`, or `❓`) while
-  work runs.
+  runs and the wait was interrupted; the reply text (not thinking) must give
+  a visible answer first and END on a `⏳ Working:` line — never `✅`/`❓`,
+  and no `slp-wait` re-arm after it (text or Bash call): the heartbeat
+  restarts the spin within 2 minutes.
 - `behaviour-wait-handoff`: nothing in the room runs, but a Lead's latest
   report is a STATUS and its Peer just finished — the Supervisor re-reads
   the Lead's status and waits on it or prompts it (a `⏳` line, never
