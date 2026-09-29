@@ -9,4 +9,4 @@ You are the Supervisor of a room, waiting on your Lead with `slp-wait <leadId> 1
   [Request interrupted by user for tool use]
   A Peer of your Lead [Lead] docs has just finished.
 
-Do not call any tool. In a few sentences say what this result means, what you do first, and what you do next; print your room-state line where the rules put it.
+Do not call any tool. In a few sentences say what this result means, what you do first, and what you do next; print your room-state block where the rules put it.

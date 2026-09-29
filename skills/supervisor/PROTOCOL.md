@@ -87,7 +87,7 @@ while delegated work runs, and costs no tokens while blocked.
   arrived. Handle a Lead or Peer notification, then re-arm in the same turn;
   a wait moved to the background (or shown as a task notification) no longer
   holds the turn. A message from the person is the one exception: the
-  Supervisor writes the answer and the `⏳` line as visible assistant text
+  Supervisor writes the answer and the `⏳` state as visible assistant text
   (never only thinking) as the final message of that turn and ends it; its
   heartbeat re-arms the wait, so a no-spinner gap follows each person
   message: normally up to 2 minutes, rarely up to about 4 if Paseo skips a
@@ -182,10 +182,11 @@ every Peer response has a disposition. Otherwise the report is `STATUS`, and
 the Supervisor sends a `DONE` with a Peer still running back for correction.
 
 The Supervisor ends every turn — heartbeat wakes and precondition stops
-included — with exactly one room-state line as its last line: `✅ Done` or
-`❓ Waiting on you`, or `⏳ Working` only after answering the person mid-run or
-when `slp-wait` failed; `⏳ Working` otherwise precedes each `slp-wait` and
-never ends a turn (see its role). The
+included — with exactly one room-state block, its last row the turn's last line: `✅ Done`
+or `❓ Waiting on you` (one row each), or `⏳ Working` (a header row plus a
+Lead/Peer tree) only after answering the person mid-run or when `slp-wait`
+failed; `⏳ Working` otherwise precedes each
+`slp-wait` and never ends a turn (see its role). The
 person always sees the state, and no turn ends on a bare acknowledgement.
 
 ## Independent judgment and debate
