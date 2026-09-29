@@ -1,6 +1,6 @@
-# orchestrate
+# paseo-slp
 
-A Claude Code plugin for a three-seat room in Paseo — **S**upervisor →
+A Claude Code plugin for a three-seat agent room in [Paseo](https://paseo.sh) — **S**upervisor →
 **L**ead → **P**eers (SLP), modeled on
 [hoangnb24/codex-room-setup](https://github.com/hoangnb24/codex-room-setup).
 You talk only to the **Supervisor**. It pins down what you want, launches
@@ -12,8 +12,8 @@ request; Peers may push back on their Lead with evidence. Everything runs on
 Claude except Peers, which can also be Codex. Nobody above Peer edits files
 or writes code.
 
-[![License: MIT](https://img.shields.io/github/license/yanmad27/my-orchestrate-skill)](LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/yanmad27/my-orchestrate-skill)](https://github.com/yanmad27/my-orchestrate-skill/releases)
+[![License: MIT](https://img.shields.io/github/license/yanmad27/paseo-slp)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/yanmad27/paseo-slp)](https://github.com/yanmad27/paseo-slp/releases)
 [![Works with Paseo](https://img.shields.io/badge/works%20with-Paseo-2b6cb0)](https://paseo.sh)
 
 ## Contents
@@ -104,7 +104,7 @@ Enable Paseo MCP tool injection in `~/.paseo/config.json`:
    role prompts, and the Paseo profiles — and reload the Paseo daemon:
 
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/yanmad27/my-orchestrate-skill/main/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/yanmad27/paseo-slp/main/install.sh | bash
    ```
 
 3. Open an agent on the **Supervisor** profile in Paseo and describe the goal — no `/supervisor` needed.
@@ -124,7 +124,7 @@ Run the same command again whenever you want the latest version.
 4. runs `paseo daemon reload`.
 
 Piped, it downloads the repository from GitHub; from a clone
-(`git clone https://github.com/yanmad27/my-orchestrate-skill.git && cd my-orchestrate-skill && ./install.sh`)
+(`git clone https://github.com/yanmad27/paseo-slp.git && cd paseo-slp && ./install.sh`)
 it uses the checkout.
 
 | Option | Effect |
@@ -137,7 +137,7 @@ it uses the checkout.
 | `SLP_CLAUDE_OAUTH_TOKEN=<token>` | Use this token instead of `~/.config/slp-room/oauth-token` |
 
 > [!NOTE]
-> Plugin marketplace alternative: `/plugin marketplace add yanmad27/my-orchestrate-skill`, then (in a separate turn) `/plugin install orchestrate@my-orchestrate-skill`, then run `install.sh --paseo-only`. Don't combine the plugin with a full `install.sh` run, or you get the skill twice.
+> Plugin marketplace alternative: `/plugin marketplace add yanmad27/paseo-slp`, then (in a separate turn) `/plugin install paseo-slp@paseo-slp`, then run `install.sh --paseo-only`. Don't combine the plugin with a full `install.sh` run, or you get the skill twice.
 
 > [!NOTE]
 > You do **not** need Paseo's built-in skills (`paseo`, `paseo-committee`, `paseo-advisor`, `paseo-handoff`, …). Leads run their own committee and plan review using the Review peer and Codex review peer profiles. Leave the built-ins uninstalled to avoid a Lead picking up a competing delegation workflow.
@@ -237,17 +237,30 @@ Then check the Paseo agent creation dialog — it should show eight profiles:
 Re-run the install command — piped, or `git pull && ./install.sh` in a
 clone. It updates the skill, the role prompts, and the Paseo profiles
 together, then reloads the daemon. With the plugin marketplace instead, run
-`claude plugin update orchestrate@my-orchestrate-skill` (then
+`claude plugin update paseo-slp@paseo-slp` (then
 `/reload-plugins` in an open session) and `install.sh --paseo-only`.
 
-**From v1 (`/orchestrate`):** the same command migrates you — it removes the
-v1 skill copy, the **Cheap worker**, **Worker**, **Expensive worker**,
-**Reviewer**, and **Codex advisor** profiles, and the `claude-worker`
-provider. The command is now `/supervisor`.
+**From v1 (`/orchestrate`, repo `my-orchestrate-skill`):** the project is now
+`paseo-slp`. The same install command migrates you — it removes the v1 skill
+copy, the **Cheap worker**, **Worker**, **Expensive worker**, **Reviewer**,
+and **Codex advisor** profiles, and the `claude-worker` provider. If you had
+the v1 plugin, swap it for the new one (GitHub redirects the old repo URL,
+but the plugin and marketplace ids changed):
+
+```
+/plugin uninstall orchestrate@my-orchestrate-skill
+/plugin marketplace remove my-orchestrate-skill
+/plugin marketplace add yanmad27/paseo-slp
+/plugin install paseo-slp@paseo-slp
+```
+
+(one command per turn) — or skip the plugin and let `install.sh` install the
+skill. `/orchestrate` is gone: open the Supervisor profile, or use
+`/supervisor`.
 
 **Check version:** the last line of `install.sh` output, or the header of
 `~/.config/slp-room/lead.md`. Compare with the
-[releases page](https://github.com/yanmad27/my-orchestrate-skill/releases).
+[releases page](https://github.com/yanmad27/paseo-slp/releases).
 
 ## Troubleshooting
 
@@ -261,7 +274,7 @@ provider. The command is now `/supervisor`.
 | A `codex-peer` agent fails to start after moving or reinstalling Codex | The launcher holds the `codex` path from install time. Re-run `install.sh`. |
 | A Codex Peer is not logged in | Its runtime links `~/.codex/auth.json`. Run `codex login` (file credentials, not the keyring) and re-run `install.sh`. |
 | The Supervisor posts a `no change` line every 2 minutes | That is its heartbeat (`*/2 * * * *`) checking the room. It deletes the heartbeat when every Lead is done; ask it to stop supervising to remove it sooner. If a Supervisor session was closed mid-run, delete its leftover heartbeat from Paseo's schedules. |
-| `/supervisor` is not found after a plugin install | Plugin skills are namespaced: try `/orchestrate:supervisor`, or just ask in plain language ("supervisor: …", "delegate this …"). |
+| `/supervisor` is not found after a plugin install | Plugin skills are namespaced: try `/paseo-slp:supervisor`, or just ask in plain language ("supervisor: …", "delegate this …"). |
 | A room profile lost a model you set in the Paseo UI | Expected: the installer resets room profiles. Copy the profile under a new name for a personal variant. |
 | Profiles missing after install | `paseo daemon reload` failed or was skipped, or `~/.paseo/config.json` has invalid JSON. Verify with `jq . ~/.paseo/config.json`, then run `paseo daemon reload`. |
 

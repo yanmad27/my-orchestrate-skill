@@ -131,10 +131,10 @@ else
   fail "marketplace.json is not valid JSON"
 fi
 
-if [ "$(jq -r '.name' "$PLUGIN_JSON")" = "orchestrate" ]; then
-  ok 'plugin.json .name == "orchestrate"'
+if [ "$(jq -r '.name' "$PLUGIN_JSON")" = "paseo-slp" ] && [ "$(jq -r '.name, .plugins[0].name' "$MARKETPLACE_JSON" | sort -u)" = "paseo-slp" ]; then
+  ok 'plugin.json, marketplace.json, and its plugin are all named "paseo-slp"'
 else
-  fail 'plugin.json .name != "orchestrate"'
+  fail 'plugin.json .name, marketplace.json .name, and .plugins[0].name must all be "paseo-slp"'
 fi
 
 PLUGIN_VERSION="$(jq -r '.version' "$PLUGIN_JSON")"
@@ -380,7 +380,7 @@ fi
 # puts the Peer prompt before Paseo's own `app-server` argument.
 RENDER_HOME="$TMP/home-render"
 mkdir -p "$RENDER_HOME/bin" "$RENDER_HOME/.claude/skills/supervisor" "$RENDER_HOME/.claude/skills/other" "$RENDER_HOME/.config/slp-room"
-printf '{"theme": "dark", "enabledPlugins": {"orchestrate@my-orchestrate-skill": true, "x@y": true}}\n' > "$RENDER_HOME/.claude/settings.json"
+printf '{"theme": "dark", "enabledPlugins": {"paseo-slp@paseo-slp": true, "orchestrate@my-orchestrate-skill": true, "x@y": true}}\n' > "$RENDER_HOME/.claude/settings.json"
 printf 'mine\n' > "$RENDER_HOME/.claude/CLAUDE.md"
 printf 'sk-ant-oat01-test\n' > "$RENDER_HOME/.config/slp-room/oauth-token"
 mkdir -p "$RENDER_HOME/.codex"
@@ -405,6 +405,7 @@ if PATH="$RENDER_HOME/bin:$PATH" HOME="$RENDER_HOME" env -u CODEX_HOME "$REPO_RO
     && grep -q 'Room Protocol' "$ROOM/claude-peer/output-styles/slp-peer.md" \
     && grep -q 'Room role: Peer' "$ROOM/claude-peer/output-styles/slp-peer.md" \
     && jq -e '.outputStyle == "slp-lead" and .theme == "dark"
+        and .enabledPlugins["paseo-slp@paseo-slp"] == false
         and .enabledPlugins["orchestrate@my-orchestrate-skill"] == false and .enabledPlugins["x@y"] == true' \
       "$ROOM/claude-lead/settings.json" >/dev/null \
     && [ -L "$ROOM/claude-peer/skills/other" ] && [ ! -e "$ROOM/claude-peer/skills/supervisor" ] \
