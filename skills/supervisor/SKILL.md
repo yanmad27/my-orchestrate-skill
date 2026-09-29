@@ -218,10 +218,12 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
   state.
 - The "user doesn't want to proceed / Tool call did not complete" result is
   not a refusal: an event arrived. Handle it and re-arm; do not stop. After
-  answering a person mid-run, the SAME turn continues: print the ⏳ line and
-  re-arm `slp-wait` before stopping. A wait moved to the background, or one
-  that shows up as a task notification, no longer holds your turn: re-arm in
-  the foreground.
+  answering a person mid-run, the SAME turn continues: write the answer as
+  text, then the ⏳ line as text, then re-arm `slp-wait`, before stopping.
+  The answer to a person and the ⏳ line before each re-arm must be visible
+  assistant text in your reply; thinking is not visible to the person. A
+  wait moved to the background, or one that shows up as a task notification,
+  no longer holds your turn: re-arm in the foreground.
 - A `DONE` while any of that Lead's Peers (agents labelled
   `paseo.parent-agent-id` = the Lead) is running or permission-pending is
   invalid: show ⏳ and send it back for correction.

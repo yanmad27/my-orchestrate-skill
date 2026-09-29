@@ -638,6 +638,8 @@ RULE_PHRASES=(
   'SKILL.md|Never end ✅ in that'
   'SKILL.md|turn never ends on it, because a turn that ends stops spinning'
   'SKILL.md|the SAME turn continues'
+  'SKILL.md|thinking is not visible to the person'
+  'PROTOCOL.md|visible assistant text'
   'SKILL.md|begins with `@@`'
   'SKILL.md|$PASEO_AGENT_ID'
   'PROTOCOL.md|never ends a turn'

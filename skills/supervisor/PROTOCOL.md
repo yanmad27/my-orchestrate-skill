@@ -86,7 +86,9 @@ while delegated work runs, and costs no tokens while blocked.
   use…" or "Tool call did not complete…"). It is not a refusal: an event
   arrived. Handle it, then re-arm in the same turn: a turn that ends after
   answering the person stops spinning, and a wait moved to the background
-  (or shown as a task notification) no longer holds the turn.
+  (or shown as a task notification) no longer holds the turn. The person's
+  answer and the `⏳` line before each re-arm are visible assistant text,
+  never only thinking.
 - A return or interruption is a wake hint: inspect the room, and handle each
   report, permission, or message exactly once. A wait return and a finish
   notification of the same turn are one event.
