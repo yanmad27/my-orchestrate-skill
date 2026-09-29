@@ -16,7 +16,7 @@ Invariants it checks:
   the debate signals, the recap contract, `$ARGUMENTS`.
 - Wait / state rules (static): `SKILL.md` names `slp-wait`, carries the three
   room-state prefixes (`⏳ Working:`, `✅ Done:`, `❓ Waiting on you:`), the
-  named `[supervisor-heartbeat]` find-or-create and adoption rule, and has no
+  named `supervisor: <scope>` find-or-create and adoption rule, and has no
   instruction to reply with a bare no-change line or to reuse a heartbeat via
   `list_schedules`; `PROTOCOL.md`, `lead.md`, and `peer.md` keep the
   `slp-wait` rules, the Lead's DONE-only-with-no-Peer-running rule, and the

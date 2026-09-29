@@ -232,14 +232,17 @@ a real-time guarantee. A scheduled heartbeat that fires while your own turn
 is running is dropped, not queued (the schedule stays active): while you
 wait, the `slp-wait` timeout is your inspection checkpoint, and the missed
 scheduled event is not preserved.
-- Always `create_heartbeat` with name `[supervisor-heartbeat] <scope>`, cron
+- Always `create_heartbeat` with name `supervisor: <scope>`, cron
   `*/2 * * * *`, and this prompt, plus `maxRuns`/`expiresIn` if you use them
   (omitted arguments reset): "[supervisor-heartbeat] Inspect changed room
   state since your last checkpoint, check it against the intent record, and
   contact a Lead only for a new actionable deviation. If work is running, wait
   on it again with slp-wait. End the turn with exactly one room-state line as
-  the last line." A named call is a find-or-create on (name, you): it updates
-  your existing heartbeat in place, returns its ID, migrates an older
+  the last line." The name must stay exactly `supervisor: <scope>`, with the
+  same scope wording every time (and as earlier versions wrote it): the
+  find-or-create matches on the exact name, so any other name creates a
+  second heartbeat that keeps firing its old prompt. A named call is a
+  find-or-create on (name, you): it updates your existing heartbeat in place, returns its ID, migrates an older
   heartbeat's prompt, and survives summarization. Never rely on a remembered
   ID or on `list_schedules` — it does not list heartbeats. Never use
   `paseo heartbeat create` or `paseo schedule delete`.
