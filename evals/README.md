@@ -16,40 +16,55 @@ Cases:
 - `behaviour-no-self-edit`: given a delegation prompt, the skill must not
   call `Edit`/`Write` itself before delegating.
 - `behaviour-no-polling`: given a prompt to open a PR and report when CI
-  passes (the Supervisor waits, where needed, with `slp-wait`), no `Bash` call may sleep,
-  poll, or loop (`sleep`, `pgrep`, `ps`, `until`/`while`/`for … do`), call
-  `paseo wait` directly, wrap `slp-wait` in a loop, pass it a timeout above
-  570, or run it without a Bash `timeout` of at least 30000 ms — all
-  `tool_used` with `input_match`, the same grader shape `trigger-positive-rename`
-  uses to check `Skill` input.
+  passes (the Supervisor waits, where needed, with `slp-wait`, 110 s), no
+  `Bash` call may sleep, poll, or loop (`sleep`, `pgrep`, `ps`,
+  `until`/`while`/`for … do`), call `paseo wait` directly, wrap `slp-wait` in
+  a loop, pass it seconds other than 110 or above 120, or run it without the
+  matching Bash `timeout` (exactly 140000 for 110; seconds×1000+30000 for any
+  30–120, enumerated in `slp-wait-timeout-pair`) — all `tool_used` with
+  `input_match`, the same grader shape `trigger-positive-rename` uses to
+  check `Skill` input.
 - `behaviour-wait-interruption`: told (as the Supervisor) that an `slp-wait`
   returned the "user doesn't want to proceed / interrupted" text because a
-  Peer finished, the answer must call it an event (not a refusal) and re-arm
-  or resume, and no `sleep`/`pgrep`/`paseo wait` runs.
+  Peer finished, the reply must call it an event (not a refusal), inspect or
+  handle before it re-arms, and print a room-state line; no
+  `sleep`/`pgrep`/`paseo wait` runs.
+- `behaviour-wait-person-midrun`: a person asks a question while room work
+  runs and the wait was interrupted; the reply must answer, state a re-arm of
+  `slp-wait` in the same turn, and must not end on a `⏳` line.
 - `behaviour-wait-handoff`: nothing in the room runs, but a Lead's latest
   report is a STATUS and its Peer just finished — the Supervisor re-reads
-  the Lead's status and waits on it or prompts it, and ends with `⏳`, never
-  `✅ Done`.
+  the Lead's status and waits on it or prompts it (a `⏳` line, never
+  `✅ Done`).
 - `behaviour-wait-no-rearm`: told that `slp-wait` returned at once with no
   timeout and no state change, the Supervisor must not call `slp-wait` again
   (`tool_used` max 0) and must report or decide instead.
 - `behaviour-room-state-{heartbeat,launch,done,decision}`: the Supervisor's
-  final message ends with exactly one room-state line as its last line —
-  any of the three forms for a heartbeat wake, `❓ Waiting on you:` for the
-  precondition stop of a launch and for `DECISION_NEEDED`, `✅ Done:` for a
-  finished room — and a heartbeat wake is never a bare `no change`.
+  final message carries the room-state line — a heartbeat wake with a running
+  Lead shows `⏳` (never `✅`/`❓`, never a bare `no change`; the `⏳` is what
+  precedes the re-arm), `❓ Waiting on you:` last for the precondition stop of
+  a launch and for `DECISION_NEEDED`, `✅ Done:` last for a finished room.
   `behaviour-precondition-stop` also asserts the `❓` line after its stop
   message.
 - `behaviour-lead-done-with-peer`: a Lead with a Peer still running, asked
   whether it is done, reports `STATUS`, never `DONE`.
 - `behaviour-heartbeat-find-or-create`: monitoring setup never calls
   `list_schedules`, `delete_heartbeat`, `delete_schedule`, or the CLI
-  `paseo heartbeat create` / `paseo schedule delete`, and any
-  `create_heartbeat` carries the fixed name `supervisor: room`.
+  `paseo heartbeat create` / `paseo schedule delete`; any `create_heartbeat`
+  carries the fixed name `supervisor: room`, and the reply states that call
+  (a regex on the reply, since the tool is unavailable).
+- `behaviour-heartbeat-adoption`: a previous Supervisor, whose ID differs
+  from the Supervisor's own, is still live; no `delete_heartbeat`,
+  `delete_schedule`, or CLI schedule delete, and the reply ends with a
+  `❓ Waiting on you:` line.
 
-The sandbox has no Paseo tools, so the wait, room-state, DONE, and heartbeat
-cases can only exercise the parts a free grader sees: what the model would
-call, and the shape of its final message. The rules themselves are guarded
+The sandbox has no Paseo tools (and this suite builds no mocks of them), so
+the wait, room-state, DONE, heartbeat, and adoption cases can only exercise the
+parts a free grader sees: what the model would call, and what its message
+states — where a tool cannot be called, the reply's stated action is graded
+with a regex, which a fluent wrong answer can still satisfy. Negative
+`tool_used` graders (max 0) are vacuous when the model calls nothing, and the
+timeout/seconds pairing is only checked when a `slp-wait` call is made. The rules themselves are guarded
 by `scripts/validate.sh` and exercised for real only on Paseo.
 
 The recap contract (the Supervisor opens its report with one line per Lead

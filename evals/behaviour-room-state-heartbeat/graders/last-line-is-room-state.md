@@ -1,4 +1,4 @@
 ---
 type: regex
-pattern: '(?s)\n(?:⏳ Working: |✅ Done: |❓ Waiting on you: )[^\n]+\s*\Z'
+pattern: '(?s)\A(?!.*(?:✅ Done:|❓ Waiting on you:)).*⏳ Working: [^\n]+(?:\n|\Z)'
 ---

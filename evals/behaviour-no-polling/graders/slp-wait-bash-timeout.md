@@ -1,7 +1,7 @@
 ---
 type: tool_used
 tool: Bash
-input_match: '(?s)^(?!.*"timeout"\s*:\s*(?:3\d{4}|[1-5]\d{5})).*slp-wait\s+[0-9a-f]'
+input_match: '(?s)^(?=.*slp-wait\s+\S+\s+110\b)(?!.*"timeout"\s*:\s*140000\b)'
 min: 0
 max: 0
 arm: both
