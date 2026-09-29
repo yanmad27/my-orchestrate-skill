@@ -383,9 +383,14 @@ mkdir -p "$RENDER_HOME/bin" "$RENDER_HOME/.claude/skills/supervisor" "$RENDER_HO
 printf '{"theme": "dark", "enabledPlugins": {"orchestrate@my-orchestrate-skill": true, "x@y": true}}\n' > "$RENDER_HOME/.claude/settings.json"
 printf 'mine\n' > "$RENDER_HOME/.claude/CLAUDE.md"
 printf 'sk-ant-oat01-test\n' > "$RENDER_HOME/.config/slp-room/oauth-token"
-printf '#!/bin/sh\nfor a in "$@"; do printf "[%%s]\\n" "$a"; done\n' > "$RENDER_HOME/bin/codex"
-chmod +x "$RENDER_HOME/bin/codex"
-if PATH="$RENDER_HOME/bin:$PATH" HOME="$RENDER_HOME" "$REPO_ROOT/install.sh" --paseo-only --no-reload >/dev/null 2>&1; then
+mkdir -p "$RENDER_HOME/.codex"
+printf '{}\n' > "$RENDER_HOME/.codex/auth.json"
+printf 'model = "x"\n' > "$RENDER_HOME/.codex/config.toml"
+for cli in codex claude paseo; do
+  printf '#!/bin/sh\nfor a in "$@"; do printf "[%%s]\\n" "$a"; done\n' > "$RENDER_HOME/bin/$cli"
+  chmod +x "$RENDER_HOME/bin/$cli"
+done
+if PATH="$RENDER_HOME/bin:$PATH" HOME="$RENDER_HOME" env -u CODEX_HOME "$REPO_ROOT/install.sh" --paseo-only --no-reload >/dev/null 2>&1; then
   ROOM="$RENDER_HOME/.config/slp-room"
   CODEX_ARGS="$("$ROOM/bin/codex-peer" app-server 2>&1 || true)"
   if grep -q 'Room role: Lead' "$ROOM/claude-lead/output-styles/slp-lead.md" \
@@ -409,6 +414,18 @@ if PATH="$RENDER_HOME/bin:$PATH" HOME="$RENDER_HOME" "$REPO_ROOT/install.sh" --p
     && printf '%s\n' "$CODEX_ARGS" | grep -q 'Room role: Peer' \
     && [ "$(printf '%s\n' "$CODEX_ARGS" | tail -1)" = "[app-server]" ] \
     && ! grep -q '@@' "$RENDER_HOME/.paseo/config.json" \
+    && grep -qF "CODEX_HOME=\"$ROOM/codex-peer\" exec" "$ROOM/bin/codex-peer" \
+    && [ "$(readlink "$ROOM/codex-peer/auth.json")" = "$RENDER_HOME/.codex/auth.json" ] \
+    && grep -q '^model = "x"$' "$ROOM/codex-peer/config.toml" \
+    && grep -q 'decision = "forbidden"' "$ROOM/codex-peer/rules/room.rules" \
+    && grep -qF '"paseo"' "$ROOM/codex-peer/rules/room.rules" \
+    && grep -qF "\"$RENDER_HOME/bin/claude\"" "$ROOM/codex-peer/rules/room.rules" \
+    && [ ! -e "$ROOM/guard" ] \
+    && jq -e --arg bin "$RENDER_HOME/bin" '.agents.providers as $p
+        | ($p["claude-lead"].disallowedTools | index("Bash(" + $bin + "/claude:*)") != null)
+        and ($p["claude-peer"].disallowedTools | index("Bash(" + $bin + "/paseo:*)") != null)
+        and ($p["claude-supervisor"].disallowedTools | index("Bash(" + $bin + "/paseo run:*)") != null
+             and index("Bash(" + $bin + "/paseo:*)") == null)' "$RENDER_HOME/.paseo/config.json" >/dev/null \
     && [ "$(stat -c %a "$RENDER_HOME/.paseo/config.json" 2>/dev/null || stat -f %Lp "$RENDER_HOME/.paseo/config.json")" = "600" ] \
     && jq -e --arg dir "$ROOM" '.agents.providers["claude-lead"].env
         == {"CLAUDE_CONFIG_DIR": ($dir + "/claude-lead"), "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-test"}' \

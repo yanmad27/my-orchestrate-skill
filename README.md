@@ -170,10 +170,14 @@ review peers high, every other Peer medium.
 **Spawning is controlled.** Only `create_agent` creates agents, and only
 the Supervisor (Leads) and Leads (Peers) have it. Every Claude seat also
 loses the built-in `Agent`/`Task` sub-agent tool and cannot start nested
-`claude`/`codex` runs from Bash; Leads and Peers cannot use the `paseo` CLI
-at all (so no `paseo run` around the MCP tools); the Codex launcher turns
-off Codex's native sub-agents (`agents.enabled`, `features.multi_agent`,
-`features.multi_agent_v2`).
+`claude`/`codex` runs from Bash — by name or by the absolute path of any copy
+on your `PATH` (and its symlink target), found at install time; Leads and
+Peers cannot use the `paseo` CLI at all (so no `paseo run` around the MCP
+tools). Codex Peers get the same through their runtime's execpolicy rules
+(enforced even in full access, and through `zsh -lc` wrappers), plus
+native sub-agents off (`agents.enabled`, `features.multi_agent`,
+`features.multi_agent_v2`). What remains is prompt-level: a script that
+calls one of them from a location the installer did not see.
 
 ### Role prompts
 
@@ -197,9 +201,12 @@ way codex-room-setup does it with one `CODEX_HOME` per role:
   then log in once per runtime instead:
   `CLAUDE_CONFIG_DIR=~/.config/slp-room/claude-lead claude` → `/login` (same
   for `claude-peer`).
-- **`codex-peer`** launches `codex -c developer_instructions='''<peer prompt>'''`
-  through `~/.config/slp-room/bin/codex-peer`, which holds the `codex` path
-  from install time.
+- **`codex-peer`** runs Codex in its own runtime too, `CODEX_HOME=~/.config/slp-room/codex-peer`
+  (as codex-room-setup does): `auth.json` linked to yours, a copy of your
+  `config.toml`, your `AGENTS.md`/skills/plugins, and `rules/room.rules`
+  that forbids `paseo`/`claude`/`codex`. The launcher
+  `~/.config/slp-room/bin/codex-peer` passes the Peer prompt as
+  `-c developer_instructions='''…'''`.
 
 Briefs still name the room files, so a seat launched without its prompt
 reads them instead.
@@ -252,6 +259,7 @@ provider. The command is now `/supervisor`.
 | A Lead or Peer doesn't follow its role, or its first action is reading `PROTOCOL.md` | It launched without its role prompt. Re-run `install.sh`; check `~/.config/slp-room/claude-{lead,peer}/output-styles/` and that the providers' `CLAUDE_CONFIG_DIR` points there. |
 | A Lead or Peer lacks a skill or setting you added to `~/.claude` | Runtimes copy your settings at install time. Re-run `install.sh` after changing `~/.claude/settings.json` or adding skills. |
 | A `codex-peer` agent fails to start after moving or reinstalling Codex | The launcher holds the `codex` path from install time. Re-run `install.sh`. |
+| A Codex Peer is not logged in | Its runtime links `~/.codex/auth.json`. Run `codex login` (file credentials, not the keyring) and re-run `install.sh`. |
 | The Supervisor posts a `no change` line every 2 minutes | That is its heartbeat (`*/2 * * * *`) checking the room. It deletes the heartbeat when every Lead is done; ask it to stop supervising to remove it sooner. If a Supervisor session was closed mid-run, delete its leftover heartbeat from Paseo's schedules. |
 | `/supervisor` is not found after a plugin install | Plugin skills are namespaced: try `/orchestrate:supervisor`, or just ask in plain language ("supervisor: …", "delegate this …"). |
 | A room profile lost a model you set in the Paseo UI | Expected: the installer resets room profiles. Copy the profile under a new name for a personal variant. |
