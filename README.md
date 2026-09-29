@@ -117,6 +117,11 @@ Enable Paseo MCP tool injection in `~/.paseo/config.json`:
 Run the same command again whenever you want the latest version; add
 `-s -- --token` (`./install.sh --token` in a clone) to replace the token.
 
+**No subscription token?** Point the seats at any Anthropic-compatible proxy or
+gateway (9router, OmniRoute, CLIProxyAPI, LiteLLM, …) instead: at the prompt
+choose *2*, or run with `--endpoint` (`-s -- --endpoint` when piped), then give
+its base URL and key. See [Custom endpoint](#custom-endpoint-instead-of-a-token).
+
 ## Install
 
 `install.sh` is the one script for installing and updating. Each run:
@@ -145,6 +150,9 @@ it uses the checkout.
 | `SLP_ROOM_HOME=<dir>` | Build the runtimes somewhere other than `~/.config/slp-room` |
 | `--token` | Ask for a new Claude token and replace the saved one (e.g. to rotate it) |
 | `SLP_CLAUDE_OAUTH_TOKEN=<token>` | Use this token instead of `~/.config/slp-room/oauth-token` (no prompt) |
+| `--endpoint` | Ask for a custom Anthropic-compatible base URL and key (and how to send it) instead of a token |
+| `SLP_CLAUDE_BASE_URL=<url>` `SLP_CLAUDE_API_KEY=<key>` | Use this endpoint and key, saved for later runs (no prompt; the key is never taken as an argument) |
+| `SLP_CLAUDE_AUTH_HEADER=bearer\|x-api-key` | How the key is sent; default `bearer` |
 
 > [!NOTE]
 > Plugin marketplace alternative: `/plugin marketplace add yanmad27/paseo-slp`, then (in a separate turn) `/plugin install paseo-slp@paseo-slp`, then run `install.sh --paseo-only`. Don't combine the plugin with a full `install.sh` run, or you get the skill twice.
@@ -214,7 +222,40 @@ way codex-room-setup does it with one `CODEX_HOME` per role:
   `~/.paseo/config.json` and its backups at mode `600`. Without a token it
   leaves the variable out; then log in once per runtime instead:
   `CLAUDE_CONFIG_DIR=~/.config/slp-room/claude-<supervisor|lead|peer> claude`
-  → `/login`.
+  → `/login`. Instead of a token you can use a custom endpoint, below.
+
+### Custom endpoint instead of a token
+
+Any Anthropic-compatible proxy or gateway works (examples: 9router, OmniRoute,
+CLIProxyAPI, LiteLLM); nothing about it is assumed beyond a base URL and a key,
+and model names are not remapped. Every Claude seat's provider then gets
+`ANTHROPIC_BASE_URL` plus exactly one key variable, and never
+`CLAUDE_CODE_OAUTH_TOKEN`:
+
+| Key sent as | Provider env | Pick with |
+|---|---|---|
+| `Authorization: Bearer <key>` (default) | `ANTHROPIC_AUTH_TOKEN` | `SLP_CLAUDE_AUTH_HEADER=bearer`, or option 1 at the prompt |
+| `x-api-key: <key>` | `ANTHROPIC_API_KEY` | `SLP_CLAUDE_AUTH_HEADER=x-api-key`, or option 2 |
+
+Interactive: choose *2* at the sign-in prompt, or run `install.sh --endpoint`
+(base URL, then the key with hidden input, then the header form; Enter keeps
+what is saved). Non-interactive:
+
+```sh
+SLP_CLAUDE_BASE_URL=http://127.0.0.1:20128/v1 SLP_CLAUDE_API_KEY=<key> ./install.sh
+```
+
+The base URL must start with `http://` or `https://` (a trailing `/` is
+dropped); the key must be non-empty without whitespace. They are saved in
+`~/.config/slp-room/anthropic-base-url` / `anthropic-api-key` /
+`anthropic-auth-header` (mode 600) and the mode in `auth-mode`.
+
+Which mode applies: the `SLP_CLAUDE_*` variables and `--token` / `--endpoint`
+beat the saved mode; with none of them the saved mode is used (`token` when
+nothing is saved, so existing installs behave as before). Choosing a mode
+saves it, and the other mode's variables are removed from the rendered
+config. Asking for both at once (for example `SLP_CLAUDE_OAUTH_TOKEN` with
+`SLP_CLAUDE_BASE_URL`, or `--token` with `--endpoint`) is an error.
 - **`codex-peer`** runs Codex in its own runtime too, `CODEX_HOME=~/.config/slp-room/codex-peer`
   (as codex-room-setup does): `auth.json` linked to yours, a copy of your
   `config.toml`, your `AGENTS.md`/skills/plugins, and `rules/room.rules`
