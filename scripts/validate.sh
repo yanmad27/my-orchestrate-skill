@@ -462,6 +462,27 @@ else
   fail "install.sh without a token left a placeholder or an empty token in the provider env"
 fi
 
+# Custom endpoint: each header form renders ANTHROPIC_BASE_URL plus exactly one key variable on
+# every Claude provider, never CLAUDE_CODE_OAUTH_TOKEN (and the token render never has ANTHROPIC_*).
+EP_OK=1
+for form in bearer x-api-key; do
+  EP_HOME="$TMP/home-endpoint-$form"
+  mkdir -p "$EP_HOME"
+  if [ "$form" = bearer ]; then KEYVAR=ANTHROPIC_AUTH_TOKEN; else KEYVAR=ANTHROPIC_API_KEY; fi
+  if HOME="$EP_HOME" SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY="k e y" \
+      SLP_CLAUDE_AUTH_HEADER="$form" "$REPO_ROOT/install.sh" --paseo-only --no-reload >/dev/null 2>&1 \
+    && jq -e --arg kv "$KEYVAR" '[.agents.providers | to_entries[] | select(.key | startswith("claude-")) | .value.env
+        | keys | sort == (["ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR", $kv] | sort)] | length == 3 and all' \
+      "$EP_HOME/.paseo/config.json" >/dev/null; then :; else EP_OK=0; fi
+done
+if [ "$EP_OK" = 1 ] \
+  && jq -e '[.agents.providers | to_entries[] | select(.key | startswith("claude-")) | .value.env
+      | keys | map(select(startswith("ANTHROPIC_"))) | length] | all(. == 0)' "$TMP/home-render/.paseo/config.json" >/dev/null; then
+  ok "install.sh's endpoint render gives Claude providers ANTHROPIC_BASE_URL + one key variable and no OAuth token; the token render has no ANTHROPIC_*"
+else
+  fail "install.sh's Claude provider env mixes OAuth-token and ANTHROPIC_* variables"
+fi
+
 # v1 cleanup: only the v1 plugin (user scope) and marketplace are removed; a project-scope
 # install is only reported, and other plugins are left alone.
 LEGACY_HOME="$TMP/home-legacy"

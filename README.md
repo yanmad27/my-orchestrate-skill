@@ -223,6 +223,15 @@ way codex-room-setup does it with one `CODEX_HOME` per role:
   leaves the variable out; then log in once per runtime instead:
   `CLAUDE_CONFIG_DIR=~/.config/slp-room/claude-<supervisor|lead|peer> claude`
   → `/login`. Instead of a token you can use a custom endpoint, below.
+- **`codex-peer`** runs Codex in its own runtime too, `CODEX_HOME=~/.config/slp-room/codex-peer`
+  (as codex-room-setup does): `auth.json` linked to yours, a copy of your
+  `config.toml`, your `AGENTS.md`/skills/plugins, and `rules/room.rules`
+  that forbids `paseo`/`claude`/`codex`. The launcher
+  `~/.config/slp-room/bin/codex-peer` passes the Peer prompt as
+  `-c developer_instructions='''…'''`.
+
+Briefs still name the room files, so a seat launched without its prompt
+reads them instead.
 
 ### Custom endpoint instead of a token
 
@@ -237,41 +246,52 @@ and model names are not remapped. Every Claude seat's provider then gets
 | `Authorization: Bearer <key>` (default) | `ANTHROPIC_AUTH_TOKEN` | `SLP_CLAUDE_AUTH_HEADER=bearer`, or option 1 at the prompt |
 | `x-api-key: <key>` | `ANTHROPIC_API_KEY` | `SLP_CLAUDE_AUTH_HEADER=x-api-key`, or option 2 |
 
+`x-api-key` renders `ANTHROPIC_API_KEY`, which Claude may ask to approve in an
+interactive session; Bearer, the default, avoids that.
+
 Interactive: choose *2* at the sign-in prompt, or run `install.sh --endpoint`
 (base URL, then the key with hidden input, then the header form; Enter keeps
 what is saved). Non-interactive:
 
 ```sh
-SLP_CLAUDE_BASE_URL=http://127.0.0.1:20128/v1 SLP_CLAUDE_API_KEY=<key> ./install.sh
+SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY=<key> ./install.sh
 ```
 
-The base URL must start with `http://` or `https://` (a trailing `/` is
-dropped); the key must be non-empty without whitespace. They are saved in
-`~/.config/slp-room/anthropic-base-url` / `anthropic-api-key` /
-`anthropic-auth-header` (mode 600) and the mode in `auth-mode`.
+The Claude CLI appends `/v1/messages` itself, so the base URL normally has no
+`/v1`; check your proxy's docs for Anthropic clients. It must be an `http://`
+or `https://` URL without whitespace (a trailing `/` is dropped; credentials in
+it are kept but never printed). The key is opaque: only leading and trailing
+whitespace is trimmed, and it may not be empty or contain a line break. Both
+are saved in `~/.config/slp-room/anthropic-base-url` / `anthropic-api-key` /
+`anthropic-auth-header` (mode 600), the mode in `auth-mode`. In this mode the
+`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_*` keys in your `~/.claude/settings.json`
+`env` are left out of the runtimes' copies (with a warning naming the keys).
 
-Which mode applies: the `SLP_CLAUDE_*` variables and `--token` / `--endpoint`
-beat the saved mode; with none of them the saved mode is used (`token` when
-nothing is saved, so existing installs behave as before). Choosing a mode
-saves it, and the other mode's variables are removed from the rendered
-config. Asking for both at once (for example `SLP_CLAUDE_OAUTH_TOKEN` with
-`SLP_CLAUDE_BASE_URL`, or `--token` with `--endpoint`) is an error.
-- **`codex-peer`** runs Codex in its own runtime too, `CODEX_HOME=~/.config/slp-room/codex-peer`
-  (as codex-room-setup does): `auth.json` linked to yours, a copy of your
-  `config.toml`, your `AGENTS.md`/skills/plugins, and `rules/room.rules`
-  that forbids `paseo`/`claude`/`codex`. The launcher
-  `~/.config/slp-room/bin/codex-peer` passes the Peer prompt as
-  `-c developer_instructions='''…'''`.
+Which mode applies:
 
-Briefs still name the room files, so a seat launched without its prompt
-reads them instead.
+- `SLP_CLAUDE_*` and `--token` / `--endpoint` pick the mode; with none of them
+  the saved mode is used (`token` when nothing is saved, so existing installs
+  behave as before). Asking for both kinds at once (for example
+  `SLP_CLAUDE_OAUTH_TOKEN` with `SLP_CLAUDE_BASE_URL`, or `--token` with
+  `--endpoint`) is an error, reported before anything is changed.
+- Without a terminal, `--token` keeps the saved token and `--endpoint` uses the
+  saved endpoint (an error if none is complete).
+- A token request that yields no token (Enter, a bad paste, nothing saved)
+  keeps the saved endpoint when the saved mode is `endpoint`, and says so.
+- `auth-mode` becomes `token` only when a token is saved in `oauth-token`
+  (pasted, or `--token` with one already there). `SLP_CLAUDE_OAUTH_TOKEN` is
+  used for that run only, as before, and changes nothing saved.
+- The header form is `SLP_CLAUDE_AUTH_HEADER` if set; else `bearer` when
+  `SLP_CLAUDE_BASE_URL` is set; else the saved one. The interactive choice
+  overrides all of these, and rotating only `SLP_CLAUDE_API_KEY` keeps the
+  saved header.
 
 ### What the installer owns
 
 Each run resets the room's profiles (matched by `id`, or by name for
 profiles an old installer left without one), the `claude-lead`/`claude-peer`/
 `codex-peer` providers, `~/.claude/skills/supervisor`, and the generated
-files in `~/.config/slp-room` to this version (your `oauth-token` and each
+files in `~/.config/slp-room` to this version (your `oauth-token`, saved endpoint files, and each
 runtime's session history stay); removes the v1 profiles and the v1
 `claude-worker` provider; and leaves every other profile and provider alone.
 A model you change in the Paseo UI on a room profile is overwritten on the

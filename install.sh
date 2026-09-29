@@ -40,30 +40,6 @@ if [ "$DO_SKILL" = 0 ] && [ "$DO_PASEO" = 0 ]; then
   exit 1
 fi
 
-# Custom Anthropic-compatible endpoint, from the environment (never from an argument: it
-# would land in shell history and ps). Validated here so a bad value stops before any change.
-trim() { printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
-norm_url() {
-  local u
-  u="$(trim "$1")"
-  while [ "${u%/}" != "$u" ]; do u="${u%/}"; done
-  case "$u" in http://?*|https://?*) printf '%s' "$u" ;; *) return 1 ;; esac
-}
-EP_URL="${SLP_CLAUDE_BASE_URL:-}"
-EP_KEY="$(trim "${SLP_CLAUDE_API_KEY:-}")"
-EP_HDR="${SLP_CLAUDE_AUTH_HEADER:-}"
-if [ -n "$EP_URL" ]; then
-  EP_URL="$(norm_url "$EP_URL")" || { echo "SLP_CLAUDE_BASE_URL must start with http:// or https://." >&2; exit 1; }
-fi
-case "$EP_KEY" in *[[:space:]]*) echo "SLP_CLAUDE_API_KEY must not contain whitespace." >&2; exit 1 ;; esac
-case "$EP_HDR" in ""|bearer|x-api-key) ;; *) echo "SLP_CLAUDE_AUTH_HEADER must be bearer or x-api-key." >&2; exit 1 ;; esac
-if { [ -n "${SLP_CLAUDE_OAUTH_TOKEN:-}" ] || [ "$ASK_TOKEN" = 1 ]; } \
-  && { [ -n "$EP_URL$EP_KEY$EP_HDR" ] || [ "$ASK_ENDPOINT" = 1 ]; }; then
-  echo "Choose one auth mode: a setup-token (--token, SLP_CLAUDE_OAUTH_TOKEN) or a custom endpoint" >&2
-  echo "  (--endpoint, SLP_CLAUDE_BASE_URL / SLP_CLAUDE_API_KEY / SLP_CLAUDE_AUTH_HEADER), not both." >&2
-  exit 1
-fi
-
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -77,6 +53,214 @@ else
   SRC="$(find "$WORK" -mindepth 1 -maxdepth 1 -type d | head -1)"
 fi
 VERSION="$(tr -d '[:space:]' < "$SRC/version.txt")"
+
+# --- auth: decided, validated and saved before anything else changes ---------------------
+# Every Claude seat shares one auth, in one of two modes remembered in $ROOM_HOME/auth-mode:
+#   token     one `claude setup-token` token, kept in $ROOM_HOME/oauth-token (mode 600)
+#   endpoint  any Anthropic-compatible proxy or gateway: a base URL and a key, kept in
+#             $ROOM_HOME/anthropic-{base-url,api-key,auth-header} (mode 600)
+# Rules: SLP_CLAUDE_* and --token / --endpoint pick the mode, else the saved one (default
+# token). --token with no token, or --endpoint with no complete endpoint, keeps what is
+# saved. auth-mode=token is saved only with a saved token; SLP_CLAUDE_OAUTH_TOKEN is used
+# for one run and never persisted. Asking for both kinds at once is an error. Prompts read
+# /dev/tty, which still works when piped. The key is never taken from an argument.
+OAUTH_TOKEN=""; BASE_URL=""; API_KEY=""; ENDPOINT_KEY_VAR=""
+if [ "$DO_PASEO" = 1 ]; then
+  TOKEN_FILE="$ROOM_HOME/oauth-token"
+  MODE_FILE="$ROOM_HOME/auth-mode"
+  URL_FILE="$ROOM_HOME/anthropic-base-url"
+  KEY_FILE="$ROOM_HOME/anthropic-api-key"
+  HDR_FILE="$ROOM_HOME/anthropic-auth-header"
+  save_private() { mkdir -p "$ROOM_HOME"; (umask 077 && printf '%s\n' "$2" > "$1"); chmod 600 "$1"; }
+  saved() { if [ -f "$1" ]; then tr -d '[:space:]' < "$1"; fi; }
+  # The key is opaque: only its first line is read back, interior whitespace intact.
+  saved_line() { local v=""; if [ -f "$1" ]; then IFS= read -r v < "$1" || true; fi; printf '%s' "$v"; }
+  trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
+  norm_url() {
+    local u
+    u="$(trim "$1")"
+    while [ "${u%/}" != "$u" ]; do u="${u%/}"; done
+    case "$u" in *[[:space:]]*) return 1 ;; http://?*|https://?*) printf '%s' "$u" ;; *) return 1 ;; esac
+  }
+  redact_url() { sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/]*@#\1***@#'; }
+  key_ok() { case "$1" in ""|*$'\n'*|*$'\r'*) return 1 ;; esac; }
+
+  ENV_TOKEN="${SLP_CLAUDE_OAUTH_TOKEN:-}"
+  EP_URL="${SLP_CLAUDE_BASE_URL:-}"
+  EP_KEY="$(trim "${SLP_CLAUDE_API_KEY:-}")"
+  EP_HDR="${SLP_CLAUDE_AUTH_HEADER:-}"
+  if [ -n "$EP_URL" ]; then
+    EP_URL="$(norm_url "$EP_URL")" || { echo "SLP_CLAUDE_BASE_URL must be an http:// or https:// URL without whitespace." >&2; exit 1; }
+  fi
+  if [ -n "${SLP_CLAUDE_API_KEY:-}" ] && ! key_ok "$EP_KEY"; then
+    echo "SLP_CLAUDE_API_KEY must not be blank or contain a line break." >&2; exit 1
+  fi
+  case "$EP_HDR" in ""|bearer|x-api-key) ;; *) echo "SLP_CLAUDE_AUTH_HEADER must be bearer or x-api-key." >&2; exit 1 ;; esac
+  TOKEN_REQ=0; EP_REQ=0
+  { [ -n "$ENV_TOKEN" ] || [ "$ASK_TOKEN" = 1 ]; } && TOKEN_REQ=1
+  { [ -n "$EP_URL$EP_KEY$EP_HDR" ] || [ "$ASK_ENDPOINT" = 1 ]; } && EP_REQ=1
+  if [ "$TOKEN_REQ" = 1 ] && [ "$EP_REQ" = 1 ]; then
+    echo "Choose one auth mode: a setup-token (--token, SLP_CLAUDE_OAUTH_TOKEN) or a custom endpoint" >&2
+    echo "  (--endpoint, SLP_CLAUDE_BASE_URL / SLP_CLAUDE_API_KEY / SLP_CLAUDE_AUTH_HEADER), not both." >&2
+    exit 1
+  fi
+  HAS_TTY=0
+  if [ -t 2 ] && { : < /dev/tty; } 2>/dev/null; then HAS_TTY=1; fi
+  TOKEN_FLAG="$ASK_TOKEN"
+  if [ "$ASK_TOKEN" = 1 ] && [ "$HAS_TTY" = 0 ]; then
+    echo "WARNING: --token needs a terminal to ask on; keeping the saved token." >&2
+    ASK_TOKEN=0
+  fi
+  if [ "$ASK_ENDPOINT" = 1 ] && [ "$HAS_TTY" = 0 ]; then
+    echo "WARNING: --endpoint needs a terminal to ask on; using the saved endpoint." >&2
+    ASK_ENDPOINT=0
+  fi
+  SAVED_MODE="$(saved "$MODE_FILE")"
+  if [ "$EP_REQ" = 1 ]; then MODE=endpoint
+  elif [ "$TOKEN_REQ" = 1 ]; then MODE=token
+  elif [ "$SAVED_MODE" = endpoint ]; then MODE=endpoint
+  else MODE=token
+  fi
+
+  CHOSE_TOKEN=0
+  if [ "$MODE" = token ]; then
+    OAUTH_TOKEN="$ENV_TOKEN"
+    TOKEN_FROM_FILE=0; PASTED_OK=0
+    if [ -z "$OAUTH_TOKEN" ] && [ "$ASK_TOKEN" = 0 ] && [ -f "$TOKEN_FILE" ]; then
+      OAUTH_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+      [ -z "$OAUTH_TOKEN" ] || TOKEN_FROM_FILE=1
+    fi
+    if [ -z "$OAUTH_TOKEN" ] && [ "$TOKEN_REQ" = 0 ] && [ "$HAS_TTY" = 1 ]; then
+      {
+        echo
+        echo "How should the room's Claude seats sign in?"
+        echo "  1) a 'claude setup-token' token (default)"
+        echo "  2) a custom Anthropic-compatible endpoint (base URL + key)"
+        printf 'Choose 1 or 2: '
+      } > /dev/tty
+      IFS= read -r CHOICE < /dev/tty || CHOICE=""
+      case "$(printf '%s' "$CHOICE" | tr -d '[:space:]')" in
+        2) MODE=endpoint; ASK_ENDPOINT=1 ;;
+        *) CHOSE_TOKEN=1 ;;
+      esac
+    fi
+  fi
+  if [ "$MODE" = token ]; then
+    if [ -z "$OAUTH_TOKEN" ] && [ "$HAS_TTY" = 1 ]; then
+      {
+        echo
+        echo "The room's Claude seats share one token. In another terminal run 'claude setup-token',"
+        echo "then paste the sk-ant-oat01-… line it prints (input hidden; Enter skips)."
+        printf 'Token: '
+      } > /dev/tty
+      IFS= read -rs PASTED < /dev/tty || PASTED=""
+      echo > /dev/tty
+      PASTED="$(printf '%s' "$PASTED" | tr -d '[:space:]')"
+      case "$PASTED" in
+        "") ;;
+        sk-ant-oat*)
+          save_private "$TOKEN_FILE" "$PASTED"
+          OAUTH_TOKEN="$PASTED"; PASTED_OK=1
+          echo "Saved the token to $TOKEN_FILE"
+          ;;
+        *) echo "WARNING: that is not a 'claude setup-token' token (sk-ant-oat…); not saved." >&2 ;;
+      esac
+      PASTED=""
+      # Skipping the prompt (or a bad paste) keeps the token that was already saved.
+      if [ -z "$OAUTH_TOKEN" ] && [ -f "$TOKEN_FILE" ]; then
+        OAUTH_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+        [ -z "$OAUTH_TOKEN" ] || { TOKEN_FROM_FILE=1; echo "Kept the saved token in $TOKEN_FILE"; }
+      fi
+    fi
+    if [ -z "$OAUTH_TOKEN" ] && { [ "$TOKEN_FLAG" = 1 ] || [ "$CHOSE_TOKEN" = 1 ]; } \
+      && [ "$SAVED_MODE" = endpoint ] && [ -n "$(saved "$URL_FILE")" ] && [ -n "$(saved_line "$KEY_FILE")" ]; then
+      MODE=endpoint  # no token came out of it: keep the saved endpoint rather than drop auth
+      echo "Kept the saved endpoint $(saved "$URL_FILE" | redact_url) (no token was given)."
+    fi
+  fi
+  if [ "$MODE" = token ]; then
+    if [ -z "$OAUTH_TOKEN" ]; then
+      echo "WARNING: no Claude token for the room runtimes. Run 'claude setup-token', then re-run" >&2
+      echo "  install.sh with --token and paste it — or log in once per runtime:" >&2
+      echo "  CLAUDE_CONFIG_DIR=$ROOM_HOME/claude-<supervisor|lead|peer> claude" >&2
+    elif [ -z "$ENV_TOKEN" ] && { [ "$PASTED_OK" = 1 ] || { [ "$TOKEN_FLAG" = 1 ] && [ "$TOKEN_FROM_FILE" = 1 ]; }; }; then
+      save_private "$MODE_FILE" token
+    fi
+  fi
+
+  # Endpoint mode. Explicit values (SLP_CLAUDE_*) beat prompts, which beat what is saved.
+  # The header form picks the variable: bearer → ANTHROPIC_AUTH_TOKEN, x-api-key → ANTHROPIC_API_KEY.
+  if [ "$MODE" = endpoint ]; then
+    CUR_URL="$EP_URL"; CUR_KEY="$EP_KEY"
+    [ -n "$CUR_URL" ] || CUR_URL="$(saved "$URL_FILE")"
+    [ -n "$CUR_KEY" ] || CUR_KEY="$(saved_line "$KEY_FILE")"
+    if [ -n "$EP_HDR" ]; then CUR_HDR="$EP_HDR"       # explicit header
+    elif [ -n "$EP_URL" ]; then CUR_HDR=bearer         # a new endpoint starts at the default
+    else CUR_HDR="$(saved "$HDR_FILE")"; fi            # a rotated key keeps the saved header
+    ASK_URL=0; ASK_KEY=0
+    if [ "$HAS_TTY" = 1 ]; then
+      if [ -z "$EP_URL" ] && { [ "$ASK_ENDPOINT" = 1 ] || [ -z "$CUR_URL" ]; }; then ASK_URL=1; fi
+      if [ -z "$EP_KEY" ] && { [ "$ASK_ENDPOINT" = 1 ] || [ -z "$CUR_KEY" ]; }; then ASK_KEY=1; fi
+    fi
+    if [ "$ASK_URL" = 1 ] || [ "$ASK_KEY" = 1 ]; then
+      {
+        echo
+        echo "Custom endpoint: any Anthropic-compatible proxy or gateway (e.g. 9router, LiteLLM)."
+        echo "Enter keeps what is saved (or skips)."
+      } > /dev/tty
+    fi
+    if [ "$ASK_URL" = 1 ]; then
+      printf 'Base URL%s: ' "${CUR_URL:+ [$(printf '%s' "$CUR_URL" | redact_url)]}" > /dev/tty
+      IFS= read -r PASTED < /dev/tty || PASTED=""
+      if [ -n "$(trim "$PASTED")" ]; then
+        if PASTED="$(norm_url "$PASTED")"; then CUR_URL="$PASTED"
+        else echo "WARNING: the base URL must be an http:// or https:// URL without whitespace; not saved." >&2; fi
+      fi
+    fi
+    if [ "$ASK_KEY" = 1 ]; then
+      printf 'Key (input hidden): ' > /dev/tty
+      IFS= read -rs PASTED < /dev/tty || PASTED=""
+      echo > /dev/tty
+      PASTED="$(trim "$PASTED")"
+      if [ -z "$PASTED" ]; then :
+      elif key_ok "$PASTED"; then CUR_KEY="$PASTED"
+      else echo "WARNING: the key must not contain a line break; not saved." >&2; fi
+      PASTED=""
+    fi
+    if { [ "$ASK_URL" = 1 ] || [ "$ASK_KEY" = 1 ]; } && [ -z "$EP_HDR" ]; then
+      {
+        echo "Send the key as:"
+        echo "  1) 'Authorization: Bearer' (default; most proxies)"
+        echo "  2) 'x-api-key'"
+        printf 'Choose 1 or 2%s: ' "${CUR_HDR:+ [current: $CUR_HDR]}"
+      } > /dev/tty
+      IFS= read -r CHOICE < /dev/tty || CHOICE=""
+      case "$(printf '%s' "$CHOICE" | tr -d '[:space:]')" in
+        1) CUR_HDR=bearer ;;
+        2) CUR_HDR=x-api-key ;;
+      esac
+    fi
+    case "$CUR_HDR" in bearer|x-api-key) ;; *) CUR_HDR=bearer ;; esac
+    if [ -n "$CUR_URL" ] && [ -n "$CUR_KEY" ]; then
+      if [ "$CUR_URL" != "$(saved "$URL_FILE")" ] || [ "$CUR_KEY" != "$(saved_line "$KEY_FILE")" ] \
+        || [ "$CUR_HDR" != "$(saved "$HDR_FILE")" ]; then
+        save_private "$URL_FILE" "$CUR_URL"
+        save_private "$KEY_FILE" "$CUR_KEY"
+        save_private "$HDR_FILE" "$CUR_HDR"
+        echo "Saved the endpoint to $ROOM_HOME/anthropic-{base-url,api-key,auth-header}"
+      fi
+      save_private "$MODE_FILE" endpoint
+      BASE_URL="$CUR_URL"; API_KEY="$CUR_KEY"
+      if [ "$CUR_HDR" = bearer ]; then ENDPOINT_KEY_VAR=ANTHROPIC_AUTH_TOKEN; else ENDPOINT_KEY_VAR=ANTHROPIC_API_KEY; fi
+    elif [ "$EP_REQ" = 1 ] && { [ -n "$EP_URL$EP_KEY$EP_HDR" ] || [ "$HAS_TTY" = 0 ]; }; then
+      echo "No complete endpoint: set SLP_CLAUDE_BASE_URL and SLP_CLAUDE_API_KEY (or save one first with --endpoint)." >&2
+      exit 1
+    else
+      echo "WARNING: no complete custom endpoint (base URL + key) for the room runtimes. Re-run" >&2
+      echo "  install.sh with --endpoint, or with --token to use a 'claude setup-token' token instead." >&2
+    fi
+  fi
+fi
 
 # --- 0. v1 cleanup ------------------------------------------------------------------
 # v1 shipped as orchestrate@my-orchestrate-skill; its /orchestrate skill would compete with
@@ -187,8 +371,24 @@ if [ "$DO_PASEO" = 1 ]; then
         echo "WARNING: $CLAUDE_HOME/settings.json is not a JSON object; the $role runtime starts from empty settings." >&2
       fi
     fi
-    printf '%s' "$USER_SETTINGS" | jq --arg style "slp-$role" '
+    # Endpoint mode: the user's settings env must not override or conflict with the provider env.
+    STRIP_ENV=0
+    if [ -n "$ENDPOINT_KEY_VAR" ]; then
+      STRIP_ENV=1
+      DROPPED="$(printf '%s' "$USER_SETTINGS" | jq -r '[(.env // {}) | if type == "object" then keys[] else empty end
+        | select(. == "CLAUDE_CODE_OAUTH_TOKEN" or . == "ANTHROPIC_BASE_URL" or . == "ANTHROPIC_AUTH_TOKEN" or . == "ANTHROPIC_API_KEY")] | join(", ")')"
+      if [ -n "$DROPPED" ] && [ -z "${WARNED_ENV:-}" ]; then
+        WARNED_ENV=1
+        echo "WARNING: removed $DROPPED from the runtimes' settings env (the custom endpoint sets them); $CLAUDE_HOME/settings.json is untouched." >&2
+      fi
+    fi
+    printf '%s' "$USER_SETTINGS" | jq --arg style "slp-$role" --argjson strip "$STRIP_ENV" '
       .outputStyle = $style
+      | if $strip == 1 and (.env | type) == "object" then
+          (.env) as $before
+          | .env |= del(.CLAUDE_CODE_OAUTH_TOKEN, .ANTHROPIC_BASE_URL, .ANTHROPIC_AUTH_TOKEN, .ANTHROPIC_API_KEY)
+          | if .env == {} and $before != {} then del(.env) else . end
+        else . end
       | .enabledPlugins = ((.enabledPlugins // {})
           | with_entries(if (.key | test("^(paseo-slp|orchestrate)@")) then .value = false else . end))
     ' > "$RUNTIME/settings.json"
@@ -207,169 +407,6 @@ if [ "$DO_PASEO" = 1 ]; then
     fi
   done
   rm -f "$ROOM_HOME/bin/claude-lead" "$ROOM_HOME/bin/claude-peer"  # launchers of an earlier version
-
-  # Shared auth for every Claude seat, in one of two modes remembered in $ROOM_HOME/auth-mode:
-  #   token     one `claude setup-token` token, kept in $ROOM_HOME/oauth-token (mode 600)
-  #   endpoint  any Anthropic-compatible proxy or gateway: a base URL and a key, kept in
-  #             $ROOM_HOME/anthropic-{base-url,api-key,auth-header} (mode 600)
-  # Which mode applies: the SLP_CLAUDE_* variables and --token / --endpoint beat the saved
-  # mode (default: token), and choosing one saves it; the two kinds together are an error
-  # (checked up front). Missing or asked-for input is read on /dev/tty, which still works
-  # when piped.
-  TOKEN_FILE="$ROOM_HOME/oauth-token"
-  MODE_FILE="$ROOM_HOME/auth-mode"
-  URL_FILE="$ROOM_HOME/anthropic-base-url"
-  KEY_FILE="$ROOM_HOME/anthropic-api-key"
-  HDR_FILE="$ROOM_HOME/anthropic-auth-header"
-  save_private() { (umask 077 && printf '%s\n' "$2" > "$1"); chmod 600 "$1"; }
-  saved() { if [ -f "$1" ]; then tr -d '[:space:]' < "$1"; fi; }
-  OAUTH_TOKEN="${SLP_CLAUDE_OAUTH_TOKEN:-}"
-  HAS_TTY=0
-  if [ -t 2 ] && { : < /dev/tty; } 2>/dev/null; then HAS_TTY=1; fi
-  if [ "$ASK_TOKEN" = 1 ] && [ "$HAS_TTY" = 0 ]; then
-    echo "WARNING: --token needs a terminal to ask on; keeping the saved token." >&2
-    ASK_TOKEN=0
-  fi
-  if [ "$ASK_ENDPOINT" = 1 ] && [ "$HAS_TTY" = 0 ]; then
-    echo "WARNING: --endpoint needs a terminal to ask on; keeping the saved settings." >&2
-    ASK_ENDPOINT=0
-  fi
-  if [ -n "$EP_URL$EP_KEY$EP_HDR" ] || [ "$ASK_ENDPOINT" = 1 ]; then MODE=endpoint
-  elif [ -n "$OAUTH_TOKEN" ] || [ "$ASK_TOKEN" = 1 ]; then MODE=token
-  elif [ "$(saved "$MODE_FILE")" = endpoint ]; then MODE=endpoint
-  else MODE=token
-  fi
-
-  if [ "$MODE" = token ]; then
-    if [ -z "$OAUTH_TOKEN" ] && [ "$ASK_TOKEN" = 0 ] && [ -f "$TOKEN_FILE" ]; then
-      OAUTH_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
-    fi
-    if [ -z "$OAUTH_TOKEN" ] && [ "$ASK_TOKEN" = 0 ] && [ "$HAS_TTY" = 1 ]; then
-      {
-        echo
-        echo "How should the room's Claude seats sign in?"
-        echo "  1) a 'claude setup-token' token (default)"
-        echo "  2) a custom Anthropic-compatible endpoint (base URL + key)"
-        printf 'Choose 1 or 2: '
-      } > /dev/tty
-      IFS= read -r CHOICE < /dev/tty || CHOICE=""
-      case "$(printf '%s' "$CHOICE" | tr -d '[:space:]')" in
-        2) MODE=endpoint; ASK_ENDPOINT=1 ;;
-      esac
-    fi
-  fi
-
-  if [ "$MODE" = token ]; then
-    if [ -z "$OAUTH_TOKEN" ] && [ "$HAS_TTY" = 1 ]; then
-      {
-        echo
-        echo "The room's Claude seats share one token. In another terminal run 'claude setup-token',"
-        echo "then paste the sk-ant-oat01-… line it prints (input hidden; Enter skips)."
-        printf 'Token: '
-      } > /dev/tty
-      IFS= read -rs PASTED < /dev/tty || PASTED=""
-      echo > /dev/tty
-      PASTED="$(printf '%s' "$PASTED" | tr -d '[:space:]')"
-      case "$PASTED" in
-        "") ;;
-        sk-ant-oat*)
-          save_private "$TOKEN_FILE" "$PASTED"
-          OAUTH_TOKEN="$PASTED"
-          echo "Saved the token to $TOKEN_FILE"
-          ;;
-        *) echo "WARNING: that is not a 'claude setup-token' token (sk-ant-oat…); not saved." >&2 ;;
-      esac
-      PASTED=""
-      # Skipping the prompt (or a bad paste) keeps the token that was already saved.
-      if [ -z "$OAUTH_TOKEN" ] && [ -f "$TOKEN_FILE" ]; then
-        OAUTH_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
-        [ -z "$OAUTH_TOKEN" ] || echo "Kept the saved token in $TOKEN_FILE"
-      fi
-    fi
-    if [ -z "$OAUTH_TOKEN" ]; then
-      echo "WARNING: no Claude token for the room runtimes. Run 'claude setup-token', then re-run" >&2
-      echo "  install.sh with --token and paste it — or log in once per runtime:" >&2
-      echo "  CLAUDE_CONFIG_DIR=$ROOM_HOME/claude-<supervisor|lead|peer> claude" >&2
-    elif [ -n "${SLP_CLAUDE_OAUTH_TOKEN:-}" ] || [ "$ASK_TOKEN" = 1 ]; then
-      save_private "$MODE_FILE" token  # an explicit choice: a later plain re-run keeps it
-    fi
-  fi
-
-  # Endpoint mode: explicit values (SLP_CLAUDE_*) beat prompts, which beat what is saved.
-  # Only the URL scheme and a non-blank, whitespace-free key are checked; the header form
-  # picks the variable: bearer → ANTHROPIC_AUTH_TOKEN, x-api-key → ANTHROPIC_API_KEY.
-  ENDPOINT_KEY_VAR=""
-  if [ "$MODE" = endpoint ]; then
-    NEW_URL="$EP_URL"; NEW_KEY="$EP_KEY"; NEW_HDR="$EP_HDR"
-    CUR_URL="$NEW_URL"; CUR_KEY="$NEW_KEY"; CUR_HDR="$NEW_HDR"
-    [ -n "$CUR_URL" ] || CUR_URL="$(saved "$URL_FILE")"
-    [ -n "$CUR_KEY" ] || CUR_KEY="$(saved "$KEY_FILE")"
-    [ -n "$CUR_HDR" ] || CUR_HDR="$(saved "$HDR_FILE")"
-    ASK_URL=0; ASK_KEY=0
-    if [ "$HAS_TTY" = 1 ]; then
-      if [ -z "$NEW_URL" ] && { [ "$ASK_ENDPOINT" = 1 ] || [ -z "$CUR_URL" ]; }; then ASK_URL=1; fi
-      if [ -z "$NEW_KEY" ] && { [ "$ASK_ENDPOINT" = 1 ] || [ -z "$CUR_KEY" ]; }; then ASK_KEY=1; fi
-    fi
-    if [ "$ASK_URL" = 1 ] || [ "$ASK_KEY" = 1 ]; then
-      {
-        echo
-        echo "Custom endpoint: any Anthropic-compatible proxy or gateway (e.g. 9router, LiteLLM)."
-        echo "Enter keeps what is saved (or skips)."
-      } > /dev/tty
-    fi
-    if [ "$ASK_URL" = 1 ]; then
-      printf 'Base URL%s: ' "${CUR_URL:+ [$CUR_URL]}" > /dev/tty
-      IFS= read -r PASTED < /dev/tty || PASTED=""
-      if [ -n "$(trim "$PASTED")" ]; then
-        if PASTED="$(norm_url "$PASTED")"; then CUR_URL="$PASTED"
-        else echo "WARNING: the base URL must start with http:// or https://; not saved." >&2; fi
-      fi
-    fi
-    if [ "$ASK_KEY" = 1 ]; then
-      printf 'Key (input hidden): ' > /dev/tty
-      IFS= read -rs PASTED < /dev/tty || PASTED=""
-      echo > /dev/tty
-      PASTED="$(trim "$PASTED")"
-      case "$PASTED" in
-        "") ;;
-        *[[:space:]]*) echo "WARNING: the key must not contain whitespace; not saved." >&2 ;;
-        *) CUR_KEY="$PASTED" ;;
-      esac
-      PASTED=""
-    fi
-    if { [ "$ASK_URL" = 1 ] || [ "$ASK_KEY" = 1 ]; } && [ -z "$NEW_HDR" ]; then
-      {
-        echo "Send the key as:"
-        echo "  1) 'Authorization: Bearer' (default; most proxies)"
-        echo "  2) 'x-api-key'"
-        printf 'Choose 1 or 2%s: ' "${CUR_HDR:+ [current: $CUR_HDR]}"
-      } > /dev/tty
-      IFS= read -r CHOICE < /dev/tty || CHOICE=""
-      case "$(printf '%s' "$CHOICE" | tr -d '[:space:]')" in
-        1) CUR_HDR=bearer ;;
-        2) CUR_HDR=x-api-key ;;
-      esac
-    fi
-    case "$CUR_HDR" in bearer|x-api-key) ;; *) CUR_HDR=bearer ;; esac
-    if [ -n "$CUR_URL" ] && [ -n "$CUR_KEY" ]; then
-      if [ "$CUR_URL" != "$(saved "$URL_FILE")" ] || [ "$CUR_KEY" != "$(saved "$KEY_FILE")" ] \
-        || [ "$CUR_HDR" != "$(saved "$HDR_FILE")" ]; then
-        save_private "$URL_FILE" "$CUR_URL"
-        save_private "$KEY_FILE" "$CUR_KEY"
-        save_private "$HDR_FILE" "$CUR_HDR"
-        echo "Saved the endpoint to $ROOM_HOME/anthropic-{base-url,api-key,auth-header}"
-      fi
-      save_private "$MODE_FILE" endpoint
-      BASE_URL="$CUR_URL"; API_KEY="$CUR_KEY"
-      if [ "$CUR_HDR" = bearer ]; then ENDPOINT_KEY_VAR=ANTHROPIC_AUTH_TOKEN; else ENDPOINT_KEY_VAR=ANTHROPIC_API_KEY; fi
-    elif [ -n "$EP_URL$EP_KEY$EP_HDR" ]; then
-      echo "SLP_CLAUDE_BASE_URL and SLP_CLAUDE_API_KEY must both be set (or already saved by an earlier run)." >&2
-      exit 1
-    else
-      echo "WARNING: no complete custom endpoint (base URL + key) for the room runtimes. Re-run" >&2
-      echo "  install.sh with --endpoint, or with --token to use a 'claude setup-token' token instead." >&2
-    fi
-  fi
 
   # Every copy of the agent-spawning CLIs on PATH (and their symlink targets): Claude seats
   # deny them by name and path (step 3); the Codex runtime forbids them in its rules.
@@ -509,7 +546,7 @@ LAUNCHER
   echo "  Room profiles: $(jq -r '[.daemon.agentProfiles[].name] | join(", ")' "$WORK/snippet.json")"
   echo "  Room providers: $(jq -r '.agents.providers | keys | join(", ")' "$WORK/snippet.json")"
   [ -z "$OAUTH_TOKEN" ] || echo "  Claude runtimes share the token from $ROOM_HOME/oauth-token"
-  [ -z "$ENDPOINT_KEY_VAR" ] || echo "  Claude runtimes use the endpoint $BASE_URL (key in $ROOM_HOME/anthropic-api-key, sent via $ENDPOINT_KEY_VAR)"
+  [ -z "$ENDPOINT_KEY_VAR" ] || echo "  Claude runtimes use the endpoint $(printf '%s' "$BASE_URL" | redact_url) (key in $ROOM_HOME/anthropic-api-key, sent via $ENDPOINT_KEY_VAR)"
   [ -z "$REMOVED" ] || echo "  Removed v1 profiles: $REMOVED"
   DUPES="$(jq -r '[.daemon.agentProfiles[].name] | group_by(.) | map(select(length > 1)[0]) | join(", ")' "$CONFIG")"
   [ -z "$DUPES" ] || echo "WARNING: you also have your own profile(s) named $DUPES; rename yours so the room picks the right one." >&2
