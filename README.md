@@ -125,7 +125,7 @@ Or skip the prompts and pass both in one command — the variables go after the
 pipe, on the `bash` side:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yanmad27/paseo-slp/main/install.sh | SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY=<key> bash
+curl -fsSL https://raw.githubusercontent.com/yanmad27/paseo-slp/main/install.sh | SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_AUTH_TOKEN=<key> bash
 ```
 
 ## Install
@@ -157,7 +157,7 @@ it uses the checkout.
 | `--token` | Ask for a new Claude token and replace the saved one (e.g. to rotate it) |
 | `SLP_CLAUDE_OAUTH_TOKEN=<token>` | Use this token instead of `~/.config/slp-room/oauth-token` (no prompt) |
 | `--endpoint` | Ask for a custom Anthropic-compatible base URL and key (and how to send it) instead of a token |
-| `SLP_CLAUDE_BASE_URL=<url>` `SLP_CLAUDE_API_KEY=<key>` | Use this endpoint and key, saved for later runs (no prompt; the key is never taken as an argument) |
+| `SLP_CLAUDE_BASE_URL=<url>` `SLP_CLAUDE_AUTH_TOKEN=<key>` | Use this endpoint and key, saved for later runs (no prompt; the key is never taken as an argument). `SLP_CLAUDE_API_KEY` is still accepted as an older alias for `SLP_CLAUDE_AUTH_TOKEN`; if both are set and differ, the install stops before changing anything |
 | `SLP_CLAUDE_AUTH_HEADER=bearer\|x-api-key` | How the key is sent; default `bearer` |
 
 > [!NOTE]
@@ -260,13 +260,13 @@ Interactive: choose *2* at the sign-in prompt, or run `install.sh --endpoint`
 what is saved). Non-interactive:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yanmad27/paseo-slp/main/install.sh | SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY=<key> bash
+curl -fsSL https://raw.githubusercontent.com/yanmad27/paseo-slp/main/install.sh | SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_AUTH_TOKEN=<key> bash
 ```
 
 The variables sit on the `bash` side of the pipe; placed before `curl` they
 would never reach the script. Add `SLP_CLAUDE_AUTH_HEADER=x-api-key` there to
 send the key as `x-api-key`. From a clone:
-`SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY=<key> ./install.sh`
+`SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_AUTH_TOKEN=<key> ./install.sh`
 
 The Claude CLI appends `/v1/messages` itself, so the base URL normally has no
 `/v1`; check your proxy's docs for Anthropic clients. It must be an `http://`
@@ -294,11 +294,11 @@ Which mode applies:
   (pasted, or `--token` with one already there). `SLP_CLAUDE_OAUTH_TOKEN` is
   used for that run only, as before, and changes nothing saved.
 - The header form, in order: `SLP_CLAUDE_AUTH_HEADER` if set (which also skips
-  the header prompt, like `SLP_CLAUDE_BASE_URL` and `SLP_CLAUDE_API_KEY` skip
+  the header prompt, like `SLP_CLAUDE_BASE_URL` and `SLP_CLAUDE_AUTH_TOKEN` skip
   theirs); otherwise the interactive choice, when the prompt runs (Enter keeps
   what the next rules give); otherwise `bearer` when `SLP_CLAUDE_BASE_URL` is
   set; otherwise the saved one; otherwise `bearer`. Rotating only
-  `SLP_CLAUDE_API_KEY` keeps the saved header.
+  `SLP_CLAUDE_AUTH_TOKEN` keeps the saved header.
 
 ### What the installer owns
 

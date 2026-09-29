@@ -469,12 +469,26 @@ for form in bearer x-api-key; do
   EP_HOME="$TMP/home-endpoint-$form"
   mkdir -p "$EP_HOME"
   if [ "$form" = bearer ]; then KEYVAR=ANTHROPIC_AUTH_TOKEN; else KEYVAR=ANTHROPIC_API_KEY; fi
-  if HOME="$EP_HOME" SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY="k e y" \
+  if HOME="$EP_HOME" SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_AUTH_TOKEN="k e y" \
       SLP_CLAUDE_AUTH_HEADER="$form" "$REPO_ROOT/install.sh" --paseo-only --no-reload >/dev/null 2>&1 \
     && jq -e --arg kv "$KEYVAR" '[.agents.providers | to_entries[] | select(.key | startswith("claude-")) | .value.env
         | keys | sort == (["ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR", $kv] | sort)] | length == 3 and all' \
       "$EP_HOME/.paseo/config.json" >/dev/null; then :; else EP_OK=0; fi
 done
+# The older alias SLP_CLAUDE_API_KEY still renders the same key; both names set and different is refused.
+ALIAS_HOME="$TMP/home-endpoint-alias"
+mkdir -p "$ALIAS_HOME"
+if HOME="$ALIAS_HOME" SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY="k e y" \
+    "$REPO_ROOT/install.sh" --paseo-only --no-reload >/dev/null 2>&1 \
+  && jq -e '[.agents.providers | to_entries[] | select(.key | startswith("claude-")) | .value.env
+      | .ANTHROPIC_AUTH_TOKEN == "k e y"] | length == 3 and all' "$ALIAS_HOME/.paseo/config.json" >/dev/null \
+  && ! HOME="$TMP/home-endpoint-both" SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY=a \
+    SLP_CLAUDE_AUTH_TOKEN=b "$REPO_ROOT/install.sh" --paseo-only --no-reload >/dev/null 2>&1; then
+  ok "install.sh still accepts SLP_CLAUDE_API_KEY as an alias and refuses two different keys"
+else
+  fail "install.sh's SLP_CLAUDE_API_KEY alias broke, or two different keys were accepted"
+fi
+
 if [ "$EP_OK" = 1 ] \
   && jq -e '[.agents.providers | to_entries[] | select(.key | startswith("claude-")) | .value.env
       | keys | map(select(startswith("ANTHROPIC_"))) | length] | all(. == 0)' "$TMP/home-render/.paseo/config.json" >/dev/null; then
