@@ -77,6 +77,7 @@ ROOM_PHRASES=(
   'SKILL.md|$ARGUMENTS'
   "SKILL.md|Always open with a recap of what each subagent did"
   "SKILL.md|roles/lead.md"
+  "SKILL.md|the path stated at the top of your system"
   "SKILL.md|INTENT RECORD"
   "SKILL.md|KEEPING THE ROOM ON COURSE"
   "SKILL.md|Emergency brake"
@@ -204,10 +205,10 @@ else
 fi
 
 # Supervisor and Lead launch agents, so they need a provider with agent tools; Peers must not.
-if jq -e '[.daemon.agentProfiles[] | select(.name == "Supervisor" or .name == "Lead") | .provider] == ["claude", "claude-lead"]' "$SNIPPET" >/dev/null; then
-  ok 'Supervisor uses provider "claude" and Lead uses "claude-lead"'
+if jq -e '[.daemon.agentProfiles[] | select(.name == "Supervisor" or .name == "Lead") | .provider] == ["claude-supervisor", "claude-lead"]' "$SNIPPET" >/dev/null; then
+  ok 'Supervisor uses provider "claude-supervisor" and Lead uses "claude-lead"'
 else
-  fail 'Supervisor must use provider "claude" and Lead "claude-lead"'
+  fail 'Supervisor must use provider "claude-supervisor" and Lead "claude-lead"'
 fi
 
 if jq -e '[.daemon.agentProfiles[] | select(.name | test("[Pp]eer$")) | select(.name | startswith("Codex") | not) | .provider] | length == 4 and all(. == "claude-peer")' "$SNIPPET" >/dev/null; then
@@ -250,15 +251,18 @@ fi
 
 # Claude seats run in their own runtime (CLAUDE_CONFIG_DIR) sharing one token; Codex through a launcher.
 if jq -e '.agents.providers as $p
-    | $p["claude-lead"].extends == "claude"
+    | $p["claude-supervisor"].extends == "claude"
+    and $p["claude-supervisor"].env == {"CLAUDE_CONFIG_DIR": "@@ROOM_HOME@@/claude-supervisor", "CLAUDE_CODE_OAUTH_TOKEN": "@@CLAUDE_OAUTH_TOKEN@@"}
+    and ($p["claude-supervisor"] | has("paseoTools") | not)
+    and $p["claude-lead"].extends == "claude"
     and $p["claude-lead"].env == {"CLAUDE_CONFIG_DIR": "@@ROOM_HOME@@/claude-lead", "CLAUDE_CODE_OAUTH_TOKEN": "@@CLAUDE_OAUTH_TOKEN@@"}
     and $p["claude-peer"].env == {"CLAUDE_CONFIG_DIR": "@@ROOM_HOME@@/claude-peer", "CLAUDE_CODE_OAUTH_TOKEN": "@@CLAUDE_OAUTH_TOKEN@@"}
     and ($p["claude-lead"] | has("command") | not) and ($p["claude-peer"] | has("command") | not)
     and ($p["claude-lead"].paseoTools.disabledTools | index("create_agent") == null and index("create_heartbeat") != null)
     and $p["codex-peer"].command == ["@@ROOM_HOME@@/bin/codex-peer"]' "$SNIPPET" >/dev/null; then
-  ok "claude-lead/claude-peer use per-role runtimes with a shared token; codex-peer uses its launcher; claude-lead keeps create_agent but not heartbeats"
+  ok "claude-supervisor/claude-lead/claude-peer use per-role runtimes with a shared token (Supervisor keeps every Paseo tool); codex-peer uses its launcher; claude-lead keeps create_agent but not heartbeats"
 else
-  fail "claude-lead/claude-peer must set env CLAUDE_CONFIG_DIR=@@ROOM_HOME@@/<provider> and CLAUDE_CODE_OAUTH_TOKEN=@@CLAUDE_OAUTH_TOKEN@@ (no command); codex-peer must launch through @@ROOM_HOME@@/bin/codex-peer"
+  fail "claude-supervisor/claude-lead/claude-peer must set env CLAUDE_CONFIG_DIR=@@ROOM_HOME@@/<provider> and CLAUDE_CODE_OAUTH_TOKEN=@@CLAUDE_OAUTH_TOKEN@@ (no command); codex-peer must launch through @@ROOM_HOME@@/bin/codex-peer"
 fi
 
 # Peers talk back to their Lead (send_agent_prompt) but must not spawn or control agents.
@@ -346,7 +350,7 @@ if HOME="$MIGRATE_HOME" "$REPO_ROOT/install.sh" --paseo-only --no-reload >/dev/n
   if jq -e --slurpfile snip "$SNIPPET" '
       ([.daemon.agentProfiles[].name] | sort) == (["Mine"] + [$snip[0].daemon.agentProfiles[].name] | sort)
       and ([.daemon.agentProfiles[] | select(.name == "Lead") | .model] == ["claude-opus-5-5"])
-      and (.agents.providers | keys | sort) == ["claude-lead", "claude-peer", "codex-peer", "mine-provider"]
+      and (.agents.providers | keys | sort) == ["claude-lead", "claude-peer", "claude-supervisor", "codex-peer", "mine-provider"]
       and .agents.providers["claude-peer"].paseoTools == $snip[0].agents.providers["claude-peer"].paseoTools' \
       "$MIGRATE_HOME/.paseo/config.json" >/dev/null; then
     ok "install.sh --paseo-only migrates a v1 config, resets managed entries, and keeps the user's own"
@@ -371,6 +375,12 @@ if PATH="$RENDER_HOME/bin:$PATH" HOME="$RENDER_HOME" "$REPO_ROOT/install.sh" --p
   ROOM="$RENDER_HOME/.config/slp-room"
   CODEX_ARGS="$("$ROOM/bin/codex-peer" app-server 2>&1 || true)"
   if grep -q 'Room role: Lead' "$ROOM/claude-lead/output-styles/slp-lead.md" \
+    && grep -q '^name: slp-supervisor$' "$ROOM/claude-supervisor/output-styles/slp-supervisor.md" \
+    && grep -qF "ROOM_DIR=$ROOM/room." "$ROOM/claude-supervisor/output-styles/slp-supervisor.md" \
+    && grep -q 'KEEPING THE ROOM ON COURSE' "$ROOM/claude-supervisor/output-styles/slp-supervisor.md" \
+    && ! grep -q '^name: supervisor$' "$ROOM/claude-supervisor/output-styles/slp-supervisor.md" \
+    && [ -f "$ROOM/room/PROTOCOL.md" ] && [ -f "$ROOM/room/roles/lead.md" ] && [ -f "$ROOM/room/roles/peer.md" ] \
+    && [ ! -e "$ROOM/claude-supervisor/skills/supervisor" ] \
     && grep -q '^name: slp-lead$' "$ROOM/claude-lead/output-styles/slp-lead.md" \
     && grep -q '^keep-coding-instructions: true$' "$ROOM/claude-lead/output-styles/slp-lead.md" \
     && grep -q 'Room Protocol' "$ROOM/claude-peer/output-styles/slp-peer.md" \

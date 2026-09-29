@@ -41,7 +41,7 @@ Peer → Lead         signals at turn end, plus mid-work messages
 
 | Seat | Owns | Never |
 |---|---|---|
-| **Supervisor** (`/supervisor`) | Your only point of contact. Pins down your intent (outcome, non-goals, authority, acceptance evidence), launches Leads, checks each Lead's plan against that intent, watches the room on a Paseo heartbeat for drift — wrong target, scope creep, rabbit holes, unauthorized actions, acceptance without evidence, open loops — questions the Lead with evidence, and brings product/cost/risk decisions back to you | Edits code, runs validation, accepts work, talks to Peers, or asks a healthy Lead for reports |
+| **Supervisor** (the Supervisor profile, or `/supervisor`) | Your only point of contact. Pins down your intent (outcome, non-goals, authority, acceptance evidence), launches Leads, checks each Lead's plan against that intent, watches the room on a Paseo heartbeat for drift — wrong target, scope creep, rabbit holes, unauthorized actions, acceptance without evidence, open loops — questions the Lead with evidence, and brings product/cost/risk decisions back to you | Edits code, runs validation, accepts work, talks to Peers, or asks a healthy Lead for reports |
 | **Lead** | One project's technical outcome inside the course the Supervisor set: plan, Peer tiering (Jev), plan review, committee, independent review, explicit `ACCEPT`/`REJECT` of each candidate | Implements, launches another Lead, or changes what you get without asking |
 | **Peer** (Claude or Codex) | One bounded outcome in one write scope, with its own proof — or a read-only review. Talks with its Lead both ways | Spawns or coordinates agents, talks to anyone but its Lead, or accepts its own work |
 
@@ -107,7 +107,7 @@ Enable Paseo MCP tool injection in `~/.paseo/config.json`:
    curl -fsSL https://raw.githubusercontent.com/yanmad27/my-orchestrate-skill/main/install.sh | bash
    ```
 
-3. Open an agent on the **Supervisor** profile (or any `claude` agent) in Paseo and run `/supervisor <task>`.
+3. Open an agent on the **Supervisor** profile in Paseo and describe the goal — no `/supervisor` needed.
 
 Run the same command again whenever you want the latest version.
 
@@ -152,7 +152,7 @@ review peers high, every other Peer medium.
 
 | Profile | Provider | Model | Mode | Use for |
 |---|---|---|---|---|
-| **Supervisor** | `claude` | `claude-opus-5-5` (thinking: xhigh) | `bypassPermissions` | The seat you talk to; run `/supervisor` here. Optional — any `claude`-provider agent can run it. Extra-high thinking for judging drift; every 2-minute heartbeat tick is a turn at that level. |
+| **Supervisor** | `claude-supervisor` | `claude-opus-5-5` (thinking: xhigh) | `bypassPermissions` | The seat you talk to; the Supervisor role is its system prompt. Extra-high thinking for judging drift; every 2-minute heartbeat tick is a turn at that level. |
 | **Lead** | `claude-lead` | `claude-opus-5-5` (thinking: high) | `bypassPermissions` | Launched by the Supervisor: owns one project's technical outcome, dispatches Peers, accepts or rejects candidates |
 | **Cheap peer** | `claude-peer` | `claude-haiku-4-5` (thinking: medium) | `bypassPermissions` | Extraction, formatting, log triage, mechanical refactors — the down-tier target |
 | **Peer** | `claude-peer` | `claude-sonnet-5` (thinking: medium) | `bypassPermissions` | Default tier for implementation, debugging, and research |
@@ -163,6 +163,7 @@ review peers high, every other Peer medium.
 
 | Provider | Extends | Agent tools |
 |---|---|---|
+| `claude-supervisor` | `claude` | Every Paseo tool: launching Leads, heartbeats, recovery |
 | `claude-lead` | `claude` | Everything a Lead needs to launch and steer Peers; no heartbeat/schedule control (monitoring is the Supervisor's) |
 | `claude-peer`, `codex-peer` | `claude`, `codex` | `send_agent_prompt` (to talk back to the Lead) and the read-only status tools; no `create_agent`, `cancel_agent`, `kill_agent`, `archive_agent`, `update_agent`, `set_agent_mode`, workspace creation, schedule/heartbeat control, or `respond_to_permission` |
 
@@ -171,14 +172,16 @@ review peers high, every other Peer medium.
 Paseo has no per-agent system prompt, so the role lives in the provider — the
 way codex-room-setup does it with one `CODEX_HOME` per role:
 
-- **`claude-lead`, `claude-peer`** each run in their own Claude Code runtime,
-  `~/.config/slp-room/claude-{lead,peer}`, via `CLAUDE_CONFIG_DIR`. The
-  runtime's **output style** `slp-lead`/`slp-peer` is `PROTOCOL.md` + the role
-  file with `keep-coding-instructions: true`, so the role is part of the
-  system prompt and survives compaction. The runtime copies your
-  `~/.claude/settings.json` (plus the output style), links your plugins,
-  agents, commands, `CLAUDE.md`, and every skill **except `supervisor`** — a
-  Lead or Peer never loads the Supervisor role.
+- **`claude-supervisor`, `claude-lead`, `claude-peer`** each run in their own
+  Claude Code runtime, `~/.config/slp-room/claude-{supervisor,lead,peer}`, via
+  `CLAUDE_CONFIG_DIR`. The runtime's **output style** `slp-<seat>` is
+  `PROTOCOL.md` + the seat's role with `keep-coding-instructions: true`, so
+  the role is part of the system prompt and survives compaction. The runtime
+  copies your `~/.claude/settings.json` (plus the output style), links your
+  plugins, agents, commands, `CLAUDE.md`, and every skill **except
+  `supervisor`** — no seat loads the `/supervisor` skill on top of its own
+  role. Every seat's `ROOM_DIR` is the stable copy in
+  `~/.config/slp-room/room`.
 - **Auth** is shared through one token: `install.sh` puts the contents of
   `~/.config/slp-room/oauth-token` (from `claude setup-token`) into both
   providers as `CLAUDE_CODE_OAUTH_TOKEN`, and keeps `~/.paseo/config.json`
@@ -235,7 +238,7 @@ provider. The command is now `/supervisor`.
 
 | Symptom | Fix |
 |---|---|
-| `/supervisor` replies *"This chat's provider has create_agent disabled"* | Your agent's provider isn't `claude` (e.g. it's `claude-peer`, which strips `create_agent`), or `daemon.mcp.injectIntoAgents` isn't `true` in `~/.paseo/config.json`. Check the config against [Requirements](#requirements). |
+| The Supervisor replies *"This chat's provider has create_agent disabled"* | Your agent's provider isn't `claude-supervisor` or `claude` (e.g. it's `claude-peer`, which strips `create_agent`), or `daemon.mcp.injectIntoAgents` isn't `true` in `~/.paseo/config.json`. Check the config against [Requirements](#requirements). |
 | A Lead ends with `BLOCKED: create_agent unavailable` | The Lead was launched on a provider without agent tools. Check the **Lead** profile uses provider `claude-lead`. |
 | A Lead or Peer answers *"Not logged in · Please run /login"* | Its runtime has no auth: the token file is missing or the token expired. Run `claude setup-token`, save the new line to `~/.config/slp-room/oauth-token`, re-run `install.sh`. |
 | A Lead or Peer doesn't follow its role, or its first action is reading `PROTOCOL.md` | It launched without its role prompt. Re-run `install.sh`; check `~/.config/slp-room/claude-{lead,peer}/output-styles/` and that the providers' `CLAUDE_CONFIG_DIR` points there. |
@@ -250,25 +253,32 @@ provider. The command is now `/supervisor`.
 
 ### Start
 
-Open an agent on the **Supervisor** profile, or any agent on provider
-`claude` (it has `create_agent` as long as `daemon.mcp.injectIntoAgents` is
-on), and give it the task. You never need to open a Lead's tab; the
-Supervisor brings everything that needs you back to this chat.
+Open an agent on the **Supervisor** profile and just describe the goal — the
+Supervisor role is that agent's system prompt, so there is nothing to type
+first. You never need to open a Lead's tab; the Supervisor brings
+everything that needs you back to this chat.
 
-### Invoke
+```
+thêm validate cho parse_age trong app.py, có test; được commit local, không push
+```
+
+### From any other Claude agent
+
+On a plain `claude` agent (it has `create_agent` as long as
+`daemon.mcp.injectIntoAgents` is on), load the role as a skill:
 
 ```
 /supervisor <task>
 ```
 
-**Auto-trigger:** the skill activates on supervision or delegation requests in natural language:
+It also auto-triggers on supervision or delegation requests in natural
+language, though the model decides when:
 - `supervisor: add rate limiting to POST /login`
 - `orchestrate this bug fix`
 - `giao cho worker fix cái bug này`
-- `delegate the refactor across agents`
 
-To pick up Leads still running from an earlier Supervisor session:
-`/supervisor supervise <workspace or Lead>` — it adopts them without
+To pick up Leads still running from an earlier Supervisor session, tell a
+new Supervisor to supervise that workspace or Lead — it adopts them without
 interrupting their work.
 
 ### Examples

@@ -36,9 +36,9 @@ Peer → Lead         signals, mid-work messages       (final message of each Pe
 
 ## Channels in Paseo
 
-- Lead and Peer seats get this protocol and their role as a system prompt
-  from their Paseo provider (`claude-lead`, `claude-peer`, `codex-peer`,
-  rendered by `install.sh`). Briefs still name `ROOM_DIR` so a seat
+- Every seat gets this protocol and its role as a system prompt from its
+  Paseo provider (`claude-supervisor`, `claude-lead`, `claude-peer`,
+  `codex-peer`, rendered by `install.sh`). Briefs still name `ROOM_DIR` so a seat
   without it can read the same files.
 - Supervisor → Lead and Lead → Peer: `create_agent` (first brief) and
   `send_agent_prompt` (every later instruction, answer, or disposition).

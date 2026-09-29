@@ -5,11 +5,11 @@
         "id": "agent_profile_slp_supervisor",
         "name": "Supervisor",
         "icon": "compass",
-        "provider": "claude",
+        "provider": "claude-supervisor",
         "model": "claude-opus-5-5",
         "modeId": "bypassPermissions",
         "thinkingOptionId": "xhigh",
-        "notes": "The only seat the user talks to. Run /supervisor here: pins down intent, launches Lead agents, keeps Leads and Peers on course on a heartbeat, and brings decisions back to the user. Never implements. Do not launch it from another agent."
+        "notes": "The only seat the user talks to. Open it and just describe the goal — the Supervisor role is its system prompt, no /supervisor needed. Pins down intent, launches Lead agents, keeps Leads and Peers on course on a heartbeat, and brings decisions back to the user. Never implements. Do not launch it from another agent."
       },
       {
         "id": "agent_profile_orchestrate_lead",
@@ -85,6 +85,15 @@
   },
   "agents": {
     "providers": {
+      "claude-supervisor": {
+        "extends": "claude",
+        "label": "Claude Supervisor",
+        "description": "Supervisor seat — its own Claude runtime whose output style carries the room protocol and Supervisor role; full Paseo tools to launch and watch Leads",
+        "env": {
+          "CLAUDE_CONFIG_DIR": "@@ROOM_HOME@@/claude-supervisor",
+          "CLAUDE_CODE_OAUTH_TOKEN": "@@CLAUDE_OAUTH_TOKEN@@"
+        }
+      },
       "claude-lead": {
         "extends": "claude",
         "label": "Claude Lead",
