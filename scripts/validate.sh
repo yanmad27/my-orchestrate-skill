@@ -605,6 +605,65 @@ else
   fail "slp-wait behaviour with a stub paseo is wrong"
 fi
 
+# --- room rules: waiting, room-state line, Lead DONE, heartbeat -------------
+
+# Static: the rules exist, and the old instructions are gone.
+RULE_PHRASES=(
+  'SKILL.md|⏳ Working:'
+  'SKILL.md|✅ Done:'
+  'SKILL.md|❓ Waiting on you:'
+  'SKILL.md|[supervisor-heartbeat] <scope>'
+  'SKILL.md|paseo.parent-agent-id'
+  'SKILL.md|Never remove another session'
+  'SKILL.md|not a refusal: an event arrived'
+  'SKILL.md|never wrap `slp-wait` in a shell loop'
+  'PROTOCOL.md|slp-wait — the one blocking wait'
+  'PROTOCOL.md|never wrap `slp-wait` in a shell loop'
+  'PROTOCOL.md|is valid only when, at report time, no Peer'
+  'PROTOCOL.md|an in-flight `slp-wait`'
+  'roles/lead.md|@@SLP_WAIT@@'
+  'roles/lead.md|is NOT a refusal'
+  'roles/lead.md|never wrap `slp-wait` in a'
+  'roles/lead.md|no Peer of'
+  'roles/peer.md|an in-flight'
+  'roles/peer.md|You never run `slp-wait`'
+)
+for entry in "${RULE_PHRASES[@]}"; do
+  file="$ROOM_DIR/${entry%%|*}"
+  phrase="${entry#*|}"
+  if grep -qF -- "$phrase" "$file"; then
+    ok "$file keeps the room rule '$phrase'"
+  else
+    fail "$file missing room rule '$phrase'"
+  fi
+done
+
+if ! grep -q 'no change' "$ROOM_DIR/SKILL.md" \
+  && ! grep -qE 'list_schedules`? *and reuse|reuse a heartbeat' "$ROOM_DIR/SKILL.md" \
+  && ! grep -rq 'END YOUR TURN' "$ROOM_DIR" \
+  && ! grep -rqE 'only when its Lead is idle \(|waiting on Peer events' "$ROOM_DIR"; then
+  ok "SKILL.md has no bare no-change turn end or list_schedules reuse rule; no seat rule still ends a turn while Peers run or gates Peer messages on an idle Lead"
+else
+  fail "a superseded rule survives: a bare no-change turn end, a list_schedules reuse, END YOUR TURN, an idle-only Peer send, or STATUS as waiting on Peer events"
+fi
+
+# Rendered: the Supervisor and Lead prompts of the temp install name a slp-wait that exists there,
+# with no token left in any rendered room file; the Peer prompt never names it as a tool to run.
+ROOM="$RENDER_HOME/.config/slp-room"
+WAIT_PATH="$ROOM/bin/slp-wait"
+RENDER_OK=1
+for f in "$ROOM/claude-supervisor/output-styles/slp-supervisor.md" "$ROOM/claude-lead/output-styles/slp-lead.md" \
+  "$ROOM/supervisor.md" "$ROOM/lead.md" "$ROOM/room/roles/lead.md"; do
+  grep -qF "$WAIT_PATH" "$f" || { RENDER_OK=0; echo "  $f does not name $WAIT_PATH"; }
+done
+[ -x "$WAIT_PATH" ] || RENDER_OK=0
+if grep -rq '@@SLP_WAIT@@' "$ROOM" --include='*.md'; then RENDER_OK=0; echo "  a rendered file still has @@SLP_WAIT@@"; fi
+if [ "$RENDER_OK" = 1 ]; then
+  ok "rendered Supervisor and Lead prompts name $WAIT_PATH, which exists and is executable, with no token left"
+else
+  fail "rendered Supervisor/Lead prompts do not name an existing slp-wait path"
+fi
+
 if [ "$FAILED" -ne 0 ]; then
   echo "validate.sh: FAILED"
   exit 1
