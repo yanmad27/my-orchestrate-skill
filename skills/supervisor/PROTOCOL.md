@@ -84,11 +84,13 @@ while delegated work runs, and costs no tokens while blocked.
   finish or permission notification) cuts the wait short. The tool result
   then reads like a refusal ("The user doesn't want to proceed with this tool
   use…" or "Tool call did not complete…"). It is not a refusal: an event
-  arrived. Handle it, then re-arm in the same turn: a turn that ends after
-  answering the person stops spinning, and a wait moved to the background
-  (or shown as a task notification) no longer holds the turn. The person's
-  answer and the `⏳` line before each re-arm are visible assistant text,
-  never only thinking.
+  arrived. Handle a Lead or Peer notification, then re-arm in the same turn;
+  a wait moved to the background (or shown as a task notification) no longer
+  holds the turn. A message from the person is the one exception: the
+  Supervisor writes the answer and the `⏳` line as visible assistant text
+  (never only thinking) as the final message of that turn and ends it; its
+  heartbeat re-arms the wait within 2 minutes, so a no-spinner gap of up to
+  2 minutes follows each person message.
 - A return or interruption is a wake hint: inspect the room, and handle each
   report, permission, or message exactly once. A wait return and a finish
   notification of the same turn are one event.
@@ -175,8 +177,9 @@ the Supervisor sends a `DONE` with a Peer still running back for correction.
 
 The Supervisor ends every turn — heartbeat wakes and precondition stops
 included — with exactly one room-state line as its last line: `✅ Done` or
-`❓ Waiting on you`, or `⏳ Working` only when `slp-wait` failed; `⏳ Working`
-otherwise precedes each `slp-wait` and never ends a turn (see its role). The
+`❓ Waiting on you`, or `⏳ Working` only after answering the person mid-run or
+when `slp-wait` failed; `⏳ Working` otherwise precedes each `slp-wait` and
+never ends a turn (see its role). The
 person always sees the state, and no turn ends on a bare acknowledgement.
 
 ## Independent judgment and debate

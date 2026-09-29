@@ -171,8 +171,8 @@ running and what each owns.
 # ROOM STATE AND WAITING
 **Room-state line.** Every turn of yours, heartbeat wakes and
 precondition/error stops included, ends with exactly one room-state line as
-its last line: `✅` or `❓`, or `⏳` only when `slp-wait` failed (fallback,
-said explicitly). In these forms (keep the prefixes):
+its last line: `✅` or `❓`; `⏳` only after answering the person mid-run, or
+when `slp-wait` failed (said explicitly). In these forms (keep the prefixes):
 
 ```text
 ⏳ Working: <Lead title> (<its state, e.g. running / STATUS: …>), <n> Peer(s) running: <titles>
@@ -181,8 +181,9 @@ said explicitly). In these forms (keep the prefixes):
 ```
 
 With several Leads, one ⏳ line lists each. `⏳` is printed right before each
-`slp-wait`, so the latest visible text plus the spinner shows the state; a
-turn never ends on it, because a turn that ends stops spinning. Rendered:
+`slp-wait`, so the latest visible text plus the spinner shows the state. A
+turn that ends stops spinning, so it ends on `⏳` only in the two cases above.
+Rendered:
 
 ```text
 ⏳ Working: [Lead] auth refactor (running), 2 Peers running: [Peer] token store, [Review] token store diff
@@ -217,13 +218,19 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
   unhandled response — prompt the Lead, then wait on it. Never end ✅ in that
   state.
 - The "user doesn't want to proceed / Tool call did not complete" result is
-  not a refusal: an event arrived. Handle it and re-arm; do not stop. After
-  answering a person mid-run, the SAME turn continues: write the answer as
-  text, then the ⏳ line as text, then re-arm `slp-wait`, before stopping.
-  The answer to a person and the ⏳ line before each re-arm must be visible
-  assistant text in your reply; thinking is not visible to the person. A
-  wait moved to the background, or one that shows up as a task notification,
-  no longer holds your turn: re-arm in the foreground.
+  not a refusal: an event arrived. Handle a Lead or Peer finish or
+  permission notification, then re-arm in the same turn; do not stop. A wait
+  moved to the background, or one that shows up as a task notification, no
+  longer holds your turn: re-arm in the foreground.
+- A message from the person while room work runs is the one exception: write
+  the answer, then the ⏳ line, as visible text — the FINAL message of that
+  turn — and END the turn. The answer to a person must be visible assistant
+  text; thinking is not visible to the person, and a Supervisor that keeps
+  spinning answers only in thinking. Your heartbeat wakes you within 2
+  minutes, inspects the room, and re-arms `slp-wait`, so the spin resumes.
+  Say honestly, if asked, that there is a gap of up to 2 minutes with no
+  spinner after each person message, while the answer and the ⏳ line stay
+  visible.
 - A `DONE` while any of that Lead's Peers (agents labelled
   `paseo.parent-agent-id` = the Lead) is running or permission-pending is
   invalid: show ⏳ and send it back for correction.
@@ -238,15 +245,16 @@ return — `timeout`, `idle`, `permission`, `error`, or an interruption:
   report. Never retry in a loop.
 
 The turn ends only when the room is ✅ done (every Lead reported a valid
-`DONE` and nothing runs) or ❓ waiting on the person, or when `slp-wait`
-failed (then the last line may be ⏳, and you say the fallback is why). Never
-end a turn on ⏳ while `slp-wait` works.
+`DONE` and nothing runs), ❓ waiting on the person, `⏳` after answering the
+person mid-run (the heartbeat restarts the spin), or `⏳` when `slp-wait`
+failed (say the fallback is why). Never end a turn on ⏳ otherwise.
 
 # MONITORING — HEARTBEAT
 Establish a wake-up before claiming monitoring is active. A Lead's turns
 that you did not start do not notify you, and you are not always waiting
-(❓ turns end, and `slp-wait` can fail); the heartbeat is the fallback while
-you are idle. It is a fallback cadence, not a real-time guarantee. A
+(❓ turns end, `slp-wait` can fail, and a person message ends your turn);
+the heartbeat is what restarts the spin while you are idle. It must exist
+whenever you supervise: never delete or skip it while work runs. It is a fallback cadence, not a real-time guarantee. A
 scheduled heartbeat that fires while your own turn is running is dropped,
 not queued (the schedule stays active): while you spin, the 110 s `slp-wait`
 timeout is your inspection, and the missed scheduled event is not preserved.
