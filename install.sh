@@ -73,7 +73,9 @@ if [ "$DO_PASEO" = 1 ]; then
   HDR_FILE="$ROOM_HOME/anthropic-auth-header"
   save_private() { mkdir -p "$ROOM_HOME"; (umask 077 && printf '%s\n' "$2" > "$1"); chmod 600 "$1"; }
   saved() { if [ -f "$1" ]; then tr -d '[:space:]' < "$1"; fi; }
-  # The key is opaque: only its first line is read back, interior whitespace intact.
+  # The key is opaque: only its first line is read back, interior whitespace intact. Surrounding
+  # whitespace (a trailing newline included) is trimmed; only an empty key or a line break
+  # inside it is rejected.
   saved_line() { local v=""; if [ -f "$1" ]; then IFS= read -r v < "$1" || true; fi; printf '%s' "$v"; }
   trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
   norm_url() {
@@ -190,6 +192,8 @@ if [ "$DO_PASEO" = 1 ]; then
 
   # Endpoint mode. Explicit values (SLP_CLAUDE_*) beat prompts, which beat what is saved.
   # The header form picks the variable: bearer → ANTHROPIC_AUTH_TOKEN, x-api-key → ANTHROPIC_API_KEY.
+  # Its order: SLP_CLAUDE_AUTH_HEADER (skips the prompt); else the prompt's choice, when it runs;
+  # else bearer if SLP_CLAUDE_BASE_URL is set; else the saved one; else bearer.
   if [ "$MODE" = endpoint ]; then
     CUR_URL="$EP_URL"; CUR_KEY="$EP_KEY"
     [ -n "$CUR_URL" ] || CUR_URL="$(saved "$URL_FILE")"

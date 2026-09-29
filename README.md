@@ -260,8 +260,9 @@ SLP_CLAUDE_BASE_URL=https://gateway.example.com SLP_CLAUDE_API_KEY=<key> ./insta
 The Claude CLI appends `/v1/messages` itself, so the base URL normally has no
 `/v1`; check your proxy's docs for Anthropic clients. It must be an `http://`
 or `https://` URL without whitespace (a trailing `/` is dropped; credentials in
-it are kept but never printed). The key is opaque: only leading and trailing
-whitespace is trimmed, and it may not be empty or contain a line break. Both
+it are kept but never printed). The key is opaque: surrounding whitespace,
+including a trailing newline, is trimmed; the key may not be empty or contain
+a line break inside it. Both
 are saved in `~/.config/slp-room/anthropic-base-url` / `anthropic-api-key` /
 `anthropic-auth-header` (mode 600), the mode in `auth-mode`. In this mode the
 `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_*` keys in your `~/.claude/settings.json`
@@ -281,10 +282,12 @@ Which mode applies:
 - `auth-mode` becomes `token` only when a token is saved in `oauth-token`
   (pasted, or `--token` with one already there). `SLP_CLAUDE_OAUTH_TOKEN` is
   used for that run only, as before, and changes nothing saved.
-- The header form is `SLP_CLAUDE_AUTH_HEADER` if set; else `bearer` when
-  `SLP_CLAUDE_BASE_URL` is set; else the saved one. The interactive choice
-  overrides all of these, and rotating only `SLP_CLAUDE_API_KEY` keeps the
-  saved header.
+- The header form, in order: `SLP_CLAUDE_AUTH_HEADER` if set (which also skips
+  the header prompt, like `SLP_CLAUDE_BASE_URL` and `SLP_CLAUDE_API_KEY` skip
+  theirs); otherwise the interactive choice, when the prompt runs (Enter keeps
+  what the next rules give); otherwise `bearer` when `SLP_CLAUDE_BASE_URL` is
+  set; otherwise the saved one; otherwise `bearer`. Rotating only
+  `SLP_CLAUDE_API_KEY` keeps the saved header.
 
 ### What the installer owns
 
