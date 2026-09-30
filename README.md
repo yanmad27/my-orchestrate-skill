@@ -142,7 +142,8 @@ curl -fsSL https://raw.githubusercontent.com/yanmad27/paseo-slp/main/install.sh 
    [Role prompts](#role-prompts));
 3. writes the room's profiles and providers into `~/.paseo/config.json`,
    backing up the old file as `config.json.bak-<timestamp>`;
-4. runs `paseo daemon reload`.
+4. runs `paseo daemon reload`;
+5. installs [slp-gc](#slp-gc) and its launchd agent — in the default and `--paseo-only` modes unless you pass `--no-gc`.
 
 Piped, it downloads the repository from GitHub; from a clone
 (`git clone https://github.com/yanmad27/paseo-slp.git && cd paseo-slp && ./install.sh`)
@@ -151,7 +152,7 @@ it uses the checkout.
 | Option | Effect |
 |---|---|
 | `--skill-only` | Only steps 0-1 |
-| `--paseo-only` | Only steps 0 and 2-4 — e.g. when the skill comes from the plugin marketplace |
+| `--paseo-only` | Only steps 0 and 2-5 — e.g. when the skill comes from the plugin marketplace |
 | `--no-reload` | Skip `paseo daemon reload` |
 | `--gc-only`, `--no-gc`, `--no-gc-launchd`, `--gc-apply`, `--gc-kill-stale`, `--gc-kill-memory`, `--gc-kill`, `--gc-report-only` | slp-gc install and opt-ins — see [slp-gc](#slp-gc) |
 | `SLP_REF=<branch or tag>` | Install that version instead of `main` (piped runs) |
@@ -374,19 +375,23 @@ froze the machine. `slp-gc` reports and alerts on this, and — only when you
 opt in — SIGTERMs proven orphans or over-memory agent descendants and deletes
 completed schedules and long-archived agents through the `paseo` CLI.
 
-**Install.** A normal `install.sh` run also installs it. To install just
-slp-gc — no seats, no Paseo config, no daemon reload — run `./install.sh --gc-only`
-(needs `jq`). It:
+**Install.** A normal `install.sh` run (and `--paseo-only`) also installs it,
+unless you pass `--no-gc`. To install just slp-gc — no seats, no Paseo config,
+no daemon reload — run `./install.sh --gc-only` (needs `jq`). It:
 
 - copies `slp-gc` to `~/.config/slp-room/bin/slp-gc`, next to `slp-wait`;
 - writes `~/Library/LaunchAgents/com.paseo-slp.slp-gc.plist` and loads it with
   `launchctl bootstrap`: `slp-gc tick` every 60 s, at low priority, independent
-  of the Paseo daemon (no `--apply` in its arguments, ever);
+  of the Paseo daemon (no `--apply` in its arguments, ever). It checks that
+  `jq` (and `paseo`, if found) resolve under the agent's minimal `PATH`
+  (`/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin`), adds their
+  directory after those if they live elsewhere, and refuses to go on without `jq`;
 - writes `~/.config/slp-room/slp-gc.conf` only if none exists — a re-run never
   resets it.
 
 `--no-gc` skips all of this; `--no-gc-launchd` installs the tool and config but
-no agent.
+no agent. Either way, an agent from an earlier install is left running and the
+summary says so, with how to remove it.
 
 **Default: report-only.** Every tick records a memory sample, writes a report
 hourly, and alerts when memory climbs. Nothing is deleted or killed.
@@ -399,12 +404,18 @@ hourly, and alerts when memory climbs. Nothing is deleted or killed.
 ~/.config/slp-room/bin/slp-gc tick     # what launchd runs
 ```
 
-`slp-gc --help` lists every option.
+`slp-gc --help` lists every option. Tunables (in `slp-gc.conf`, all optional):
+`SLP_GC_MEM_WARN_MB` (3072), `SLP_GC_MEM_KILL_MB` (4096), `SLP_GC_TREE_WARN_MB`
+(50% of RAM), `SLP_GC_KILL_COMMS` (alias `SLP_GC_ORPHAN_COMMS`),
+`SLP_GC_ORPHAN_MIN_AGE_MIN` (10), `SLP_GC_TEST_CONCURRENCY_WARN` (3),
+`SLP_GC_MAX_KILLS` (20 per tick), `SLP_GC_TICK_BUDGET_S` (45),
+`SLP_GC_REPORT_INTERVAL_MIN` (60).
 
 **Output** lands in `~/Library/Logs/slp-gc` (`SLP_GC_STATE_DIR` overrides):
-`memory.jsonl` (samples), `alerts.log`, `reports/`, `lineage.tsv`, `tick.log`
-(rotated), and `launchd.log` (one status line per tick; install truncates it
-above 1 MiB).
+`memory.jsonl` (samples), `alerts.log`, `reports/`, `lineage.tsv` (the lineage
+ledger that proves an orphan), `tick.log` (rotated), and `launchd.log` (only
+alerts and errors; rotated by tick). The state dir must be a real directory you
+own — a symlink is refused, and so is a symlinked or special-file config or log.
 
 **When memory climbs,** run `slp-gc report` and look at the orphans and the
 per-agent process trees: an orphan is a test runner whose agent is gone, a big
@@ -426,8 +437,8 @@ opt-in on, the install summary names each active one.
 
 The launchd agent is only loaded when `HOME` is your own login home; for any
 other `HOME` the plist is written and the install warns that the agent is
-**not loaded**. `~/.config/slp-room/slp-gc.conf` must be a regular file — a
-symlink is refused.
+**not loaded**. The summary also says when an older definition is still loaded
+because a `launchctl` step failed.
 
 **Uninstall.**
 

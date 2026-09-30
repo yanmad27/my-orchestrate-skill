@@ -18,7 +18,24 @@ trap 'rm -rf "$tmp"' EXIT
 stubs="$tmp/stubs"; mkdir -p "$stubs" "$tmp/tmp"
 cat > "$stubs/launchctl" <<STUB
 #!/bin/sh
-printf '%s\n' "\$*" >> "$tmp/launchctl.log"
+# Logging, stateful stub: state file = "loaded"; mode file picks a failure (see the mode tests).
+printf '%s\\n' "\$*" >> "$tmp/launchctl.log"
+mode="\$(cat "$tmp/lc.mode" 2>/dev/null)"; st="$tmp/lc.state"
+case "\$1" in
+  bootout)
+    [ "\$mode" = bootout-fail ] && { echo "Boot-out failed: 1: Operation not permitted" >&2; exit 1; }
+    [ "\$mode" = bootstrap-fail-loaded ] && { echo "Boot-out failed: 3: No such process" >&2; exit 3; }
+    if [ -f "\$st" ]; then rm -f "\$st"; exit 0; fi
+    echo "Boot-out failed: 3: No such process" >&2; exit 3 ;;
+  bootstrap)
+    case "\$mode" in bootstrap-fail|bootstrap-fail-loaded) echo "Bootstrap failed: 5: Input/output error" >&2; exit 5 ;; esac
+    [ -f "\$st" ] && { echo "Bootstrap failed: 5: already loaded" >&2; exit 5; }
+    [ "\$mode" = ghost ] && exit 0
+    : > "\$st"; exit 0 ;;
+  print)
+    [ -f "\$st" ] && exit 0
+    echo "Could not find service" >&2; exit 113 ;;
+esac
 exit 0
 STUB
 cat > "$stubs/paseo" <<STUB
@@ -81,7 +98,8 @@ check "the plist has no --apply, ever" bash -c '! grep -q -- "--apply" "$0"' "$P
 check "the plist runs /bin/bash <slp-gc> tick" bash -c 'grep -A3 "<key>ProgramArguments" "$0" | grep -q "/bin/bash" && grep -q "<string>'"$BIN"'</string>" "$0" && grep -q "<string>tick</string>" "$0"' "$PLIST"
 check "the plist has StartInterval 60, RunAtLoad, Nice 10, Background, LowPriorityIO" bash -c \
   'tr -d " \n\t" < "$0" | grep -q "<key>StartInterval</key><integer>60</integer>" && tr -d " \n\t" < "$0" | grep -q "<key>RunAtLoad</key><true/>" && tr -d " \n\t" < "$0" | grep -q "<key>Nice</key><integer>10</integer>" && tr -d " \n\t" < "$0" | grep -q "<key>ProcessType</key><string>Background</string>" && tr -d " \n\t" < "$0" | grep -q "<key>LowPriorityIO</key><true/>"' "$PLIST"
-check "the plist PATH lists the system dirs before homebrew" grep -q "<string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin</string>" "$PLIST"
+STUBS_REAL="$(cd -P "$stubs" && pwd -P)"
+check "the plist PATH lists the system dirs first, then homebrew (extras only after them)" grep -qE "<string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin(:[^<]*)?</string>" "$PLIST"
 check "the plist sets PATH, HOME and SLP_GC_CONFIG only" bash -c \
   'grep -q "/opt/homebrew/bin:/usr/local/bin" "$0" && grep -q "<string>'"$H"'</string>" "$0" && grep -q "<string>'"$CONF"'</string>" "$0" && [ "$(grep -c "SLP_GC_" "$0")" = 1 ]' "$PLIST"
 check "the plist logs under the state dir" grep -q "<string>$H/Library/Logs/slp-gc/launchd.log</string>" "$PLIST"
@@ -96,10 +114,11 @@ check "default config is private (0600)" test "$(stat -c %a "$CONF" 2>/dev/null 
 check "the state dir is private (0700)" test "$(stat -c %a "$H/Library/Logs/slp-gc" 2>/dev/null || stat -f %Lp "$H/Library/Logs/slp-gc")" = 700
 check "no temp file is left behind by the atomic installs" test -z "$(find "$H/.config/slp-room/bin" "$H/Library/LaunchAgents" -name '.*' -type f)"
 check "--gc-only touches only slp-gc, its config, plist and state dir" \
-  test "$(files)" = "./.config/slp-room/bin/slp-gc ./.config/slp-room/slp-gc.conf ./Library/LaunchAgents/$LABEL.plist "
+  test "$(files)" = "./.config/slp-room/bin/slp-gc ./.config/slp-room/slp-gc.conf ./Library/LaunchAgents/$LABEL.plist ./Library/Logs/slp-gc/launchd.log "
 check "--gc-only made no Paseo config, seats or skill" test ! -e "$H/.paseo" -a ! -e "$H/.claude" -a ! -e "$H/.config/slp-room/claude-peer"
-check "launchctl: bootout then bootstrap, only the stub" test "$(cat "$tmp/launchctl.log")" = "bootout gui/$UID_N/$LABEL
-bootstrap gui/$UID_N $PLIST"
+check "launchctl: bootout, bootstrap, then print to verify; only the stub" test "$(cat "$tmp/launchctl.log")" = "bootout gui/$UID_N/$LABEL
+bootstrap gui/$UID_N $PLIST
+print gui/$UID_N/$LABEL"
 check "the summary says report-only, launchd loaded, and how to run slp-gc" bash -c 'grep -q "report-only" "$0" && grep -q "launchd agent: loaded" "$0" && grep -q "bin/slp-gc report" "$0"' "$tmp/gc-only-1.out"
 [ -n "${EVIDENCE_DIR:-}" ] && { cp "$tmp/gc-only-1.out" "$EVIDENCE_DIR/install-transcript-gc-only.txt"; cp "$PLIST" "$EVIDENCE_DIR/slp-gc.plist"; cp "$CONF" "$EVIDENCE_DIR/slp-gc.conf.default"; (cd "$H" && find . | sort) > "$EVIDENCE_DIR/home-after-install.txt"; }
 
@@ -147,7 +166,7 @@ check "--gc-only + --skill-only is refused" test "$RC" -ne 0
 # --- 3. --no-gc-launchd, --no-gc --------------------------------------------------------------------
 : > "$tmp/launchctl.log"; rm -f "$PLIST"
 run nolaunchd --gc-only --no-gc-launchd
-check "--no-gc-launchd writes no plist and calls no launchctl" test "$RC" = 0 -a ! -e "$PLIST" -a ! -s "$tmp/launchctl.log"
+check "--no-gc-launchd writes no plist and never boots out or bootstraps" test "$RC" = 0 -a ! -e "$PLIST" && ! grep -qE "^(bootout|bootstrap)" "$tmp/launchctl.log"
 run nogc --gc-only --no-gc
 check "--gc-only --no-gc is refused" test "$RC" -ne 0
 
@@ -160,12 +179,12 @@ check "the default install puts slp-gc next to slp-wait" test -x "$H/.config/slp
 check "the default install writes the plist" test -f "$PLIST"
 check "the default install keeps the existing config's report-only flags" test "$(flags)" = 000
 check "the default install still writes the Paseo config" test -f "$H/.paseo/config.json"
-check "the default install called only the stub launchctl, twice" test "$(wc -l < "$tmp/launchctl.log" | tr -d ' ')" = 2
+check "the default install called only the stub launchctl, three times" test "$(wc -l < "$tmp/launchctl.log" | tr -d ' ')" = 3
 check "--no-reload made no paseo call" test ! -s "$tmp/paseo.log"
 run noskill --skill-only
 check "--skill-only installs no slp-gc" test "$RC" = 0 && ! grep -q "Installed slp-gc" "$tmp/noskill.out"
 run nogc-default --paseo-only --no-reload --no-gc
-check "--no-gc skips every slp-gc step" test "$RC" = 0 && ! grep -q "slp-gc" "$tmp/nogc-default.out"
+check "--no-gc skips every slp-gc install step, and says the existing agent remains active" test "$RC" = 0 && ! grep -q "Installed slp-gc" "$tmp/nogc-default.out" && grep -q "existing agent remains active: $LABEL" "$tmp/nogc-default.out" && grep -q "to remove: launchctl bootout" "$tmp/nogc-default.out"
 rm -f "$H/.config/slp-room/slp-gc.conf"
 run fresh-default --paseo-only --no-reload
 check "a missing config is re-created report-only" test "$RC" = 0 -a "$(flags)" = 000
@@ -194,7 +213,7 @@ check "...with a loud WARNING and 'launchd agent NOT loaded' in the summary" bas
 guard unresolved-nostub "$tmp/dscl-other" - --gc-only
 check "without SLP_LAUNCHCTL the PATH dscl/id stubs are ignored and launchd is skipped (nothing logged)" test "$RC" = 0 -a ! -s "$tmp/launchctl.log" && grep -q "launchd agent NOT loaded" "$tmp/unresolved-nostub.out" && ! grep -q "other-home" "$tmp/unresolved-nostub.out"
 guard unresolved-stub "$tmp/dscl-none" "$stubs/launchctl" --gc-only
-check "an unresolvable login home with SLP_LAUNCHCTL set may load through it" test "$RC" = 0 -a "$(wc -l < "$tmp/launchctl.log" | tr -d ' ')" = 2
+check "an unresolvable login home with SLP_LAUNCHCTL set may load through it" test "$RC" = 0 -a "$(wc -l < "$tmp/launchctl.log" | tr -d ' ')" = 3
 guard relative - launchctl --gc-only
 check "a relative SLP_LAUNCHCTL is refused (nothing runs, PATH's launchctl included)" test "$RC" = 0 -a ! -s "$tmp/launchctl.log" && grep -q "not an absolute path" "$tmp/relative.out"
 guard nonexec - "$tmp/no-such-launchctl" --gc-only
@@ -205,15 +224,115 @@ check "--no-gc-launchd says the agent was not installed" grep -q "launchd agent 
 # --- 4c. state dir mode, early symlink refusal ------------------------------------------------------
 mkdir -p "$tmp/sd-home/.config/slp-room" "$tmp/sd-home/Library/Logs/slp-gc"; chmod 755 "$tmp/sd-home/Library/Logs/slp-gc"
 RC=0; HOME="$tmp/sd-home" PATH="$stubs:$PATH" SLP_LAUNCHCTL="$stubs/launchctl" bash "$REPO/install.sh" --gc-only --no-gc-launchd > "$tmp/sd.out" 2>&1 < /dev/null || RC=$?
-check "an existing state dir keeps its mode (0755) and the install warns" test "$RC" = 0 -a "$(stat -c %a "$tmp/sd-home/Library/Logs/slp-gc" 2>/dev/null || stat -f %Lp "$tmp/sd-home/Library/Logs/slp-gc")" = 755 && grep -q "not owned by you or not mode 0700" "$tmp/sd.out"
+check "an existing state dir keeps its mode (0755) and the install warns" test "$RC" = 0 -a "$(stat -c %a "$tmp/sd-home/Library/Logs/slp-gc" 2>/dev/null || stat -f %Lp "$tmp/sd-home/Library/Logs/slp-gc")" = 755 && grep -q "is mode 755, not 0700" "$tmp/sd.out"
 mkdir -p "$tmp/sl-home/.config/slp-room"; : > "$tmp/sl-target"; ln -s "$tmp/sl-target" "$tmp/sl-home/.config/slp-room/slp-gc.conf"
 RC=0; HOME="$tmp/sl-home" PATH="$stubs:$PATH" SLP_LAUNCHCTL="$stubs/launchctl" bash "$REPO/install.sh" > "$tmp/sl.out" 2>&1 < /dev/null || RC=$?
 check "a symlinked config is refused before any install step: no partial install (default mode too)" test "$RC" -ne 0 -a "$(cd "$tmp/sl-home" && find . -mindepth 1 | sort | tr '\n' ' ')" = "./.config ./.config/slp-room ./.config/slp-room/slp-gc.conf " && grep -q symlink "$tmp/sl.out"
 
+# --- 4d. hard/soft link and special-file safety (state dir, launchd.log, config) -------------------
+# hrun <name> <home> <args...>: install with the stub launchctl into an explicit sandbox HOME.
+hrun() {
+  local name="$1" home="$2"; shift 2; RC=0
+  HOME="$home" TMPDIR="$tmp/tmp" PATH="$stubs:$PATH" SLP_LAUNCHCTL="$stubs/launchctl" \
+    bash "$REPO/install.sh" "$@" > "$tmp/$name.out" 2>&1 < /dev/null || RC=$?
+}
+tree() { (cd "$1" && find . -mindepth 1 | sort | tr '\n' ' '); }
+# a symlinked state dir: refused up front, nothing written anywhere, the target untouched
+mkdir -p "$tmp/ls-home/Library/Logs" "$tmp/ls-outside" "$tmp/ls-home/.config/slp-room"
+ln -s "$tmp/ls-outside" "$tmp/ls-home/Library/Logs/slp-gc"
+hrun ls-state "$tmp/ls-home"
+check "a symlinked state dir is refused before any install step (nothing written, target empty)" test "$RC" -ne 0 -a -z "$(ls -A "$tmp/ls-outside")" -a ! -e "$tmp/ls-home/.config/slp-room/bin" -a ! -e "$tmp/ls-home/Library/LaunchAgents" && grep -q "state dir .* is a symlink" "$tmp/ls-state.out"
+# launchd.log: a symlink is refused, a hard link (over 1 MiB) to an outside file is unlinked, never written through
+mkdir -p "$tmp/ll-home/Library/Logs/slp-gc" "$tmp/ll-home/.config/slp-room"
+printf 'precious\n' > "$tmp/ll-outside"
+ln -s "$tmp/ll-outside" "$tmp/ll-home/Library/Logs/slp-gc/launchd.log"
+hrun ll-sym "$tmp/ll-home" --gc-only
+check "a symlinked launchd.log is refused before any install step; the target is unchanged" test "$RC" -ne 0 -a "$(cat "$tmp/ll-outside")" = precious -a ! -e "$tmp/ll-home/.config/slp-room/bin" && grep -q "launchd.log is a symlink" "$tmp/ll-sym.out"
+rm -f "$tmp/ll-home/Library/Logs/slp-gc/launchd.log"
+head -c 1200000 /dev/zero > "$tmp/ll-outside"; cp "$tmp/ll-outside" "$tmp/ll-outside.orig"
+ln "$tmp/ll-outside" "$tmp/ll-home/Library/Logs/slp-gc/launchd.log"
+hrun ll-hard "$tmp/ll-home" --gc-only
+LL="$tmp/ll-home/Library/Logs/slp-gc/launchd.log"
+check "a hard-linked >1 MiB launchd.log: the outside file is unchanged (size and bytes)" test "$RC" = 0 && cmp -s "$tmp/ll-outside" "$tmp/ll-outside.orig"
+check "...and launchd.log is now a fresh, private, single-link regular file" test -f "$LL" -a ! -L "$LL" -a ! -s "$LL" -a "$(stat -c %a "$LL" 2>/dev/null || stat -f %Lp "$LL")" = 600 -a "$(stat -c %h "$LL" 2>/dev/null || stat -f %l "$LL")" = 1
+head -c 1200000 /dev/zero > "$LL"
+hrun ll-big "$tmp/ll-home" --gc-only
+check "an oversized regular launchd.log is renamed aside (launchd.log.1) and a fresh one created" test "$RC" = 0 -a -s "$LL.1" -a ! -s "$LL" && test "$(wc -c < "$LL.1" | tr -d ' ')" = 1200000
+# config that is not a regular file: FIFO, directory
+for kind in fifo dir; do
+  h="$tmp/cf-$kind"; mkdir -p "$h/.config/slp-room"
+  if [ "$kind" = fifo ]; then mkfifo "$h/.config/slp-room/slp-gc.conf"; else mkdir "$h/.config/slp-room/slp-gc.conf"; fi
+  hrun "cf-$kind" "$h" --gc-only
+  check "a $kind config is refused before any install step (no bin, no plist, no state dir)" test "$RC" -ne 0 -a ! -e "$h/.config/slp-room/bin" -a ! -e "$h/Library" && grep -q "not a regular file" "$tmp/cf-$kind.out"
+done
+
+# --- 4e. jq/paseo under the plist PATH ----------------------------------------------------------------
+mkdir -p "$tmp/jqdir" "$tmp/emptybin" "$tmp/jq-home"
+ln -s "$(command -v jq)" "$tmp/jqdir/jq"
+RC=0; HOME="$tmp/jq-home" TMPDIR="$tmp/tmp" PATH="$tmp/jqdir:$stubs:/bin:/usr/bin" SLP_LAUNCHCTL="$stubs/launchctl" SLP_GC_PLIST_BASE_PATH="$tmp/emptybin" \
+  bash "$REPO/install.sh" --gc-only > "$tmp/jq-odd.out" 2>&1 < /dev/null || RC=$?
+JQ_REAL="$(cd -P "$tmp/jqdir" && pwd -P)"
+check "jq outside the launchd PATH: its canonical dir is appended after the system dirs, in the plist" test "$RC" = 0 && grep -q "<string>$tmp/emptybin:$JQ_REAL:$STUBS_REAL</string>" "$tmp/jq-home/Library/LaunchAgents/$LABEL.plist"
+check "...and the summary says so" grep -q "launchd PATH extended after the system dirs with: $JQ_REAL (jq)" "$tmp/jq-odd.out"
+# jq nowhere: build a PATH of symlinks to the system tools install.sh uses, minus jq
+mkdir -p "$tmp/nojq-bin" "$tmp/nojq-home"
+for t in bash sh env awk sed mktemp cp chmod mv rm mkdir cat tr cut head stat find dirname basename date id wc sort uname grep ls tail cmp ln; do
+  tp="$(command -v "$t" 2>/dev/null || true)"; case "$tp" in /*) ln -sf "$tp" "$tmp/nojq-bin/$t" ;; esac
+done
+RC=0; HOME="$tmp/nojq-home" TMPDIR="$tmp/tmp" PATH="$tmp/nojq-bin" SLP_LAUNCHCTL="$stubs/launchctl" SLP_GC_PLIST_BASE_PATH="$tmp/emptybin" \
+  "$tmp/nojq-bin/bash" "$REPO/install.sh" --gc-only > "$tmp/nojq.out" 2>&1 < /dev/null || RC=$?
+check "jq nowhere: the install is refused with an actionable error before any install step" test "$RC" -ne 0 -a ! -e "$tmp/nojq-home/.config" && grep -q "jq is required by slp-gc but was not found" "$tmp/nojq.out"
+
+# --- 4f. what launchctl really did: already loaded, bootout/bootstrap failures -------------------------
+LCH="$tmp/lc-home"; mkdir -p "$LCH"
+rm -f "$tmp/lc.state" "$tmp/lc.mode"
+hrun lc-first "$LCH" --gc-only
+check "first load: loaded, verified with launchctl print" test "$RC" = 0 && grep -q "launchd agent: loaded .*verified with launchctl print" "$tmp/lc-first.out"
+: > "$tmp/launchctl.log"
+hrun lc-again "$LCH" --gc-only
+check "already loaded: bootout succeeds, then bootstrap, then print; loaded" test "$RC" = 0 -a "$(cut -d' ' -f1 "$tmp/launchctl.log" | tr '\n' ' ')" = "bootout bootstrap print " && grep -q "launchd agent: loaded" "$tmp/lc-again.out"
+check "the not-found bootout of a first load is not reported as a failure" bash -c '! grep -q "bootout. failed" "$0"' "$tmp/lc-first.out"
+echo bootout-fail > "$tmp/lc.mode"   # state is loaded from the runs above
+hrun lc-bo "$LCH" --gc-only
+check "bootout failure while loaded: PRIOR definition reported, no bootstrap, summary says so" test "$RC" = 0 && ! grep -q "^bootstrap" "$tmp/launchctl.log" && grep -q "still loaded with the PRIOR definition (bootout failed" "$tmp/lc-bo.out" && grep -q "WARNING: 'launchctl bootout' failed" "$tmp/lc-bo.out"
+echo bootstrap-fail-loaded > "$tmp/lc.mode"
+hrun lc-bs-loaded "$LCH" --gc-only
+check "bootstrap failure while an older definition stays loaded: PRIOR definition reported" test "$RC" = 0 && grep -q "still loaded with the PRIOR definition (bootstrap failed" "$tmp/lc-bs-loaded.out"
+echo bootstrap-fail > "$tmp/lc.mode"; rm -f "$tmp/lc.state"
+hrun lc-bs "$LCH" --gc-only
+check "bootstrap failure with nothing loaded: 'launchd agent NOT loaded' and the manual command" test "$RC" = 0 && grep -q "launchd agent NOT loaded (launchctl bootstrap failed" "$tmp/lc-bs.out" && grep -q "WARNING: could not load the agent" "$tmp/lc-bs.out"
+echo ghost > "$tmp/lc.mode"; rm -f "$tmp/lc.state"
+hrun lc-ghost "$LCH" --gc-only
+check "bootstrap 'succeeds' but print cannot see the agent: not reported as loaded" test "$RC" = 0 && grep -q "launchd agent NOT loaded (bootstrap reported success but launchctl print cannot see" "$tmp/lc-ghost.out"
+rm -f "$tmp/lc.mode" "$tmp/lc.state"
+
+# --- 4g. --no-gc-launchd / --no-gc after a normal install keep the agent and say so -------------------
+hrun keep-1 "$LCH" --gc-only
+: > "$tmp/launchctl.log"
+hrun keep-2 "$LCH" --gc-only --no-gc-launchd
+check "--no-gc-launchd after an install: no launchctl bootout (agent kept), and the summary says it remains active" test "$RC" = 0 && ! grep -q "^bootout" "$tmp/launchctl.log" && test -f "$LCH/Library/LaunchAgents/$LABEL.plist" && grep -q "existing agent remains active: $LABEL" "$tmp/keep-2.out" && grep -q "to remove: launchctl bootout gui/" "$tmp/keep-2.out"
+hrun keep-3 "$LCH" --paseo-only --no-reload --no-gc
+check "--no-gc after an install keeps the agent and says so too" test "$RC" = 0 && test -f "$LCH/Library/LaunchAgents/$LABEL.plist" && grep -q "existing agent remains active: $LABEL" "$tmp/keep-3.out" && ! grep -q "^bootout" "$tmp/launchctl.log"
+rm -f "$tmp/lc.state"; mkdir -p "$tmp/fresh-home"
+hrun keep-4 "$tmp/fresh-home" --gc-only --no-gc-launchd
+check "with no earlier agent, --no-gc-launchd says nothing about one" test "$RC" = 0 && ! grep -q "remains active" "$tmp/keep-4.out"
+
+# --- 4h. every documented key exists in the installed slp-gc ------------------------------------------
+HELP="$(bash "$BIN" --help 2>&1)"
+missing=""
+for k in $( { grep -o 'SLP_GC_[A-Z_]*[A-Z]' "$CONF"; grep -o 'SLP_GC_[A-Z_]*[A-Z]' README.md; } | sort -u); do
+  case "$k" in SLP_GC_TEST|SLP_GC_STATE_DIR|SLP_GC_CONFIG|SLP_GC_PLIST_BASE_PATH) continue ;; esac
+  if ! printf '%s' "$HELP" | grep -q "$k" && ! grep -q "$k)" "$BIN"; then missing="$missing $k"; fi
+done
+check "every SLP_GC_* key the README or the generated config documents is in slp-gc's --help or config parser (missing:${missing:- none})" test -z "$missing"
+check "README defaults match --help: 3072 / 4096 / 50% of RAM" env HELP="$HELP" bash -c 'printf "%s" "$HELP" | grep -q "SLP_GC_MEM_WARN_MB\[3072\]" && printf "%s" "$HELP" | grep -q "SLP_GC_MEM_KILL_MB\[4096" && printf "%s" "$HELP" | grep -q "SLP_GC_TREE_WARN_MB\[50% of RAM\]" && grep -q "SLP_GC_MEM_WARN_MB. (3072)" README.md && grep -q "SLP_GC_MEM_KILL_MB. (4096)" README.md && grep -q "(50% of RAM)" README.md'
+check "the README mentions lineage.tsv" grep -q "lineage.tsv" README.md
+check "the generated config's defaults match --help (3072 / 4096)" grep -q "^# SLP_GC_MEM_WARN_MB=3072$" "$CONF" && grep -q "^# SLP_GC_MEM_KILL_MB=4096$" "$CONF"
+
 # --- 5. nothing real was touched ----------------------------------------------------------------------
 [ -n "${EVIDENCE_DIR:-}" ] && { cp "$tmp/launchctl.stubbed.log" "$EVIDENCE_DIR/stub-launchctl.log"; (cd "$H" && find . | sort) > "$EVIDENCE_DIR/home-after-default-install.txt"; }
 check "launchctl was only ever the stub (it logged, and PATH's real one was never used)" test -s "$tmp/launchctl.stubbed.log"
-check "the stub log holds only bootout/bootstrap of the agent" bash -c '! grep -vE "^(bootout gui/[0-9]+/'$LABEL'|bootstrap gui/[0-9]+ .*/'$LABEL'.plist)$" "$0"' "$tmp/launchctl.stubbed.log"
+check "the stub log holds only bootout/bootstrap/print of the agent" bash -c '! grep -vE "^(bootout gui/[0-9]+/'$LABEL'|print gui/[0-9]+/'$LABEL'|bootstrap gui/[0-9]+ .*/'$LABEL'.plist)$" "$0"' "$tmp/launchctl.stubbed.log"
 REAL_AFTER="$(snap_real)"
 [ "$REAL_AFTER" = "$REAL_BEFORE" ] || diff <(printf '%s\n' "$REAL_BEFORE") <(printf '%s\n' "$REAL_AFTER") | head -10
 check "the real HOME's slp-room, LaunchAgents, slp-gc logs and Paseo config are unchanged" test "$REAL_AFTER" = "$REAL_BEFORE"
