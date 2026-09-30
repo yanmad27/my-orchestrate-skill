@@ -661,7 +661,12 @@ fi
 # Static: the rules exist, and the old instructions are gone.
 RULE_PHRASES=(
   'SKILL.md|⏳ Working:'
-  'SKILL.md|↳ <Peer title> (running|permission pending)'
+  'SKILL.md|◉ <Lead workstream> · <Lead state>'
+  'SKILL.md|`Now:` (current step), `Queue:` (next queued work), `Scope:` (scope or'
+  'SKILL.md|`Peers: <short names, comma-separated>`'
+  'SKILL.md|exactly one blank line between cards and none after the last'
+  'SKILL.md|the turn'"'"'s last line. `⏳` is printed right before'
+  'PROTOCOL.md|`◉ <Lead workstream> · <Lead state>` card per Lead'
   'SKILL.md|✅ Done:'
   'SKILL.md|❓ Waiting on you:'
   'SKILL.md|`supervisor: room`'
@@ -712,10 +717,24 @@ for entry in "${RULE_PHRASES[@]}"; do
   fi
 done
 
-if grep -qE '├─|└─|\|_ ' "$ROOM_DIR/SKILL.md"; then
-  fail "$ROOM_DIR/SKILL.md still shows an old room-state connector (├─, └─, or |_)"
+for f in SKILL.md PROTOCOL.md; do
+  if grep -qE '├─|└─|\|_ |^↳ ' "$ROOM_DIR/$f"; then
+    fail "$ROOM_DIR/$f still shows an old room-state tree (├─, └─, |_, or a ↳ Peer row)"
+  else
+    ok "$ROOM_DIR/$f carries no old room-state tree (├─, └─, |_, ↳)"
+  fi
+  if grep -qF '◉' "$ROOM_DIR/$f"; then
+    ok "$ROOM_DIR/$f shows the ◉ room-state card"
+  else
+    fail "$ROOM_DIR/$f must show the ◉ room-state card"
+  fi
+done
+
+if python3 scripts/test-room-state-graders.py >"$TMP/graders.out" 2>&1; then
+  ok "⏳ grader regexes pass their card-form positive/negative samples, trailing-prose rejection, and 10k-separator timing check ($(tail -1 "$TMP/graders.out"))"
 else
-  ok "$ROOM_DIR/SKILL.md carries no old room-state connector (├─, └─, |_)"
+  tail -20 "$TMP/graders.out"
+  fail "scripts/test-room-state-graders.py failed: a ⏳ grader regex no longer fits the card form"
 fi
 
 for phrase in 'skipped, not queued' 'record a skipped slot twice' 'the next slot usually resumes it'; do
