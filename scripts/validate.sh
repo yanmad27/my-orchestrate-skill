@@ -421,9 +421,9 @@ if PATH="$RENDER_HOME/bin:$PATH" HOME="$RENDER_HOME" env -u CODEX_HOME "$REPO_RO
       "$ROOM/claude-lead/settings.json" >/dev/null \
     && [ -L "$ROOM/claude-peer/skills/other" ] && [ ! -e "$ROOM/claude-peer/skills/supervisor" ] \
     && [ "$(readlink "$ROOM/claude-lead/CLAUDE.md")" = "$RENDER_HOME/.claude/CLAUDE.md" ] \
-    && [ "$(printf '%s\n' "$CODEX_ARGS" | head -6 | tr -d '\n')" = "[-c][agents.enabled=false][-c][features.multi_agent=false][-c][features.multi_agent_v2=false]" ] \
-    && printf '%s\n' "$CODEX_ARGS" | grep -qF "[developer_instructions='''" \
-    && printf '%s\n' "$CODEX_ARGS" | grep -q 'Room role: Peer' \
+    && [ "$(head -n 6 <<< "$CODEX_ARGS" | tr -d '\n')" = "[-c][agents.enabled=false][-c][features.multi_agent=false][-c][features.multi_agent_v2=false]" ] \
+    && grep -qF "[developer_instructions='''" <<< "$CODEX_ARGS" \
+    && grep -q 'Room role: Peer' <<< "$CODEX_ARGS" \
     && [ "$(printf '%s\n' "$CODEX_ARGS" | tail -1)" = "[app-server]" ] \
     && ! grep -q '@@' "$RENDER_HOME/.paseo/config.json" \
     && grep -qF "CODEX_HOME=\"$ROOM/codex-peer\" exec" "$ROOM/bin/codex-peer" \
@@ -870,6 +870,15 @@ if bash -n scripts/fixtures/slp-gc-install/run-tests.sh; then
   ok "slp-gc install tests have valid bash syntax"
 else
   fail "slp-gc install tests have a bash syntax error"
+fi
+if command -v shellcheck >/dev/null 2>&1; then
+  if shellcheck -S warning scripts/fixtures/slp-gc-install/run-tests.sh; then
+    ok "slp-gc install tests pass shellcheck -S warning"
+  else
+    fail "slp-gc install tests have shellcheck warnings"
+  fi
+else
+  ok "shellcheck not installed, skipping slp-gc install tests lint"
 fi
 SGI_OUT="$TMP/slp-gc-install-tests.out"; SGI_RC=0
 bash scripts/fixtures/slp-gc-install/run-tests.sh > "$SGI_OUT" 2>&1 || SGI_RC=$?

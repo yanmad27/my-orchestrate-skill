@@ -5,7 +5,7 @@
 # login-home guard lets the stub load), and stub paseo/claude/pkill. The real launchctl and real
 # HOME are never used; the test checks that at the end. EVIDENCE_DIR=<dir> keeps the transcript, plist and listings.
 set -uo pipefail
-cd "$(dirname "$0")/../../.."
+cd "$(dirname "$0")/../../.." || exit 1
 REPO="$PWD"
 FAILED=0
 ok()   { printf 'ok: %s\n' "$1"; }
@@ -100,6 +100,7 @@ check "the plist has no --apply, ever" bash -c '! grep -q -- "--apply" "$0"' "$P
 check "the plist runs /bin/bash <slp-gc> tick" bash -c 'grep -A3 "<key>ProgramArguments" "$0" | grep -q "/bin/bash" && grep -q "<string>'"$BIN"'</string>" "$0" && grep -q "<string>tick</string>" "$0"' "$PLIST"
 check "the plist has StartInterval 60, RunAtLoad, Nice 10, Background, LowPriorityIO" bash -c \
   'tr -d " \n\t" < "$0" | grep -q "<key>StartInterval</key><integer>60</integer>" && tr -d " \n\t" < "$0" | grep -q "<key>RunAtLoad</key><true/>" && tr -d " \n\t" < "$0" | grep -q "<key>Nice</key><integer>10</integer>" && tr -d " \n\t" < "$0" | grep -q "<key>ProcessType</key><string>Background</string>" && tr -d " \n\t" < "$0" | grep -q "<key>LowPriorityIO</key><true/>"' "$PLIST"
+# shellcheck disable=SC2034  # used inside the checkp predicate strings below
 STUBS_REAL="$(cd -P "$stubs" && pwd -P)"
 check "the plist PATH lists the system dirs first, then homebrew (extras only after them)" grep -qE "<string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin(:[^<]*)?</string>" "$PLIST"
 check "the plist sets PATH, HOME and SLP_GC_CONFIG only" bash -c \
@@ -344,7 +345,7 @@ missing_help=""; missing_parser=""
 for k in $( { grep -o 'SLP_GC_[A-Z_]*[A-Z]' "$CONF"; grep -o 'SLP_GC_[A-Z_]*[A-Z]' README.md; } | sort -u); do
   case "$k" in SLP_GC_TEST|SLP_GC_STATE_DIR|SLP_GC_CONFIG|SLP_GC_PLIST_BASE_PATH) continue ;; esac
   printf '%s' "$HELP" | grep -q "$k" || missing_help="$missing_help $k"
-  grep -qE "(^|[ |])$k[|)]" "$BIN" || missing_parser="$missing_parser $k"
+  grep -qE "(^|[ |])${k}[|)]" "$BIN" || missing_parser="$missing_parser $k"
 done
 checkp "every SLP_GC_* key the README or the generated config documents is in slp-gc's --help (missing:${missing_help:- none})" '[ -z "$missing_help" ]'
 checkp "...and in slp-gc's config parser (missing:${missing_parser:- none})" '[ -z "$missing_parser" ]'

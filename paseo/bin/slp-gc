@@ -1100,7 +1100,7 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
   # the evaluation that authorises a signal is one evaluate-light old (its own duration), not older.
   # signals: single pids, SIGTERM only, at most SLP_GC_MAX_KILLS per run. Before EVERY signal a full evaluate light (fresh files, ps,
   # env, top), then the per-pid checks: the ps identity, the pid's own proof (ledger row / env), its executable path, its footprint.
-  local pid ppid lstart class cmd why kind row2 rrow rppid rlstart rcmd nk=0 stop=0 seen=" " proof rowowner rowexe fa fh fr epath fnow ebase
+  local pid ppid lstart class cmd why kind row2 rrow rppid rlstart rcmd nk=0 stop=0 seen=" " proof rowowner rowexe fa fh epath fnow ebase
   for kind in stale mem; do
     if [ "$kind" = stale ]; then [ "$ks" = 1 ] || continue; else [ "$km" = 1 ] || continue; fi
     [ "$stop" = 0 ] && [ "${BUDGET_HIT:-0}" = 0 ] || break
@@ -1131,18 +1131,18 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
       case "$class" in
         orphan)
           if [ "$proof" = ledger ]; then
-            IFS=$'\t' read -r _ fa fh fr <<< "$(env_one "$pid")"
+            IFS=$'\t' read -r _ fa fh _ <<< "$(env_one "$pid")"
             if [ "$fa" != "-" ] && [ "$fa" != "$rowowner" ]; then act kill "$pid" skipped "env PASEO_AGENT_ID $fa contradicts the ledger owner $rowowner"; continue; fi
             if [ "$fh" = other ]; then act kill "$pid" skipped "env PASEO_HOME points at another home"; continue; fi
             load_ledger
             if ! jq -e --argjson p "$pid" --arg l "$lstart" '.[] | select(.pid == $p and .lstart == $l and (.orphaned // 0) > 0 and (.exe // "") != "")' "$T/ledger.json" >/dev/null 2>&1; then
               act kill "$pid" skipped "the ledger no longer proves this pid (row or orphaned-at gone, or the ledger is untrusted)"; continue; fi
           else
-            IFS=$'\t' read -r _ fa fh fr <<< "$(env_one "$pid")"
+            IFS=$'\t' read -r _ fa fh _ <<< "$(env_one "$pid")"
             if [ "$fh" != match ] || [ "$fa" != "$rowowner" ]; then act kill "$pid" skipped "env proof (PASEO_HOME + PASEO_AGENT_ID) no longer holds"; continue; fi
           fi ;;
         claude-child|codex-child|slp-wait|paseo-wait)
-          IFS=$'\t' read -r _ fa fh fr <<< "$(env_one "$pid")"
+          IFS=$'\t' read -r _ fa fh _ <<< "$(env_one "$pid")"
           if [ "$fh" != match ]; then act kill "$pid" skipped "PASEO_HOME in the env no longer proven to match"; continue; fi ;;
       esac
       # ... and its REAL executable path (argv and titles can be rewritten): re-read now, absolute, never inside an .app bundle or under

@@ -60,6 +60,7 @@ check "report shows schedule runs, size and fires; anomalies stay report-only" b
 check "repair 8: missing keys (internal / lastRunAt) are skipped, not defaulted; a newline-named malformed file still protects the id it mentions" bash -c "grep -q 'required keys missing' '$R' && grep -A1 '$A_NLREF' '$R' | grep -q 'unreadable record/schedule mentions it'"
 check "repair 4/L9: control characters in fields are sanitised in the text report" bash -c "! grep -q \$'\\033' '$R' && grep -q 'supervisor: ?\[31mred' '$R'"
 
+# shellcheck disable=SC2034  # read by sandbox.sh (fx_gc)
 FX_RETENTION=
 # --- (ii) --apply -------------------------------------------------------------------------------
 fresh
@@ -211,7 +212,7 @@ env -i PATH=/usr/bin:/bin HOME="$FX_HOME" TMPDIR="$FX_TMP" SLP_GC_STATE_DIR="$FX
 check "L6: without SLP_GC_TEST=1 the probe/clock/CLI overrides are ignored (fixture processes never appear, identification fails, nothing is called)" bash -c "! grep -q 'Supervisor 110' '$WORK/notest.txt' && grep -q 'identification: FAILED' '$WORK/notest.txt' && test '$(logn paseo.log)' = 0 -a '$(logn kill.log)' = 0"
 fresh; printf '%s\n' "$(cat "$FX_FIX/ps.txt")" "$(grep '^   111 ' "$FX_FIX/ps.txt")" > "$FX_FIX/ps.dup"; mv "$FX_FIX/ps.dup" "$FX_FIX/ps.txt"
 fx_gc report --apply > "$WORK/dup.txt" 2>&1; rc=$?
-check "L4: duplicate pid rows in the ps output fail identification and refuse --apply (exit 3)" test "$rc" = 3 -a "$(logn paseo.log)" = 0 && grep -q 'duplicate pid rows' "$WORK/dup.txt"
+check "L4: duplicate pid rows in the ps output fail identification and refuse --apply (exit 3)" bash -c 'test "$1" = 3 -a "$2" = 0 && grep -q "duplicate pid rows" "$3"' _ "$rc" "$(logn paseo.log)" "$WORK/dup.txt"
 fresh; FX_EXTRA_ENV="SLP_GC_CLI_TIMEOUT=abc SLP_GC_MEM_WARN_MB=0800" fx_gc report > "$WORK/num.txt" 2>&1; rc=$?
 check "L7/L13: an invalid SLP_GC_CLI_TIMEOUT falls back (exit 0); 0800 is read as decimal 800" bash -c "test '$rc' = 0 && grep -q 'warn >= 800 MB' '$WORK/num.txt'"
 check "L2: uuid validation is newline-safe (a trailing newline or CR fails)" bash -c "eval \"\$(grep -E '^(UUID_RE|uuid_ok)' '$GC')\"; uuid_ok $A_GC1 && ! uuid_ok \"$A_GC1\$'\\n'\" && ! uuid_ok \"$A_GC1\$'\\r'\" && ! uuid_ok 'x'"
@@ -381,7 +382,9 @@ sedtop() { sed -i.b "$1" "$FX_FIX/top.txt"; rm -f "$FX_FIX/top.txt.b"; }
 fresh; fx_lean
 FX_EXTRA_ENV="SLP_GC_MAX_KILLS=1" fx_gc report --apply --kill-over-memory > "$WORK/cap.txt" 2>&1
 check "N3: SLP_GC_MAX_KILLS caps the signals per run (1 of the 3 eligible: 102, 300, 310) and the rest is logged as deferred" bash -c "test \"\$(wc -l < '$FX_LOGS/kill.log' | tr -d ' ')\" = 1 && grep -q 'SLP_GC_MAX_KILLS=1 reached' '$WORK/cap.txt'"
-fresh; fx_lean; FX_TRACE=1
+fresh; fx_lean
+# shellcheck disable=SC2034  # read by sandbox.sh (fx_gc)
+FX_TRACE=1
 fx_gc report --apply --kill-over-memory > "$WORK/batch.txt" 2>&1
 check "X1/N3: every kill is preceded by its own full recheck (the claude child's env is read 5 times: the evaluation + 4 rechecks for the 4 candidates: 102, 300, 342 refused at the exe check, 310)" bash -c "test \"\$(grep -cx 120 '$FX_LOGS/psenv.log')\" = 5 && test \"\$(wc -l < '$FX_LOGS/kill.log' | tr -d ' ')\" = 3"
 check "L3/L4: the rechecks skip the wide env reads and the cwd hints (OrbStack 313's env and the lsof cwd calls happen once, in the evaluation)" bash -c "test \"\$(grep -cx 313 '$FX_LOGS/psenv.log')\" = 1 && test \"\$(wc -l < '$FX_LOGS/lsof-cwd.log' | tr -d ' ')\" = 6"
