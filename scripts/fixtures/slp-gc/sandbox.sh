@@ -166,7 +166,7 @@ name.json"
 Processes: 400 total
 PID    MEM    CMPRS
 100    30000M 20000M
-101    5000M  100M
+101    3500M  100M
 102    20000M 15000M
 103    9M     1M
 110    20000M 100M
@@ -206,25 +206,46 @@ S
 #!/bin/sh
 # stub ps for the environment: -p N prints the command + env of that pid (the fixture line minus its pid)
 pid=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && pid="$2"; shift; done
-awk -v p="$pid" '$1 == p { $1 = ""; sub(/^ +/, ""); print }' "$SLPGC_FIX/env.txt"
+# pure sh (no awk): line = "<spaces><pid> <rest>"
+while IFS= read -r line; do
+  set -f; set -- $line; set +f
+  if [ "$1" = "$pid" ]; then shift; echo "$*"; fi
+done < "$SLPGC_FIX/env.txt"
 S
   printf '#!/bin/sh\ncat "$SLPGC_FIX/top.txt"\n' > "$SB/bin/top"
-  printf '#!/bin/sh\necho p111\n' > "$SB/bin/lsof"
+  cat > "$SB/bin/lsof" <<'S'
+#!/bin/sh
+# stub lsof: `-d cwd -p N` prints the fixture cwd.N (if any); the listener query prints the daemon pid
+case "$*" in
+  *"-d cwd"*) p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
+              [ -f "$SLPGC_FIX/cwd.$p" ] && { echo "p$p"; echo fcwd; echo "n$(cat "$SLPGC_FIX/cwd.$p")"; }; exit 0 ;;
+esac
+echo p111
+S
   printf '#!/bin/sh\ncat "$SLPGC_FIX/vm_stat.txt"\n' > "$SB/bin/vm_stat"
-  printf '#!/bin/sh\necho "total = 2048.00M  used = 1500.50M  free = 547.50M  (encrypted)"\n' > "$SB/bin/sysctl"
+  cat > "$SB/bin/sysctl" <<'S'
+#!/bin/sh
+# stub sysctl: hw.memsize = 16 GiB (SLPGC_MEMSIZE overrides); vm.swapusage = a fixed line
+case "$*" in
+  *hw.memsize*) echo "${SLPGC_MEMSIZE:-17179869184}" ;;
+  *) echo "total = 2048.00M  used = 1500.50M  free = 547.50M  (encrypted)" ;;
+esac
+S
   printf '#!/bin/sh\necho "$*" >> "$SLPGC_LOGS/kill.log"\n' > "$SB/bin/kill"
   printf '#!/bin/sh\necho "$*" >> "$SLPGC_LOGS/osascript.log"\n' > "$SB/bin/osascript"
   printf '#!/bin/sh\necho "2026-09-30 memorystatus: fixture line"\n' > "$SB/bin/log"
   cat > "$SB/bin/paseo" <<'S'
 #!/bin/sh
 # stub paseo: logs argv, then plays the daemon (removes the record it is asked to delete).
-# Wants the exact argv slp-gc must use: <group> <cmd> --home <dir> -- <id>   (or agent ls ... --home <dir>)
+# Wants the exact argv slp-gc must use: <group> <cmd> --home <dir> -- <id>   (or agent inspect --home <dir> --json -- <id>)
 echo "$*" >> "$SLPGC_LOGS/paseo.log"
 echo "PASEO_HOME=$PASEO_HOME" >> "$SLPGC_LOGS/paseo.env"
 [ "$1" = --version ] && { echo "0.10.2-stub"; exit 0; }
 [ -z "$SLPGC_PASEO_HANG" ] || exec sleep 30
 case "$1 $2" in
-  "agent ls") [ -f "$SLPGC_FIX/agents-ls.json" ] || exit 1; cat "$SLPGC_FIX/agents-ls.json"; exit 0 ;;
+  "agent inspect")   # agent inspect --home <dir> --json -- <uuid>: prints $SLPGC_FIX/inspect-<uuid>.json (else fails)
+    [ "$3" = --home ] && [ "$5" = --json ] && [ "$6" = -- ] && [ "$#" = 7 ] || { echo "bad argv: $*" >&2; exit 2; }
+    [ -f "$SLPGC_FIX/inspect-$7.json" ] || exit 1; cat "$SLPGC_FIX/inspect-$7.json"; exit 0 ;;
   "agent delete"|"schedule delete") ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
@@ -249,21 +270,24 @@ fx_gc() {  # fx_gc <args...>
     SLP_GC_PS="$FX_BIN/ps" SLP_GC_PSENV="$FX_BIN/psenv" SLP_GC_TOP="$FX_BIN/top" SLP_GC_LSOF="$FX_BIN/lsof" \
     SLP_GC_VMSTAT="$FX_BIN/vm_stat" SLP_GC_SYSCTL="$FX_BIN/sysctl" SLP_GC_KILL="$FX_BIN/kill" \
     SLP_GC_OSASCRIPT="$FX_BIN/osascript" SLP_GC_PASEO="$FX_BIN/paseo" \
-    SLPGC_FIX="$FX_FIX" SLPGC_LOGS="$FX_LOGS" SLPGC_PASEO_HANG="${SLPGC_PASEO_HANG:-}" SLPGC_ADD_SELF="${SLPGC_ADD_SELF:-}" \
+    SLPGC_FIX="$FX_FIX" SLPGC_LOGS="$FX_LOGS" SLPGC_PASEO_HANG="${SLPGC_PASEO_HANG:-}" SLPGC_ADD_SELF="${SLPGC_ADD_SELF:-}" SLPGC_MEMSIZE="${SLPGC_MEMSIZE:-}" SLP_GC_SKIP_RETENTION="$([ "${FX_RETENTION:-}" = on ] && echo 0 || echo 1)" \
     SLP_GC_CLI_TIMEOUT="${SLP_GC_CLI_TIMEOUT:-5}" ${FX_EXTRA_ENV:-} \
     "$FX_GC" "$@"
 }
 
-# snapshot: path, type, mode, symlink target, sha256, mtime — for every entry under a tree
+# snapshot: path, type, mode, symlink target, sha256, mtime - for every entry under a tree (one perl process)
 fx_snapshot() {
-  local root="$1" p t m s h mt
-  find "$root" -print0 | sort -z | while IFS= read -r -d '' p; do
-    if [ -L "$p" ]; then t=l; s="$(readlink "$p")"; h=-
-    elif [ -d "$p" ]; then t=d; s=-; h=-
-    else t=f; s=-; h="$( { shasum -a 256 "$p" 2>/dev/null || sha256sum "$p"; } | awk '{print $1}')"; fi
-    m="$(stat -c %a "$p" 2>/dev/null || stat -f %Lp "$p")"; mt="$(stat -c %Y "$p" 2>/dev/null || stat -f %m "$p")"
-    printf '%q %s %s %q %s %s\n' "${p#"$root"}" "$t" "$m" "$s" "$h" "$mt"
-  done
+  perl -MFile::Find -MDigest::SHA -e '
+    my $root = shift; my @e;
+    find({ no_chdir => 1, wanted => sub { push @e, $File::Find::name } }, $root);
+    for my $p (sort @e) {
+      my @s = lstat($p); my ($t, $l, $h) = ("f", "-", "-");
+      if (-l _) { $t = "l"; $l = readlink($p); } elsif (-d _) { $t = "d"; }
+      else { $h = Digest::SHA->new(256)->addfile($p, "b")->hexdigest; }
+      (my $r = $p) =~ s/^\Q$root\E//;
+      $r =~ s/([^A-Za-z0-9_.\/-])/sprintf("\\x%02x", ord($1))/ge; $l =~ s/([^A-Za-z0-9_.\/-])/sprintf("\\x%02x", ord($1))/ge;
+      printf "%s %s %o %s %s %d\n", $r, $t, $s[2] & 07777, $l, $h, $s[9];
+    }' "$1"
 }
 
 # a hook that runs after slp-gc's evaluation and before its first action: it UNARCHIVES two of the
@@ -275,4 +299,56 @@ find "$PASEO_HOME/agents" -type f \( -name 'aaaaaaaa-0000-4000-8000-000000000011
 H
   chmod +x "$FX_SB/hook.sh"
   FX_HOOK="$FX_SB/hook.sh"
+}
+
+# --- B1b fixtures: orphaned agent descendants, test-runner subtrees, ledger -----------------------
+# Appended to a fresh sandbox (kept out of make_sandbox so the base process counts stay put).
+#   300 node (vitest 3)  under claude 120 (live agent), 5000 MB      301 node (vitest 4) under 120, 500 MB
+#   310 ppid 1, retitled, EMPTY env, ledger row matches              311 same, but the ledger lstart differs
+#   312 ppid 1, argv vitest, env PASEO_HOME + PASEO_AGENT_ID         313 OrbStack (.app) ppid 1 with PASEO env, 9000 MB
+#   314 ppid 1, ledger match, 5 min old                              315 ppid 1, ledger match, comm mytool (not allowlisted)
+#   316 ppid 1, env proof but another PASEO_HOME                     317 ppid 1, retitled, no ledger/env, cwd under the worktrees dir
+fx_orphans() {
+  local P="$FX_PHOME" F="$FX_FIX" L2="Wed Sep 30 09:00:00 2026" L3="Wed Sep 30 09:30:00 2026" OB="/Applications/OrbStack.app/Contents/MacOS/OrbStack Helper"
+  {
+    fx_psrow 300 120 01:00:00 5000000 "$L2" "node (vitest 3)"
+    fx_psrow 301 120 01:00:00 500000 "$L2" "node (vitest 4)"
+    fx_psrow 310 1 01:00:00 4500000 "$L2" "node (vitest 3)"
+    fx_psrow 311 1 01:00:00 200000 "$L3" "node (vitest 3)"
+    fx_psrow 312 1 02:00:00 2000000 "$L2" "node /w/node_modules/.bin/vitest run"
+    fx_psrow 313 1 03:00:00 9000000 "$L2" "$OB"
+    fx_psrow 314 1 05:00 5000000 "$L2" "node (vitest 3)"
+    fx_psrow 315 1 01:00:00 200000 "$L2" "mytool --serve"
+    fx_psrow 316 1 01:00:00 200000 "$L2" "node /w/other.js"
+    fx_psrow 317 1 01:00:00 200000 "$L2" "node (vitest 3)"
+  } >> "$F/ps.txt"
+  sed -n '/^ *3[0-9][0-9] /p' "$F/ps.txt" >> "$F/ps.recheck"   # the -p re-read stub answers from ps.recheck
+  {
+    echo "  300 node (vitest 3)"
+    echo "  301 node (vitest 4)"
+    echo "  310 node (vitest 3)"
+    echo "  311 node (vitest 3)"
+    echo "  312 node PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE PASEO_HOME=$P PASEO_AGENT_CWD=/w"
+    echo "  313 $OB PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE PASEO_HOME=$P"
+    echo "  314 node (vitest 3)"
+    echo "  315 mytool --serve PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE PASEO_HOME=$P"
+    echo "  316 node PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE PASEO_HOME=/somewhere/else"
+    echo "  317 node (vitest 3)"
+  } >> "$F/env.txt"
+  printf '%s\n' '300    5000M  100M' '301    500M   50M' '310    4500M  50M' '311    200M   50M' '312    2000M  50M' '313    9000M  50M' \
+    '314    5000M  50M' '315    200M   50M' '316    200M   50M' '317    200M   50M' >> "$F/top.txt"
+  # the lineage ledger record wrote when 310/311/314 were still under an agent (311's lstart is stale)
+  printf '310\t%s\tnode\t%s\t1789990000\n311\t%s\tnode\t%s\t1789990000\n314\t%s\tnode\t%s\t1789990000\n315\t%s\tmytool\t%s\t1789990000\n' \
+    "$L2" "$A_LIVE" "$L2" "$A_LIVE" "$L2" "$A_LIVE" "$L2" "$A_LIVE" > "$FX_STATE/lineage.tsv"
+  P="$(cd -P "$P" && pwd -P)"
+  printf '%s' "$P/worktrees/abcd1234/dirty" > "$F/cwd.317"
+  printf '%s' "$P/worktrees/abcd1234/dirty" > "$F/cwd.310"
+}
+
+# lean variant for kill tests: B1b fixtures without the legacy garbage records / legacy orphans (fewer actions, fewer rechecks)
+fx_lean() {
+  fx_orphans
+  rm -f "$FX_PHOME"/schedules/0000000[ab].json
+  find "$FX_PHOME/agents" -type f \( -name "$A_GC1.json" -o -name "$A_GC2.json" \) -exec rm -f {} +
+  sed -E -i.b '/^ *(122|125|130|190) /d' "$FX_FIX/ps.txt" "$FX_FIX/ps.recheck"; rm -f "$FX_FIX/ps.txt.b" "$FX_FIX/ps.recheck.b"
 }

@@ -30,6 +30,7 @@ KILL="$(ovr "${SLP_GC_KILL:-}")"; [ -n "$KILL" ] || KILL="kill"
 NOW="$(ovr "${SLP_GC_NOW:-}")"; [ -n "$NOW" ] || NOW="$(date +%s)"
 MAX_ACTIONS="$(ovr "${SLP_GC_MAX_ACTIONS:-}")"; [ -n "$MAX_ACTIONS" ] || MAX_ACTIONS=100
 AGENT_MIN_DAYS="$(ovr "${SLP_GC_AGENT_MIN_DAYS:-}")"; [ -n "$AGENT_MIN_DAYS" ] || AGENT_MIN_DAYS=14
+LEDGER_CAP=5000; [ "${SLP_GC_TEST:-}" != 1 ] || [ -z "${SLP_GC_LEDGER_CAP:-}" ] || LEDGER_CAP="$SLP_GC_LEDGER_CAP"
 
 # --- small helpers --------------------------------------------------------------------------------
 die() { printf 'slp-gc: %s\n' "$*" >&2; exit 2; }
@@ -75,10 +76,22 @@ etime_s() {  # [[dd-]hh:]mm:ss -> seconds (base 10)
   echo $((10#$d * 86400 + 10#$h * 3600 + 10#$m * 60 + 10#$s))
 }
 # thresholds: numbers only; kill has a floor of 1024 MB and never below warn; invalid => default
+DEF_ORPHAN_COMMS="node bun deno npm npx pnpm yarn esbuild tsc vitest jest python python3 uv pytest ruby java gradle go cargo"
 norm_thresholds() {
-  if is_uint "$WARN_MB" && [ "$(dec "$WARN_MB")" -ge 1 ]; then WARN_MB="$(dec "$WARN_MB")"; else WARN_MB=4096; fi
+  local c out="" bad=0
+  if is_uint "$WARN_MB" && [ "$(dec "$WARN_MB")" -ge 1 ]; then WARN_MB="$(dec "$WARN_MB")"; else WARN_MB=3072; fi
   if is_uint "$KILL_MB" && [ "$(dec "$KILL_MB")" -ge 1024 ] && [ "$(dec "$KILL_MB")" -ge "$WARN_MB" ]; then KILL_MB="$(dec "$KILL_MB")"
-  else KILL_MB=16384; [ "$KILL_MB" -ge "$WARN_MB" ] || KILL_MB="$WARN_MB"; fi
+  else KILL_MB=4096; [ "$KILL_MB" -ge "$WARN_MB" ] || KILL_MB="$WARN_MB"; fi
+  if is_uint "$TREE_WARN_MB" && [ "$(dec "$TREE_WARN_MB")" -ge 1 ]; then TREE_WARN_MB="$(dec "$TREE_WARN_MB")"; else TREE_WARN_MB=$((RAM_MB / 2)); fi
+  if is_uint "$ORPHAN_MIN_AGE_MIN" && [ "$(dec "$ORPHAN_MIN_AGE_MIN")" -ge 1 ]; then ORPHAN_MIN_AGE_MIN="$(dec "$ORPHAN_MIN_AGE_MIN")"; else ORPHAN_MIN_AGE_MIN=10; fi
+  if is_uint "$TEST_CONC_WARN"; then TEST_CONC_WARN="$(dec "$TEST_CONC_WARN")"; else TEST_CONC_WARN=3; fi
+  set -f
+  for c in ${ORPHAN_COMMS//,/ }; do
+    case "$c" in ''|*[!A-Za-z0-9._+-]*) bad=1 ;; *) out="$out $c" ;; esac
+  done
+  set +f
+  if [ "$bad" = 1 ] || [ -z "$out" ]; then out=" $DEF_ORPHAN_COMMS"; fi
+  ORPHAN_COMMS="${out# }"
 }
 
 usage() {
@@ -88,8 +101,10 @@ usage: slp-gc [report|record|tick] [options]
   report   (default) read-only: Paseo processes + memory, recurring machinery, agents,
            garbage candidates with the rule that matched or failed, retention data.
            Makes no paseo CLI call, so it works while the daemon is hung. Exit 0.
-  record   append one JSONL memory sample (per Paseo process + system totals) to
-           <state>/memory.jsonl; alerts.log + a notification at >= SLP_GC_MEM_WARN_MB.
+  record   append one JSONL memory sample (per Paseo process, tree totals, orphans, system totals)
+           to <state>/memory.jsonl; refresh <state>/lineage.tsv (the lineage ledger); alerts.log +
+           a notification when a process >= SLP_GC_MEM_WARN_MB, the Paseo tree >= SLP_GC_TREE_WARN_MB
+           or a proven orphan > 1024 MB. Makes no paseo CLI call.
   tick     what launchd runs every 60 s: record, periodic report, and apply/kill phases
            ONLY if the config file sets SLP_GC_APPLY=1 (and SLP_GC_KILL_STALE / _MEMORY=1).
 
@@ -97,19 +112,25 @@ options:
   --apply                  reclaim via Paseo's own CLI: `schedule delete` (completed room schedules)
                            and `agent delete` (archived >= 14 d, all checks pass); refused (exit 3)
                            unless the Supervisor from paseo.pid is proven to serve this home
-  --kill-stale-processes   with --apply: SIGTERM single orphaned pids (ppid 1, or parent not Paseo)
-  --kill-over-memory       with --apply: SIGTERM one Paseo process above SLP_GC_MEM_KILL_MB
+  --kill-stale-processes   with --apply: SIGTERM single orphaned pids (ppid 1, or parent not Paseo), and
+                           orphaned agent descendants (ppid 1, proven by the lineage ledger or by
+                           PASEO_HOME + PASEO_AGENT_ID, dev-tool comm, older than SLP_GC_ORPHAN_MIN_AGE_MIN)
+  --kill-over-memory       with --apply: SIGTERM one process above SLP_GC_MEM_KILL_MB: a descendant below
+                           an agent child, a proven orphan, or a renderer/GPU/utility helper of the app
+                           (never the daemon, the Supervisor, the app main or an agent child itself)
   --home <dir>             PASEO_HOME (default $PASEO_HOME, else ~/.paseo)
   --json                   machine-readable output
   -h, --help               this text
 
 env: SLP_GC_STATE_DIR (default ~/Library/Logs/slp-gc), SLP_GC_CONFIG (tick only, KEY=VALUE, last
   value wins, flags are on only when exactly 1: SLP_GC_APPLY SLP_GC_KILL_STALE SLP_GC_KILL_MEMORY
-  SLP_GC_MEM_WARN_MB[4096] SLP_GC_MEM_KILL_MB[16384, floor 1024, >= warn] SLP_GC_REPORT_INTERVAL_MIN[60]),
+  SLP_GC_MEM_WARN_MB[3072] SLP_GC_MEM_KILL_MB[4096, floor 1024, >= warn] SLP_GC_TREE_WARN_MB[50% of RAM]
+  SLP_GC_ORPHAN_COMMS[node bun deno npm npx pnpm yarn esbuild tsc vitest jest python python3 uv pytest ruby java
+  gradle go cargo] SLP_GC_ORPHAN_MIN_AGE_MIN[10] SLP_GC_TEST_CONCURRENCY_WARN[3] SLP_GC_REPORT_INTERVAL_MIN[60]),
   SLP_GC_CLI_TIMEOUT[30]. Probe/clock overrides (SLP_GC_PS, ...) exist for tests only (SLP_GC_TEST=1).
 Memory footprint = top's MEM (physical footprint, what Force Quit shows; CMPRS is its compressed
-part), falling back to ps rss. Kills never touch the app main or the Supervisor, nor a process
-that runs under the daemon (use `paseo agent stop` for those).
+part), falling back to ps rss. Kills never touch the app main or the Supervisor; the stale rule
+never touches a process that runs under the daemon (use `paseo agent stop` for those). The daemon is reported, never memory-killed.
 EOF
 }
 
@@ -148,7 +169,12 @@ if [ -d "$PHOME_RAW" ]; then PHOME="$(cd -P "$PHOME_RAW" 2>/dev/null && pwd -P)"
 HOME_DEFAULT="$HOME/.paseo"
 [ ! -d "$HOME_DEFAULT" ] || HOME_DEFAULT="$(cd -P "$HOME_DEFAULT" 2>/dev/null && pwd -P)" || HOME_DEFAULT="$HOME/.paseo"
 HOME_IS_DEFAULT=false; [ "$PHOME" != "$HOME_DEFAULT" ] || HOME_IS_DEFAULT=true
-WARN_MB="${SLP_GC_MEM_WARN_MB:-4096}"; KILL_MB="${SLP_GC_MEM_KILL_MB:-16384}"
+RAM_MB="$(run_to 5 "$SYSCTL" -n hw.memsize 2>/dev/null)"
+if is_uint "$RAM_MB" && [ "$(dec "$RAM_MB")" -ge 1048576 ]; then RAM_MB=$(( $(dec "$RAM_MB") / 1048576 )); else RAM_MB=16384; fi
+WARN_MB="${SLP_GC_MEM_WARN_MB:-3072}"; KILL_MB="${SLP_GC_MEM_KILL_MB:-4096}"; TREE_WARN_MB="${SLP_GC_TREE_WARN_MB:-$((RAM_MB / 2))}"
+ORPHAN_COMMS="${SLP_GC_ORPHAN_COMMS:-$DEF_ORPHAN_COMMS}"; ORPHAN_MIN_AGE_MIN="${SLP_GC_ORPHAN_MIN_AGE_MIN:-10}"
+TEST_CONC_WARN="${SLP_GC_TEST_CONCURRENCY_WARN:-3}"
+WANT_LEDGER=0; ENV_WIDE=0
 norm_thresholds
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/slp-gc.XXXXXX")" || die "cannot create a temp dir"
@@ -190,6 +216,8 @@ AGENT_JQ="$JQ_COMMON"'
 # one schedule file (stdin) -> flat object
 SCHED_JQ="$JQ_COMMON"'
 def epochs: [.[]? | (.startedAt // .scheduledFor) | iso_epoch | select(. != null)];
+def isfail: (.status == "failed") or ((.error | type) == "string" and (.error | length) > 0);
+def isactive: ((.error // "") | if type == "string" then (ascii_downcase | contains("already has an active run")) else false end);
 {path: $path, size: $size} + (
   if type != "object" then {ok: false, reason: "not a JSON object"}
   elif (.id | type) != "string" then {ok: false, reason: "missing id"}
@@ -197,6 +225,7 @@ def epochs: [.[]? | (.startedAt // .scheduledFor) | iso_epoch | select(. != null
   elif (.target | type) != "object" or (.target.type | type) != "string" then {ok: false, reason: "missing target"}
   else (.runs | if type == "array" then . else [] end) as $runs
   | ($runs | epochs) as $ep
+  | ([$runs[] | select(type == "object") | select(((.startedAt // .scheduledFor) | iso_epoch) as $e | $e != null and $e >= $now - 86400) | select(isfail)]) as $f24
   | {ok: true, id: .id, name: (.name // null), status: .status,
      strict: ((.runs | type) == "array" and has("lastRunAt") and ((.lastRunAt | type) == "string" or .lastRunAt == null)
               and has("nextRunAt") and (.updatedAt | type) == "string"),
@@ -208,7 +237,8 @@ def epochs: [.[]? | (.startedAt // .scheduledFor) | iso_epoch | select(. != null
      room: (((.name // "") | startswith("supervisor:")) or ((.prompt // "") | startswith("[supervisor-heartbeat]"))),
      runs: ($runs | length), runsRunning: ([$runs[] | select(.status == "running")] | length),
      fires1h: ([$ep[] | select(. >= $now - 3600)] | length),
-     fires24h: ([$ep[] | select(. >= $now - 86400)] | length)} end)'
+     fires24h: ([$ep[] | select(. >= $now - 86400)] | length),
+     fail24h: ($f24 | length), activeRunFail24h: ([$f24[] | select(isactive)] | length)} end)'
 
 # ps rows + env facts + top rows -> process table with classes, owners, kill eligibility
 PROCS_JQ="$JQ_COMMON"'
@@ -308,20 +338,88 @@ def agentfam: . == "claude-child" or . == "codex-child" or . == "slp-wait" or . 
             {eligible: false, why: ("not orphaned: ppid " + ($p.ppid | tostring) + " and owner " + ($p.owner // "?") + " is " + ($p.ownerState // "?"))}
        elif $p.etime_s < $minAge then {eligible: false, why: ("orphan signature but age " + ($p.etime_s | tostring) + "s < " + ($minAge | tostring) + "s")}
        else {eligible: true, why: ("orphan: " + (if $p.ppid == 1 then "reparented to launchd (ppid==1)" else "parent is not a Paseo process and owner " + $p.owner + " is " + $p.ownerState end) + ", PASEO_HOME matches, age " + ($p.etime_s | tostring) + "s >= " + ($minAge | tostring) + "s")} end) as $stale
-    | ($p.class as $c | (["renderer","gpu","utility","daemon","claude-child","codex-child","slp-wait","paseo-wait"] | index($c)) != null) as $memclass
+    | ($p.class as $c | (["renderer","gpu","utility","agent-descendant"] | index($c)) != null) as $memclass
     | (if $p.footprint_mb <= $killMb then {eligible: false, why: ("footprint " + ($p.footprint_mb | tostring) + " MB <= " + ($killMb | tostring) + " MB")}
        elif $p.class == "app-main" or $p.class == "supervisor" then {eligible: false, why: "never killed: report only"}
+       elif $p.class == "daemon" then {eligible: false, why: "report only: the daemon is never memory-killed (it is touched only through an explicit path)"}
+       elif ($p.class == "claude-child" or $p.class == "codex-child") then {eligible: false, why: "report only: an agent child itself is never memory-killed (use `paseo agent stop`)"}
        elif ($memclass | not) then {eligible: false, why: "class not allowed for a memory kill"}
        elif $p.protected != null then {eligible: false, why: ("protected: " + $p.protected)}
        elif ($idt.ok | not) then {eligible: false, why: ("identification failed: " + $idt.why)}
-       elif $p.class == "daemon" and $idt.daemonPid != $p.pid then {eligible: false, why: "daemon is not the identified one"}
        elif ($p.class == "renderer" or $p.class == "gpu" or $p.class == "utility") and $p.ppid != $idt.appPid then
             {eligible: false, why: ("report only: helper is not a direct child of the app main (pid " + ($idt.appPid | tostring) + ") that is the Supervisor'"'"'s parent")}
-       elif ($p.class | agentfam) and $p.home != "match" then {eligible: false, why: "PASEO_HOME not proven to match"}
-       elif ($p.class | agentfam) and ($ud | not) then {eligible: false, why: ("report only: not a descendant of the identified daemon (pid " + ($idt.daemonPid | tostring) + ")")}
+       elif $p.class == "agent-descendant" and ($ud | not) then {eligible: false, why: ("report only: not a descendant of the identified daemon (pid " + ($idt.daemonPid | tostring) + ")")}
        else {eligible: true, why: ("footprint " + ($p.footprint_mb | tostring) + " MB > " + ($killMb | tostring) + " MB")} end) as $mem
     | $p + {underDaemon: $ud, warn: ($p.footprint_mb >= $warnMb), stale: $stale, overmem: $mem})) as $final
-| {ident: $idt, unreadableRows: ($badrows | length), procs: $final,
+| ($cl | map({key: (.pid | tostring), value: (chainc(.) | map(.pid))}) | from_entries) as $anc
+| def fp: (($topBy[(.pid | tostring)] | if . then .mem else null end) // .rss_mb);
+  ($ledgerF[0]) as $ledger
+| ($ledger | map({key: ((.pid | tostring) + "|" + .lstart), value: .}) | from_entries) as $ledBy
+| $orphanComms as $oc
+# orphaned agent descendants: ppid 1, not a Paseo class, proven by a ledger row (pid+lstart) or by env PASEO_HOME + PASEO_AGENT_ID
+| ($cl | map(select(.class == null and .ppid == 1) | . as $r
+    | ($envBy[($r.pid | tostring)] // {agent: null, home: "none", read: false}) as $e
+    | $ledBy[(($r.pid | tostring) + "|" + $r.lstart)] as $led
+    | (($e.home == "match") and ($e.agent != null)) as $envProof
+    | select($led != null or $envProof)
+    | ($r.cmd | split(" ") | .[0] | base) as $comm
+    | ($r.cmd | split(" -") | .[0]) as $exe
+    | ($r | fp) as $fpm
+    | ($led.owner // $e.agent) as $owner
+    | ($topBy[($r.pid | tostring)]) as $tp
+    | (if ($selfTree | index($r.pid)) != null then "in slp-gc'"'"'s own process tree"
+       elif $invoker != "" and $owner == $invoker then "belongs to the invoking agent"
+       elif ($exe | test("\\.app/")) then "executable inside an .app bundle (GUI app / service): never garbage"
+       elif ($exe | test("^/(System|Library)/")) then "executable under /System or /Library (system service): never garbage"
+       else null end) as $prot
+    | (if $prot != null then {proven: false, why: ("protected: " + $prot)}
+       elif ($oc | index($comm)) == null then {proven: false, why: ("report only: comm \"" + $comm + "\" is not in SLP_GC_ORPHAN_COMMS")}
+       elif $r.etime_s < $orphanMinAge then {proven: false, why: ("orphan signature but age " + ($r.etime_s | tostring) + "s < " + ($orphanMinAge | tostring) + "s")}
+       else {proven: true, why: ("orphaned agent descendant: ppid 1, proven by " + (if $led != null then "the lineage ledger (pid+lstart)" else "env PASEO_HOME + PASEO_AGENT_ID" end) + ", comm " + $comm + ", age " + ($r.etime_s | tostring) + "s >= " + ($orphanMinAge | tostring) + "s")} end) as $ov
+    | {pid: $r.pid, ppid: $r.ppid, pgid: $r.pgid, lstart: $r.lstart, etime_s: $r.etime_s, class: "orphan", exe: $comm, comm: $comm,
+       owner: $owner, ownerState: null, proof: (if $led != null then "ledger" else "env" end),
+       envRead: $e.read, home: (if $e.read then $e.home else "unreadable" end),
+       rss_mb: $r.rss_mb, mem_mb: (if $tp then $tp.mem else null end), cmprs_mb: (if $tp then $tp.cmprs else null end),
+       footprint_mb: $fpm, footprintSource: (if $tp then "top" else "rss" end), cmd: $r.cmd, protected: $prot,
+       proven: $ov.proven, underDaemon: false, warn: ($fpm >= $warnMb), hint: null,
+       stale: (if $ov.proven and ($idt.ok | not) then {eligible: false, why: ("identification failed: " + $idt.why)} else {eligible: $ov.proven, why: $ov.why} end),
+       overmem: (if $fpm <= $killMb then {eligible: false, why: ("footprint " + ($fpm | tostring) + " MB <= " + ($killMb | tostring) + " MB")}
+                 elif ($ov.proven | not) then {eligible: false, why: $ov.why}
+                 elif ($idt.ok | not) then {eligible: false, why: ("identification failed: " + $idt.why)}
+                 else {eligible: true, why: ("proven orphan, footprint " + ($fpm | tostring) + " MB > " + ($killMb | tostring) + " MB")} end)})) as $orph
+| ($orph | map(select(.proven))) as $proven
+# Paseo tree = app main + everything under it + proven orphans
+| (if $idt.appPid != null then [$idt.appPid] else $apps end) as $roots
+| ($cl | map(select(($anc[(.pid | tostring)] // []) as $a | ($roots | map(. as $q | ($a | index($q)) != null) | any)))) as $treeRows
+| ($treeRows | map(fp) | add // 0 | mb1) as $appMb
+| ($proven | map(.footprint_mb) | add // 0 | mb1) as $orphMb
+| ($procs | map(select(.class | agentish))) as $agentRows
+| ($agentRows | map(. as $a
+    | ($cl | map(select(($anc[(.pid | tostring)] // []) | index($a.pid) != null))) as $mem
+    | ($mem | map(select((.class | agentfam | not) and (.cmd | test("(^|[^A-Za-z0-9_.-])(vitest|jest|pytest|mocha|playwright)([^A-Za-z0-9_-]|\\z)"))))) as $tm
+    | {pid: $a.pid, class: $a.class, owner: ($a.owner // ("pid:" + ($a.pid | tostring) + "@" + $a.lstart)),
+       n: ($mem | length), footprint_mb: ($mem | map(fp) | add // 0 | mb1),
+       testWorkers: ($tm | length), testMb: ($tm | map(fp) | add // 0 | mb1)})) as $agentTot
+| ($agentTot | map(select(.testWorkers > 0)) | sort_by(-.testMb)) as $trows
+| ($rows | map({key: ((.pid | tostring) + "|" + .lstart), value: true}) | from_entries) as $liveSet
+| (if $wantLedger and ($rows | length) > 0 then
+    ($cl | map(. as $r | select($idt.ok and $r.class == null)
+       | ($anc[($r.pid | tostring)] | map(select(. != $r.pid))) as $up
+       | ($up | map($clBy[(. | tostring)]) | map(select(.class | agentish)) | .[0]) as $ag
+       | select($ag != null and ($up | index($idt.daemonPid)) != null)
+       | {pid: $r.pid, lstart: $r.lstart, comm: ($r.cmd | split(" ") | .[0] | base),
+          owner: ($envBy[($ag.pid | tostring)].agent // ("pid:" + ($ag.pid | tostring) + "@" + $ag.lstart)),
+          first: ($ledBy[(($r.pid | tostring) + "|" + $r.lstart)].first // $now)})) as $curr
+    | ($curr | map({key: ((.pid | tostring) + "|" + .lstart), value: true}) | from_entries) as $curSet
+    | ($ledger | map(select($liveSet[((.pid | tostring) + "|" + .lstart)] == true and $curSet[((.pid | tostring) + "|" + .lstart)] == null))) as $keep
+    | ($curr + $keep) | unique_by([.pid, .lstart]) | sort_by(-.first) | .[:$ledgerCap]
+  else null end) as $ledgerNext
+| {ident: $idt, unreadableRows: ($badrows | length), procs: $final, orphans: $orph, ledgerNext: $ledgerNext,
+   tree: {totalMb: (($appMb + $orphMb) | mb1), appMb: $appMb, orphanMb: $orphMb, orphanN: ($proven | length),
+          warnMb: $treeWarn, ramMb: $ramMb, over: (($appMb + $orphMb) >= $treeWarn),
+          daemon: ($final | map(select(.class == "daemon")) | .[0] | if . then {pid, footprint_mb, identified: (.pid == $idt.daemonPid)} else null end),
+          agents: ($agentTot | sort_by(-.footprint_mb) | .[:10]),
+          tests: {agents: ($trows | length), warnAt: $testWarn, over: (($trows | length) > $testWarn), rows: $trows}},
    envBlind: ($final | map(select((.class | agentfam) and (.envRead | not)) | .pid)),
    totals: ($final | group_by(.class) | map({class: .[0].class, n: length, footprint_mb: (map(.footprint_mb) | add | mb1), rss_mb: (map(.rss_mb) | add | mb1), cmprs_mb: (map(.cmprs_mb // 0) | add | mb1)})),
    overall: {n: ($final | length), footprint_mb: ($final | map(.footprint_mb) | add // 0 | mb1), rss_mb: ($final | map(.rss_mb) | add // 0 | mb1)},
@@ -367,7 +465,7 @@ def days($e): (($now - $e) / 86400 | floor);
       | if ($fails | length) == 0 then
           {category: "agent", path: $r.path, id: $r.id, state: "archived", garbage: true, needsProof: $blind, archivedEpoch: $r.archivedEpoch, archivedAt: $r.archivedAt, updatedAt: $r.updatedAt,
            reason: ("GARBAGE: archived " + (days($r.archivedEpoch) | tostring) + " d ago, lastStatus=closed, not internal, no live process/child/schedule/creation reference"
-                    + (if $blind then "; NOTE: the env of " + ($procs.envBlind | length | tostring) + " agent-class process(es) is unreadable, so --apply must first prove it archived and not running with `paseo agent ls`" else "" end)),
+                    + (if $blind then "; NOTE: the env of " + ($procs.envBlind | length | tostring) + " agent-class process(es) is unreadable, so --apply must first prove it archived and not running with `paseo agent inspect`" else "" end)),
            action: ("paseo agent delete " + $r.id)}
         else {category: "agent", path: $r.path, id: $r.id, state: "archived", garbage: false, reason: ("not garbage: " + ($fails | join("; "))), action: "none"} end
     end)) as $agentRows
@@ -416,12 +514,11 @@ PSPAT='/Paseo|claude|codex|slp-wait|paseo/ {printf "%s%s", sep, $1; sep = ","}'
 # env facts only: pid <TAB> PASEO_AGENT_ID|- <TAB> match|other|none <TAB> 1 if the env was readable.
 # macOS ps shows the environment only for explicitly listed pids (-p), never with -ax, so one pid at
 # a time (the env may hold newlines); the env text never leaves awk.
-collect_env() {
-  local pids="${1:-}" p
-  [ -n "$pids" ] || pids="$(collect_ps | awk "$PSPAT")"
-  for p in ${pids//,/ }; do
-    is_uint "$p" || continue
-    run_to 10 "$PSENV" -eww -o command= -p "$p" 2>/dev/null | tr '\n' ' ' | awk -v pid="$p" -v home="$PHOME" -v home2="$PHOME_RAW" '
+# One pid's facts (the ps call runs under its own timeout). Readers run up to 8 at a time (16 only under SLP_GC_TEST=1) and the results are
+# concatenated in pid order, so the output is identical to the sequential loop.
+env_one() {
+  local p="$1"
+  run_to 10 "$PSENV" -eww -o command= -p "$p" 2>/dev/null | tr '\n' ' ' | awk -v pid="$p" -v home="$PHOME" -v home2="$PHOME_RAW" '
     { t = $0 }
     END {
       agent = "-"; h = "none"; rest = t
@@ -436,7 +533,20 @@ collect_env() {
       readable = (index(t, " PATH=") > 0 || index(t, " HOME=") > 0 || index(t, " USER=") > 0) ? 1 : 0
       print pid "\t" agent "\t" h "\t" readable }
     function bound(v, hm) { return substr(v, 1, length(hm)) == hm && (length(v) == length(hm) || substr(v, length(hm) + 1, 1) == " ") }'
+}
+collect_env() {
+  local pids="${1:-}" p n=0 d="$T/envp" ENV_JOBS=8
+  [ "${SLP_GC_TEST:-}" != 1 ] || ENV_JOBS=16   # more readers only under the test gate
+  [ -n "$pids" ] || pids="$(collect_ps | awk "$PSPAT")"
+  rm -rf "$T/envp"; mkdir -p "$d"
+  for p in ${pids//,/ }; do
+    is_uint "$p" || continue
+    env_one "$p" > "$d/$p" &
+    n=$((n + 1)); if [ "$n" -ge "$ENV_JOBS" ]; then wait; n=0; fi
   done
+  wait
+  for p in ${pids//,/ }; do is_uint "$p" && cat "$d/$p"; done
+  return 0
 }
 collect_top() {  # "pid mem_mb cmprs_mb" from `top -l 1 -stats pid,mem,cmprs` (values like 63M, 512K, 2G, 7M+)
   run_to 30 "$TOP" -l 1 -stats pid,mem,cmprs 2>/dev/null | awk '
@@ -517,11 +627,67 @@ collect_refs() {
   sort -u "$T/busyrefs.txt" | jq -Rn '[inputs]' > "$T/busyrefs.json"
   if [ -s "$T/index.err" ]; then sort -u "$T/index.err" | jq -Rn '{ok: false, why: [inputs]}' > "$T/idx.json"; else echo '{"ok":true,"why":[]}' > "$T/idx.json"; fi
 }
+# ppid-1 processes whose env is worth reading for the orphan proof: an allowlisted comm anywhere, and (wide mode,
+# reports only) app-bundle executables outside /System and /Library, so that a GUI app started from an agent shell
+# (OrbStack) can be shown as protected. Capped; Paseo/agent-class rows are read by PSPAT already.
+orphan_env_pids() {
+  awk -v comms="$ORPHAN_COMMS" -v wide="$ENV_WIDE" '
+    BEGIN { n = split(comms, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+    $2 == "1" && $1 ~ /^[0-9]+$/ && $0 !~ /Paseo|claude|codex|slp-wait|paseo/ {
+      c = $11; sub(/.*\//, "", c)
+      if (c in ok) { if (++na > 200) next; printf "%s%s", sep, $1; sep = "," }
+      else if (wide == 1 && index($0, ".app/Contents/MacOS/") > 0 && $11 !~ /^\/(System|Library)\//) { if (++nw > 60) next; printf "%s%s", sep, $1; sep = "," }
+    }' "$1"
+}
+# the lineage ledger (<state>/lineage.tsv: pid, lstart, comm, owner, first-seen): never followed if a symlink
+load_ledger() {
+  local f="$STATE/lineage.tsv" sz
+  echo '[]' > "$T/ledger.json"
+  [ -f "$f" ] && [ ! -L "$f" ] || return 0
+  sz="$(fsize "$f")"; is_uint "$sz" && [ "$sz" -le 4194304 ] || return 0
+  jq -Rn '[inputs | split("\t") | select(length == 5 and (.[0] | test("^[0-9]+$")) and (.[4] | test("^[0-9]+$")))
+           | {pid: (.[0] | tonumber), lstart: .[1], comm: .[2], owner: .[3], first: (.[4] | tonumber)}]' "$f" > "$T/ledger.json.new" 2>/dev/null \
+    && mv -f "$T/ledger.json.new" "$T/ledger.json"
+  return 0
+}
+# atomic write of the next ledger into the state dir (temp + mv); a symlink at the target is replaced, never followed
+write_lineage() {
+  local tmp
+  jq -e '.ledgerNext | type == "array"' "$T/procs.json" >/dev/null 2>&1 || return 0
+  [ ! -d "$STATE/lineage.tsv" ] || return 0
+  tmp="$(mktemp "$STATE/.lineage.XXXXXX")" || return 0
+  if jq -r '.ledgerNext[] | [.pid, .lstart, .comm, .owner, .first] | @tsv' "$T/procs.json" > "$tmp" 2>/dev/null; then mv -f "$tmp" "$STATE/lineage.tsv"; else rm -f "$tmp"; fi
+}
+# supporting hint only (never proof): the cwd of a listed orphan, when under <home>/worktrees or an agent's recorded cwd
+add_cwd_hints() {
+  local pid cwd me; : > "$T/cwd.tsv"
+  me="$(id -un 2>/dev/null)"
+  for pid in $(jq -r '.orphans[:20][] | .pid' "$T/procs.json"); do
+    is_uint "$pid" || continue
+    cwd="$(run_to 5 "$LSOF" -nP -a -u "$me" -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)"
+    [ -z "$cwd" ] || printf '%s\t%s\n' "$pid" "${cwd//$'\n'/ }" >> "$T/cwd.tsv"
+  done
+  [ -s "$T/cwd.tsv" ] || return 0
+  jq --rawfile tsv "$T/cwd.tsv" --slurpfile ag "$T/agents.idx" --arg home "$PHOME" '
+    ($tsv | split("\n") | map(select(length > 0) | split("\t")) | map({key: .[0], value: .[1]}) | from_entries) as $c
+    | ($ag[0] | map(select(.ok and .cwd != null) | .cwd)) as $acwd
+    | .orphans |= map(($c[(.pid | tostring)]) as $d
+        | if $d == null then . else . + {hint: ($d + (if ($d | startswith($home + "/worktrees/")) then " (under the Paseo worktrees dir)"
+              elif ($acwd | map(. as $a | $d == $a or ($d | startswith($a + "/"))) | any) then " (under an agent cwd)" else " (no Paseo match)" end))} end)' \
+    "$T/procs.json" > "$T/procs.json.new" 2>/dev/null && mv -f "$T/procs.json.new" "$T/procs.json"
+  return 0
+}
 collect_procs() {  # $1 = 1: use the agents index for owner states
-  local pidfile listen
+  local pidfile listen pids p2
   collect_ps > "$T/ps.txt" || true
-  collect_env "$(awk "$PSPAT" "$T/ps.txt")" > "$T/env.txt" || true
-  collect_top > "$T/top.txt" || true
+  if [ "${SLP_GC_TEST:-}" = 1 ]; then collect_top > "$T/top.txt" &   # test-only: top runs while the env is read
+  else collect_top > "$T/top.txt"; fi
+
+  pids="$(awk "$PSPAT" "$T/ps.txt")"; p2="$(orphan_env_pids "$T/ps.txt")"
+  [ -z "$p2" ] || pids="${pids:+$pids,}$p2"
+  collect_env "$pids" > "$T/env.txt" || true
+  load_ledger
+  wait   # the top job (a no-op if collect_env already reaped it)
   pidfile=null
   if [ -f "$PHOME/paseo.pid" ] && [ ! -L "$PHOME/paseo.pid" ]; then pidfile="$(jq -c '.' "$PHOME/paseo.pid" 2>/dev/null || echo null)"; fi
   [ -n "$pidfile" ] || pidfile=null
@@ -531,11 +697,15 @@ collect_procs() {  # $1 = 1: use the agents index for owner states
   if ! jq -n --rawfile pstxt "$T/ps.txt" --rawfile envtxt "$T/env.txt" --rawfile toptxt "$T/top.txt" \
       --slurpfile agentIdxF "$T/agents.idx" --slurpfile listenF "$T/listen.json" --argjson pidfile "$pidfile" \
       --argjson selfPid "$$" --arg invoker "${PASEO_AGENT_ID:-}" --argjson warnMb "$WARN_MB" --argjson killMb "$KILL_MB" \
-      --argjson homeDefault "$HOME_IS_DEFAULT" \
+      --argjson homeDefault "$HOME_IS_DEFAULT" --slurpfile ledgerF "$T/ledger.json" \
+      --argjson orphanComms "$(printf '%s\n' $ORPHAN_COMMS | jq -Rn '[inputs]')" --argjson orphanMinAge $((ORPHAN_MIN_AGE_MIN * 60)) \
+      --argjson treeWarn "$TREE_WARN_MB" --argjson ramMb "$RAM_MB" --argjson testWarn "$TEST_CONC_WARN" \
+      --argjson now "$NOW" --argjson wantLedger "$([ "$WANT_LEDGER" = 1 ] && echo true || echo false)" --argjson ledgerCap "$(is_uint "$LEDGER_CAP" && [ "$LEDGER_CAP" -ge 1 ] && dec "$LEDGER_CAP" || echo 5000)" \
       "$PROCS_JQ" > "$T/procs.json" 2> "$T/procs.err"; then
     note "process table failed: $(head -n 3 "$T/procs.err")"
-    echo '{"ident":{"ok":false,"why":"process table failed"},"procs":[],"envBlind":[],"totals":[],"overall":{"n":0,"footprint_mb":0,"rss_mb":0},"unreadableRows":0,"warnMb":0,"killMb":0}' > "$T/procs.json"
+    echo '{"ident":{"ok":false,"why":"process table failed"},"procs":[],"orphans":[],"ledgerNext":null,"tree":{"totalMb":0,"appMb":0,"orphanMb":0,"orphanN":0,"warnMb":0,"ramMb":0,"over":false,"daemon":null,"agents":[],"tests":{"agents":0,"warnAt":0,"over":false,"rows":[]}},"envBlind":[],"totals":[],"overall":{"n":0,"footprint_mb":0,"rss_mb":0},"unreadableRows":0,"warnMb":0,"killMb":0}' > "$T/procs.json"
   fi
+  [ "$1" != 1 ] || add_cwd_hints
 }
 # transcripts (CLAUDE_CONFIG_DIR/projects/*/<sessionId>.jsonl), largest first
 collect_transcripts() {
@@ -630,7 +800,7 @@ ASSEMBLE_JQ='
    transcripts: ($tr | map(. + {agent: $bySess[.sessionId]})), daemonMetrics: $met, retention: $ret}'
 evaluate() {
   local mode="${1:-full}" f
-  rm -f "$T/index.err"
+  rm -f "$T/index.err"; ENV_WIDE=1
   extract_agents; extract_schedules; collect_refs; collect_procs 1
   jq -n --slurpfile agentsF "$T/agents.json" --slurpfile schF "$T/sched.json" --slurpfile procsF "$T/procs.json" \
     --slurpfile rawF "$T/rawrefs.json" --slurpfile busyF "$T/busyrefs.json" --slurpfile idxF "$T/idx.json" \
@@ -643,7 +813,10 @@ evaluate() {
   read_nul paths < "$T/gpaths.list"
   for f in "${paths[@]}"; do jq -nc --arg p "$f" --arg s "$(fsig "$f")" '{path: $p, sig: $s}'; done >> "$T/sigs.jsonl"
   : > "$T/tr.jsonl"; : > "$T/metrics.jsonl"; : > "$T/ret.jsonl"
-  if [ "$mode" = full ]; then collect_transcripts; collect_metrics; collect_retention; fi
+  if [ "$mode" = full ]; then
+    collect_transcripts; collect_metrics
+    [ "$(ovr "${SLP_GC_SKIP_RETENTION:-}")" = 1 ] || collect_retention   # test-only: the find/du/git scan is slow and rarely asserted
+  fi
   jq -n --arg generated "$(iso_now)" --arg home "$PHOME" --slurpfile ev "$T/evalpart.json" --slurpfile pr "$T/procs.json" \
     --slurpfile ret "$T/ret.jsonl" --slurpfile tr "$T/tr.jsonl" --slurpfile met "$T/metrics.jsonl" --slurpfile ag "$T/agents.json" \
     --slurpfile sg "$T/sigs.jsonl" \
@@ -688,10 +861,28 @@ def cap($n; f): if length > $n then (.[:$n] | map(f)) + ["  ... \(length - $n) m
   ($P.procs | map(select(.class == "claude-child" or .class == "codex-child" or .class == "slp-wait" or .class == "paseo-wait")) | "  env visibility: PASEO_HOME readable for \(map(select(.envRead)) | length) of \(length) agent-family processes (unreadable => never signalled by --kill-stale-processes; ps eww may be restricted by SIP or a sandbox)"),
   ($r.daemonMetrics | if length > 0 then "  daemon self-metrics (last ws_runtime_metrics): " + (.[-1] | "\(.time) rss=\(.rss) heapUsed=\(.heapUsed) timelineStats=\(.timelineStats | tojson)") else "  daemon self-metrics: none found in daemon.log" end),
   "",
+  "== (a2) orphaned agent descendants (ppid 1 + agent provenance: lineage ledger pid+lstart, or env PASEO_HOME + PASEO_AGENT_ID; SIGTERM only with --apply --kill-stale-processes)",
+  (if ($P.orphans | length) == 0 then "  (none with agent provenance)" else empty end),
+  ($P.orphans | sort_by(-.footprint_mb) | .[] |
+    ("  " + ([(.pid | rpad(7)), (.comm | pad(10)), ("owner " + (.owner | sh | pad(9))), (age(.etime_s) | pad(8)), ((.footprint_mb | tostring) + " MB" | rpad(10)), ("proof " + .proof), (if .protected != null then "PROTECTED" else "" end), (if .proven then "ORPHAN" else "" end)] | join(" "))),
+    "      \(.stale.why)" + (if .stale.eligible then "  => WOULD SIGTERM pid \(.pid) (with --apply --kill-stale-processes)" else "" end),
+    (select(.overmem.eligible) | "      memory rule: \(.overmem.why)  => WOULD SIGTERM pid \(.pid) (with --apply --kill-over-memory)"),
+    (select(.hint != null) | "      hint (never proof): cwd \(.hint)")),
+  "",
+  "== (a3) Paseo tree memory (app main + everything under it + proven orphans; footprint MB)",
+  "  tree total \($P.tree.totalMb) MB  = app subtree \($P.tree.appMb) + proven orphans \($P.tree.orphanMb) (\($P.tree.orphanN))   warn >= \($P.tree.warnMb) MB (50% of \($P.tree.ramMb) MB RAM)" + (if $P.tree.over then "   !!TREE-WARN" else "" end),
+  (if $P.tree.daemon then "  daemon: pid \($P.tree.daemon.pid) footprint \($P.tree.daemon.footprint_mb) MB (report-only: the daemon is never memory-killed)" else "  daemon: not found" end),
+  "  per-agent subtree totals (top 10; agent child + everything under it):",
+  ($P.tree.agents | .[] | "    \(.owner | if startswith("pid:") then (split("@")[0]) else .[:8] end | pad(12)) \(.class | pad(13)) processes \(.n | rpad(4))  \(.footprint_mb | rpad(9)) MB"),
+  (if ($P.tree.agents | length) == 0 then "    (no agent child found)" else empty end),
+  "",
+  "== (a4) test-runner concurrency (report-only): \($P.tree.tests.agents) agent(s) with vitest/jest/pytest/mocha/playwright subtrees (warn when > \($P.tree.tests.warnAt))" + (if $P.tree.tests.over then "   !!CONCURRENCY-WARN" else "" end),
+  ($P.tree.tests.rows | .[] | "    \(.owner | if startswith("pid:") then (split("@")[0]) else .[:8] end | pad(12)) test-runner processes \(.testWorkers | rpad(4))  \(.testMb | rpad(9)) MB"),
+  "",
   "== (b) recurring machinery: schedules / heartbeats on disk (\($r.schedules | length))",
   ($r.schedules | sort_by(.id) | .[] |
     if .id == null then "  \(.path)  UNREADABLE: \(.reason)  size \(.size) B  -> skipped"
-    else "  \(.id)  \(.status | pad(9))  target \(.targetType):\(.targetAgent | sh) (\(.targetState // "n/a"))  cadence \(.cadence // "-")  runs \(.runs)  size \(.size | bytes)  fires 1h/24h \(.fires1h)/\(.fires24h)  name \(.name // "-")\n      \(.reason)  | action: \(.action)" end),
+    else "  \(.id)  \(.status | pad(9))  target \(.targetType):\(.targetAgent | sh) (\(.targetState // "n/a"))  cadence \(.cadence // "-")  runs \(.runs)  size \(.size | bytes)  fires 1h/24h \(.fires1h)/\(.fires24h)  name \(.name // "-")\n      \(.reason)  | action: \(.action)" + (if .runs > 0 then "\n      heartbeat health: runs[] \(.runs), failures in the last 24 h \(.fail24h), \"already has an active run\" share \(if .fail24h > 0 then "\((.activeRunFail24h * 100 / .fail24h) | round)%" else "n/a" end)" else "" end) end),
   (if ($r.schedules | length) == 0 then "  (none)" else empty end),
   "",
   "== (c) agents: \($r.agents.total) records  live \($r.agents.live)  archived \($r.agents.archived)  closed-unarchived \($r.agents.closedUnarchived)  unreadable \($r.agents.unreadable)",
@@ -744,20 +935,20 @@ run_cli() {  # rc 0 ok, 1 failed, 2 timed out (the daemon is hung: stop acting).
 # Fresh, full re-evaluation (files re-read, fresh ps/env/top) in a scratch dir: every liveness and
 # ownership predicate is recomputed. Result: $RC_JSON (a report.json), rc 0 if it could be built.
 recheck() {
-  local save="$T"
+  local save="$T" rc=0
   rm -rf "$T0"/rc.*
   T="$T0/rc.$$"; mkdir -p "$T"
   RC_JSON="$T/report.json"
-  local rc=0
   evaluate light >/dev/null 2>&1 || rc=1
   T="$save"
   return "$rc"
 }
-# can `paseo agent ls` show the agent archived and not running? (used only when env is unreadable)
+# proof from `paseo agent inspect` (used only when env is unreadable): Archived true, ArchivedAt set, Status not
+# running, Id equal to the full uuid. `agent ls` cannot prove this (no archivedAt, and it lists only part of the records).
 prove_archived() {
-  run_cli agent ls -a -g --json --home "$PHOME" || return 1
-  jq -e --arg id "$1" '(if type == "array" then . else (.agents // .data // []) end) | map(select(.id == $id))
-      | length == 1 and .[0].archivedAt != null and .[0].status != "running"' "$T0/cli.out" >/dev/null 2>&1
+  run_cli agent inspect --home "$PHOME" --json -- "$1" || return 1
+  jq -e --arg id "$1" '.Archived == true and (.ArchivedAt | type == "string" and length > 0)
+      and (.Status | type == "string" and . != "running") and .Id == $id' "$T0/cli.out" >/dev/null 2>&1
 }
 
 do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/report.json (the evaluation)
@@ -801,7 +992,7 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
       if [ "$need" = true ]; then
         if ! prove_archived "$id"; then
           [ "$CLI_DEAD" = 0 ] || break
-          act "agent delete" "$id" skipped "env of agent-class processes is unreadable and 'paseo agent ls' did not prove it archived and not running"; continue
+          act "agent delete" "$id" skipped "env of agent-class processes is unreadable and 'paseo agent inspect' did not prove it archived and not running"; continue
         fi
       fi
       n=$((n + 1))
@@ -819,11 +1010,11 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
       case "$seen" in *" $pid "*) continue ;; esac
       seen="$seen$pid "
       is_uint "$pid" && [ "$pid" -gt 1 ] || { act kill "$pid" skipped "bad pid"; continue; }
-      case "$class" in app-main|supervisor) act kill "$pid" skipped "$class is never signalled"; continue ;; esac
+      case "$class" in app-main|supervisor|daemon) act kill "$pid" skipped "$class is never signalled"; continue ;; esac
       if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then act kill "$pid" skipped "slp-gc's own process"; continue; fi
       if ! recheck; then act kill "$pid" skipped "fresh re-evaluation failed"; continue; fi
       row2="$(jq -c --argjson p "$pid" --arg l "$lstart" --arg k "$kind" \
-        '.procs.procs[] | select(.pid == $p and .lstart == $l and (if $k == "stale" then .stale.eligible else .overmem.eligible end))' "$RC_JSON" 2>/dev/null)"
+        '.procs | (.procs + .orphans)[] | select(.pid == $p and .lstart == $l and (if $k == "stale" then .stale.eligible else .overmem.eligible end))' "$RC_JSON" 2>/dev/null)"
       if [ -z "$row2" ]; then act kill "$pid" skipped "no longer eligible on the fresh full re-evaluation (env, owner, parent, age, memory)"; continue; fi
       # last: the ps identity of this very pid, immediately before the signal
       rrow="$(run_to 10 "$PS" -ww -o pid=,ppid=,pgid=,etime=,rss=,lstart=,command= -p "$pid" 2>/dev/null | awk -v p="$pid" '$1 == p' | head -n 1)"
@@ -832,13 +1023,13 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
       retime="$(etime_s "$(printf '%s' "$rrow" | awk '{print $4}')")"
       rlstart="$(printf '%s' "$rrow" | awk '{print $6, $7, $8, $9, $10}')"
       rcmd="$(printf '%s' "$rrow" | sed -E 's/^ *([^ ]+ +){10}//')"
-      min=0; if [ "$kind" = stale ]; then case "$class" in slp-wait|paseo-wait) min=130 ;; *) min=600 ;; esac; fi
+      min=0; if [ "$kind" = stale ]; then case "$class" in slp-wait|paseo-wait) min=130 ;; orphan) min=$((ORPHAN_MIN_AGE_MIN * 60)) ;; *) min=600 ;; esac; fi
       if [ "$rlstart" != "$lstart" ] || [ "$rppid" != "$ppid" ] || [ "$rcmd" != "$cmd" ]; then
         act kill "$pid" skipped "lstart/ppid/command changed since evaluation (pid reuse?)"; continue
       fi
       if [ "$retime" -lt "$min" ]; then act kill "$pid" skipped "age $retime s < $min s on the last re-read"; continue; fi
       if "$KILL" -TERM "$pid" 2>/dev/null; then act kill "$pid" ok "SIGTERM $class ($kind): $why"; else act kill "$pid" failed "kill returned non-zero"; fail=1; fi
-    done < <(jq -j --arg kind "$kind" '.procs.procs[] | select(if $kind == "stale" then .stale.eligible else .overmem.eligible end)
+    done < <(jq -j --arg kind "$kind" '.procs | (.procs + .orphans)[] | select(if $kind == "stale" then .stale.eligible else .overmem.eligible end)
         | [.pid, .ppid, .lstart, .class, (if $kind == "stale" then .stale.why else .overmem.why end), .cmd] | map(tostring) | join("\u001f"), "\u0000"' "$T/report.json")
   done
   APPLY_RC=$fail
@@ -859,7 +1050,9 @@ rotate() {  # rotate <file> <max bytes> <bytes about to be added>: keep the file
 }
 do_record() {
   mkdir -p "$STATE" || die "cannot create $STATE"
+  WANT_LEDGER=1
   collect_procs 0
+  write_lineage
   local vm ps_sz comp occ swapouts pageouts sw swused line over v
   vm="$(run_to 10 "$VMSTAT" 2>/dev/null)"
   ps_sz="$(printf '%s' "$vm" | sed -n 's/.*page size of \([0-9]*\) bytes.*/\1/p' | head -n 1)"
@@ -875,22 +1068,30 @@ do_record() {
     --argjson so "$swapouts" --argjson po "$pageouts" --argjson swused "$swused" \
     '{ts: $ts, epoch: $epoch,
       procs: ($p[0].procs | map({pid, ppid, class, owner, exe, etime_s, mem_mb, cmprs_mb, rss_mb, footprint_mb})),
+      orphans: ($p[0].orphans | map({pid, comm, owner, proof, proven, protected, etime_s, footprint_mb})),
+      tree: $p[0].tree,
       totals: $p[0].totals, overall: $p[0].overall,
       system: {vm_page_size: $pagesize, compressor_stored_pages: $comp, compressor_occupied_pages: $occ, swapouts: $so, pageouts: $po, swap_used_mb: $swused, swap_raw: $sw}}')" \
     || { note "record: could not build the sample"; return 1; }
   rotate "$STATE/memory.jsonl" 5242880 "$(printf '%s\n' "$line" | wc -c | tr -d ' ')"
   printf '%s\n' "$line" >> "$STATE/memory.jsonl"
-  over="$(jq -r --argjson w "$WARN_MB" '.procs | map(select(.footprint_mb >= $w)) | map("\(.class) pid \(.pid) \(.footprint_mb) MB") | join("; ")' "$T/procs.json")"
-  if [ -n "$over" ]; then
-    local last=0 msg
+  # alert reasons: a process >= warn, the Paseo tree >= tree-warn, a proven orphan > 1024 MB (one rate-limited alert)
+  over="$(jq -r --argjson w "$WARN_MB" '(.procs + (.orphans | map(select(.proven)))) | map(select(.footprint_mb >= $w)) | map("\(.class) pid \(.pid) \(.footprint_mb) MB") | join("; ")' "$T/procs.json")"
+  tover="$(jq -r '.tree | select(.over) | "Paseo tree \(.totalMb) MB >= \(.warnMb) MB (app subtree \(.appMb), proven orphans \(.orphanMb))"' "$T/procs.json")"
+  oover="$(jq -r '.orphans | map(select(.proven and .footprint_mb > 1024)) | map("\(.comm) pid \(.pid) \(.footprint_mb) MB owner \(.owner // "?")") | join("; ")' "$T/procs.json")"
+  if [ -n "$over" ] || [ -n "$tover" ] || [ -n "$oover" ]; then
+    local last=0 msg=""
     [ -f "$STATE/.alert-stamp" ] && last="$(cat "$STATE/.alert-stamp" 2>/dev/null)"
     is_uint "$last" || last=0
     if [ $((NOW - $(dec "$last"))) -ge 900 ]; then
       echo "$NOW" > "$STATE/.alert-stamp"
-      msg="$(printf '%s ALERT footprint >= %s MB: %s\n' "$(iso_now)" "$WARN_MB" "$over")"
+      [ -z "$over" ] || msg="footprint >= $WARN_MB MB: $over"
+      [ -z "$tover" ] || msg="${msg:+$msg | }$tover"
+      [ -z "$oover" ] || msg="${msg:+$msg | }orphaned agent descendant(s) > 1024 MB: $oover"
+      msg="$(printf '%s ALERT %s\n' "$(iso_now)" "$msg")"
       rotate "$STATE/alerts.log" 1048576 "${#msg}"
       printf '%s\n' "$msg" >> "$STATE/alerts.log"
-      run_to 10 "$OSASCRIPT" -e "display notification \"Paseo process memory >= $WARN_MB MB (see alerts.log)\" with title \"slp-gc\"" >/dev/null 2>&1 || true
+      run_to 10 "$OSASCRIPT" -e "display notification \"Paseo memory alert (see alerts.log)\" with title \"slp-gc\"" >/dev/null 2>&1 || true
     fi
   fi
 }
@@ -916,6 +1117,10 @@ read_config() {
       SLP_GC_KILL_MEMORY) if [ "$v" = 1 ]; then CFG_KILL_MEM=1; else CFG_KILL_MEM=0; fi ;;
       SLP_GC_MEM_WARN_MB) WARN_MB="$v" ;;
       SLP_GC_MEM_KILL_MB) KILL_MB="$v" ;;
+      SLP_GC_TREE_WARN_MB) TREE_WARN_MB="$v" ;;
+      SLP_GC_ORPHAN_COMMS) ORPHAN_COMMS="$v" ;;
+      SLP_GC_ORPHAN_MIN_AGE_MIN) ORPHAN_MIN_AGE_MIN="$v" ;;
+      SLP_GC_TEST_CONCURRENCY_WARN) TEST_CONC_WARN="$v" ;;
       SLP_GC_REPORT_INTERVAL_MIN) CFG_REPORT_MIN="$v" ;;
     esac
   done < "$file"
@@ -993,7 +1198,7 @@ main() {
       evaluate full || exit 1
       if [ "$APPLY" = 1 ]; then do_apply "$KILL_STALE" "$KILL_MEM"; fi
       if [ "$JSON" = 1 ]; then
-        if [ "$APPLY" = 1 ]; then jq -c --slurpfile a "$ACTF" 'del(.procs.procs[].cmd) + {actions: $a}' "$T/report.json"; else jq -c 'del(.procs.procs[].cmd)' "$T/report.json"; fi
+        if [ "$APPLY" = 1 ]; then jq -c --slurpfile a "$ACTF" 'del(.procs.procs[].cmd, .procs.orphans[].cmd) + {actions: $a}' "$T/report.json"; else jq -c 'del(.procs.procs[].cmd, .procs.orphans[].cmd)' "$T/report.json"; fi
       else
         render_text
         [ "$APPLY" = 1 ] && { echo; render_actions; }
