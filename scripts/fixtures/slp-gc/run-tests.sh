@@ -811,6 +811,17 @@ check "L1 no deadlock with the tick lock: a tick (tick lock outside, delivery lo
 fresh; sups; fx_gc test-alert >/dev/null 2>&1
 check "L1 test-alert (tick lock + delivery lock) delivers and releases both" test "$(nsend)" = 1 -a ! -e "$FX_STATE/delivery.lock" -a ! -e "$FX_STATE/tick.lock"
 
+# (1b) an interrupted stale-lock takeover does not leave the takeover mutex behind
+fresh; sups; DLK="$FX_STATE/delivery.lock"; mkdir -p "$DLK"; printf '999999\tSun Jan  1 00:00:00 2000\n' > "$DLK/owner"
+printf '#!/bin/sh\nkill -TERM "$PPID"\nsleep 1\n' > "$FX_SB/tkhook.sh"; chmod +x "$FX_SB/tkhook.sh"
+FX_EXTRA_ENV="SLP_GC_TEST_TAKEOVER_HOOK=$FX_SB/tkhook.sh" fx_gc record >/dev/null 2>&1; rc=$?
+check "L1 a SIGTERM right after the takeover mutex is created: slp-gc exits 130 (the INT/TERM trap), the takeover mutex is removed, nothing is sent" test "$rc" = 130 -a ! -e "$DLK.takeover" -a "$(nsend)" = 0
+fx_gc test-alert >/dev/null 2>&1; rc=$?
+check "L1 the next delivery after the interrupted takeover is not blocked: it delivers and leaves no lock or mutex" test "$rc" = 0 -a "$(nsend)" = 1 -a ! -e "$DLK" -a ! -e "$DLK.takeover"
+fresh; sups; DLK="$FX_STATE/delivery.lock"; mkdir -p "$DLK" "$DLK.takeover"; printf '999999\tSun Jan  1 00:00:00 2000\n' > "$DLK/owner"; printf '%s\t%s\n' "$$" "$LSTART_ME" > "$DLK.takeover/owner"
+fx_gc record >/dev/null 2>&1; rc=$?
+check "L1 a takeover mutex held by another process is left alone on exit (not delivered, delivery lock busy)" test "$rc" = 0 -a "$(nsend)" = 0 -a -f "$DLK.takeover/owner" -a "$(cut -f1 "$DLK.takeover/owner")" = "$$"
+
 # (2) row-unique marking: two rows with the same alertId and Supervisor in one second
 fresh; sups; fx_gc record >/dev/null 2>&1
 rm -f "$FX_STATE/.alert-stamp"; FX_EXTRA_ENV="SLPGC_SEND_FAIL=1" fx_gc record >/dev/null 2>&1

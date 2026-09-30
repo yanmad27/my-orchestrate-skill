@@ -217,6 +217,7 @@ cleanup() {
   rm -rf "$T0"
   if [ "${DLOCK_HELD:-0}" = 1 ] && [ -f "$DLOCKDIR/owner" ] && [ "$(cat "$DLOCKDIR/owner" 2>/dev/null)" = "$DLOCK_NONCE" ]; then rm -rf "$DLOCKDIR"; fi
   if [ "${LOCK_HELD:-0}" = 1 ] && [ -f "$LOCKDIR/owner" ] && [ "$(cat "$LOCKDIR/owner" 2>/dev/null)" = "$NONCE" ]; then rm -rf "$LOCKDIR"; fi
+  dlock_untake
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -1379,6 +1380,11 @@ deliver_alert_locked() {
 # The delivery lock (separate from tick.lock, always taken inside it): one holder at a time covers pick -> ledger_append ->
 # send -> ledger_mark, so a standalone record, a tick and test-alert never rewrite the ledger under each other.
 # Same protocol as take_lock (owner = pid<TAB>lstart, a dead owner is taken over under a second mkdir-lock), bounded wait.
+# The takeover mutex is ours only while DTAKE_HELD=1 and its owner file carries our nonce; cleanup removes it then, never a foreign one.
+dlock_untake() {
+  if [ "${DTAKE_HELD:-0}" = 1 ] && [ -f "$DLOCKDIR.takeover/owner" ] && [ "$(cat "$DLOCKDIR.takeover/owner" 2>/dev/null)" = "$DLOCK_NONCE" ]; then rm -rf "$DLOCKDIR.takeover"; fi
+  DTAKE_HELD=0
+}
 dlock_take() {
   local tries=0 nonce
   DLOCKDIR="$STATE/delivery.lock"
@@ -1386,12 +1392,15 @@ dlock_take() {
   while :; do
     if mkdir "$DLOCKDIR" 2>/dev/null; then printf '%s\n' "$nonce" > "$DLOCKDIR/owner"; DLOCK_NONCE="$nonce"; DLOCK_HELD=1; return 0; fi
     if ! lock_owner_live "$DLOCKDIR"; then
+      DLOCK_NONCE="$nonce"
       if mkdir "$DLOCKDIR.takeover" 2>/dev/null; then
+        printf '%s\n' "$nonce" > "$DLOCKDIR.takeover/owner"; DTAKE_HELD=1
+        if [ "${SLP_GC_TEST:-}" = 1 ] && [ -n "${SLP_GC_TEST_TAKEOVER_HOOK:-}" ]; then "$SLP_GC_TEST_TAKEOVER_HOOK" >/dev/null 2>&1; fi
         if ! lock_owner_live "$DLOCKDIR"; then
           rm -rf "$DLOCKDIR"
-          if mkdir "$DLOCKDIR" 2>/dev/null; then printf '%s\n' "$nonce" > "$DLOCKDIR/owner"; DLOCK_NONCE="$nonce"; DLOCK_HELD=1; rmdir "$DLOCKDIR.takeover"; return 0; fi
+          if mkdir "$DLOCKDIR" 2>/dev/null; then printf '%s\n' "$nonce" > "$DLOCKDIR/owner"; DLOCK_HELD=1; dlock_untake; return 0; fi
         fi
-        rmdir "$DLOCKDIR.takeover"
+        dlock_untake
       else
         local m; m="$(fmtime "$DLOCKDIR.takeover")"
         if is_uint "$m" && [ $(( $(date +%s) - m )) -gt 120 ]; then rm -rf "$DLOCKDIR.takeover"; fi
