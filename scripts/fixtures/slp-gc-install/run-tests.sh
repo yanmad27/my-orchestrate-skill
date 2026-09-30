@@ -52,10 +52,14 @@ chmod +x "$stubs"/*
 
 # What install.sh would write in the real HOME. The seats' Claude runtimes (claude-*/) hold live
 # session transcripts (and codex-peer/ a live Codex state), so only the room's own files are compared.
-# ~/Library/Logs/slp-gc is also rewritten by the live launchd agent (memory.jsonl, lineage.tsv, .last-report,
-# launchd.log, reports/, and tick.log/alerts.log/actions.log/.alert-stamp when it has something to say), so it is
-# not compared byte for byte: snap_logs compares the set of files outside those agent-owned names exactly, and
-# real_logs_clean proves that no file in it mentions this run's sandbox (every test write carries $tmp).
+# ~/Library/Logs/slp-gc is also written by the live launchd agent and by real deliveries, so it is not compared
+# byte for byte. AGENT_STATE_NAMES lists every name slp-gc itself creates there (a static check below fails when
+# slp-gc writes a $STATE/<name> that is not listed). snap_logs compares the set of any OTHER top-level entry
+# exactly; real_logs_clean proves that no file under it holds this run's fixtures: the sandbox path ($tmp) or the
+# fixture agent ids (aaaaaaaa-0000-4000-8000-* / bbbbbbbb-0000-4000-8000-*, never a real random uuid).
+AGENT_STATE_NAMES=(.alert-stamp .last-report '.lineage.*' actions.log alerts.log 'deliveries.*' 'delivery.lock*'
+                   launchd.log lineage.tsv memory.jsonl reports tick.lock tick.log)
+agent_state_name() { local n; for n in "${AGENT_STATE_NAMES[@]}"; do case "$1" in $n) return 0 ;; esac; done; return 1; }
 snap_real() {
   {
     find "$REAL_HOME/.config/slp-room" -maxdepth 1 -type f -ls
@@ -66,12 +70,13 @@ snap_real() {
   } 2>/dev/null | sort
 }
 snap_logs() {
-  local d="$REAL_HOME/Library/Logs/slp-gc"
+  local d="$REAL_HOME/Library/Logs/slp-gc" e
   [ -d "$d" ] || return 0
-  find "$d" \( -type l -o -type f -o -type d \) ! -path "$d" ! -path "$d/reports" ! -path "$d/reports/*" \
-    ! -name memory.jsonl ! -name lineage.tsv ! -name .last-report ! -name launchd.log ! -name tick.log ! -name alerts.log \
-    ! -name actions.log ! -name .alert-stamp ! -name tick.lock ! -name '.lineage.*' 2>/dev/null | sed "s|^$REAL_HOME/||; s|^|logs-extra: |"
+  find "$d" -mindepth 1 -maxdepth 1 2>/dev/null | while IFS= read -r e; do
+    agent_state_name "${e##*/}" || printf 'logs-extra: %s\n' "${e##*/}"
+  done
 }
+FIXTURE_ID_RE='(aaaaaaaa|bbbbbbbb)-0000-4000-8000-[0-9a-f]{12}'
 real_logs_clean() {
   local d="$REAL_HOME/Library/Logs/slp-gc" t
   [ -d "$d" ] || return 0
@@ -79,6 +84,14 @@ real_logs_clean() {
     [ -n "$t" ] || continue
     ! grep -rqF -- "$t" "$d" 2>/dev/null || { echo "a file in $d mentions the sandbox $t" >&2; return 1; }
   done
+  ! grep -rqE -- "$FIXTURE_ID_RE" "$d" 2>/dev/null || { echo "a file in $d holds a fixture agent id" >&2; return 1; }
+}
+slpgc_state_names_listed() {   # only reads the script's text (the path is split so check-sandboxed.pl does not take this for an execution)
+  local n bad=0
+  while IFS= read -r n; do
+    agent_state_name "${n//XXXXXX/x}" || { echo "slp-gc writes \$STATE/$n but AGENT_STATE_NAMES does not list it" >&2; bad=1; }
+  done < <(grep -o '\$STATE/[A-Za-z0-9._*-]*' "$REPO/paseo/bin/"slp-gc | sed 's|^\$STATE/||' | sort -u)
+  return "$bad"
 }
 REAL_BEFORE="$(snap_real)"
 
@@ -383,7 +396,8 @@ check "the stub log holds only bootout/bootstrap/print of the agent" bash -c '! 
 REAL_AFTER="$(snap_real)"
 [ "$REAL_AFTER" = "$REAL_BEFORE" ] || diff <(printf '%s\n' "$REAL_BEFORE") <(printf '%s\n' "$REAL_AFTER") | head -10
 check "the real HOME's slp-room, LaunchAgents, slp-gc logs and Paseo config are unchanged" test "$REAL_AFTER" = "$REAL_BEFORE"
-check "no file in the real slp-gc logs mentions this run's sandbox" real_logs_clean
+check "no file in the real slp-gc logs holds this run's fixtures (sandbox path, fixture agent ids)" real_logs_clean
+check "every \$STATE/<name> that slp-gc writes is in the agent-owned list the real-HOME check relies on" slpgc_state_names_listed
 
 if [ "$FAILED" -ne 0 ]; then echo "slp-gc-install tests: FAILED"; exit 1; fi
 echo "slp-gc-install tests: all checks passed"
