@@ -31,19 +31,19 @@ Cases:
   `sleep`/`pgrep`/`paseo wait` runs.
 - `behaviour-wait-person-midrun`: a person asks a question while room work
   runs and the wait was interrupted; the reply text (not thinking) must give
-  a visible answer first and END on the `⏳ Working:` card block — never `✅`/`❓`,
+  a visible answer first and END on the `🕒 Working` tree block (`&emsp;&ensp;`-indented Peers) — never `✅`/`❓`,
   and no `slp-wait` re-arm after it (text or Bash call): the heartbeat
   restarts the spin (normally within 2 minutes, rarely up to about 4).
 - `behaviour-wait-handoff`: nothing in the room runs, but a Lead's latest
   report is a STATUS and its Peer just finished — the Supervisor re-reads
-  the Lead's status and waits on it or prompts it (a `⏳` state, never
+  the Lead's status and waits on it or prompts it (a `🕒` state, never
   `✅ Done`).
 - `behaviour-wait-no-rearm`: told that `slp-wait` returned at once with no
   timeout and no state change, the Supervisor must not call `slp-wait` again
   (`tool_used` max 0) and must report or decide instead.
 - `behaviour-room-state-{heartbeat,launch,done,decision}`: the Supervisor's
   final message carries the room-state block — a heartbeat wake with a running
-  Lead shows `⏳` (never `✅`/`❓`, never a bare `no change`; the `⏳` is what
+  Lead shows `🕒` (never `✅`/`❓`, never a bare `no change`; the `🕒` is what
   precedes the re-arm), `❓ Waiting on you:` last for the precondition stop of
   a launch and for `DECISION_NEEDED`, `✅ Done:` last for a finished room.
   `behaviour-precondition-stop` also asserts the `❓` line after its stop

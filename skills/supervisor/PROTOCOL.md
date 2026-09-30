@@ -87,7 +87,7 @@ while delegated work runs, and costs no tokens while blocked.
   arrived. Handle a Lead or Peer notification, then re-arm in the same turn;
   a wait moved to the background (or shown as a task notification) no longer
   holds the turn. A message from the person is the one exception: the
-  Supervisor writes the answer and the `⏳` state as visible assistant text
+  Supervisor writes the answer and the `🕒` state as visible assistant text
   (never only thinking) as the final message of that turn and ends it; its
   heartbeat re-arms the wait, so a no-spinner gap follows each person
   message: normally up to 2 minutes, rarely up to about 4 if Paseo skips a
@@ -183,21 +183,23 @@ the Supervisor sends a `DONE` with a Peer still running back for correction.
 
 The Supervisor ends every turn — heartbeat wakes and precondition stops
 included — with exactly one room-state block, its last row the turn's last line: `✅ Done`
-or `❓ Waiting on you` (one row each), or `⏳ Working` (a header row plus one
-compact `◉ <Lead workstream> · <Lead state>` card per Lead, optionally with a
-detail and `Peers:` line, cards separated by one blank line) only after
-answering the person mid-run or when `slp-wait` failed; `⏳ Working` otherwise precedes each
+or `❓ Waiting on you` (one row each), or `🕒 Working` (a header row, a `-------------` line, then one `🤖 <Lead workstream> · <what it is
+doing or its state>` row per Lead with one `🦾 <short Peer name> · <what it is
+doing>` row per running or permission-pending Peer nested under it, indented
+with the literal ASCII text `&emsp;&ensp;` before each 🦾 row (🤖 rows have no indent), no blank lines, never in a code fence) only after
+answering the person mid-run or when `slp-wait` failed; `🕒 Working` otherwise precedes each
 `slp-wait` and never ends a turn (see its role). The
 person always sees the state, and no turn ends on a bare acknowledgement.
 For example:
 
 ```text
-⏳ Working:
-◉ auth refactor · running
-  Now: reviewing token store diff · Peers: token store, token store diff
-
-◉ billing export · STATUS: waiting on CI
-  Peers: csv writer (permission pending)
+🕒 Working
+-------------
+🤖 auth refactor · reviewing the token store diff
+&emsp;&ensp;🦾 token store · reading the store
+&emsp;&ensp;🦾 token store diff · checking the diff
+🤖 billing export · STATUS: waiting on CI
+&emsp;&ensp;🦾 csv writer · writing rows (permission pending)
 ```
 
 ## Independent judgment and debate
