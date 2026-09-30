@@ -12,6 +12,17 @@ fail() { printf 'FAIL: %s\n' "$1"; FAILED=1; }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# launchd isolation for every install.sh run below: install.sh only touches launchd through
+# $SLP_LAUNCHCTL, so it is a logging stub here (also first on PATH under the name launchctl).
+# The slp-gc install section at the end checks the log shows only sandbox plist paths.
+LAUNCHCTL_STUB_DIR="$TMP/launchctl-stub"; mkdir -p "$LAUNCHCTL_STUB_DIR"
+LAUNCHCTL_STUB_LOG="$LAUNCHCTL_STUB_DIR/calls.log"; : > "$LAUNCHCTL_STUB_LOG"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 0\n' "$LAUNCHCTL_STUB_LOG" > "$LAUNCHCTL_STUB_DIR/launchctl"
+chmod 755 "$LAUNCHCTL_STUB_DIR/launchctl"
+export SLP_LAUNCHCTL="$LAUNCHCTL_STUB_DIR/launchctl"
+export PATH="$LAUNCHCTL_STUB_DIR:$PATH"
+unset SLP_ROOM_HOME SLP_GC_STATE_DIR SLP_GC_CONFIG
+
 # --- SKILL.md frontmatter -------------------------------------------------
 
 SKILL_MD="skills/supervisor/SKILL.md"
@@ -410,9 +421,9 @@ if PATH="$RENDER_HOME/bin:$PATH" HOME="$RENDER_HOME" env -u CODEX_HOME "$REPO_RO
       "$ROOM/claude-lead/settings.json" >/dev/null \
     && [ -L "$ROOM/claude-peer/skills/other" ] && [ ! -e "$ROOM/claude-peer/skills/supervisor" ] \
     && [ "$(readlink "$ROOM/claude-lead/CLAUDE.md")" = "$RENDER_HOME/.claude/CLAUDE.md" ] \
-    && [ "$(printf '%s\n' "$CODEX_ARGS" | head -6 | tr -d '\n')" = "[-c][agents.enabled=false][-c][features.multi_agent=false][-c][features.multi_agent_v2=false]" ] \
-    && printf '%s\n' "$CODEX_ARGS" | grep -qF "[developer_instructions='''" \
-    && printf '%s\n' "$CODEX_ARGS" | grep -q 'Room role: Peer' \
+    && [ "$(head -n 6 <<< "$CODEX_ARGS" | tr -d '\n')" = "[-c][agents.enabled=false][-c][features.multi_agent=false][-c][features.multi_agent_v2=false]" ] \
+    && grep -qF "[developer_instructions='''" <<< "$CODEX_ARGS" \
+    && grep -q 'Room role: Peer' <<< "$CODEX_ARGS" \
     && [ "$(printf '%s\n' "$CODEX_ARGS" | tail -1)" = "[app-server]" ] \
     && ! grep -q '@@' "$RENDER_HOME/.paseo/config.json" \
     && grep -qF "CODEX_HOME=\"$ROOM/codex-peer\" exec" "$ROOM/bin/codex-peer" \
@@ -820,6 +831,74 @@ if [ "$DENY_OK" = 1 ]; then
   ok "claude-lead's rendered denies equal the expected set (baseline + discovered spawner paths + the two slp-wait entries); extra/missing entries fail"
 else
   fail "claude-lead's rendered denies must equal baseline + discovered spawner paths + slp-wait by basename and absolute path"
+fi
+
+# --- slp-gc: garbage collector / diagnostic tool -------------------------------------------------
+# Static checks here; behaviour is exercised in sandboxes (temp PASEO_HOME + HOME, stub ps/top/lsof/
+# paseo/kill/osascript) by scripts/fixtures/slp-gc/run-tests.sh. Nothing touches a real ~/.paseo.
+
+if bash -n paseo/bin/slp-gc && bash -n scripts/fixtures/slp-gc/sandbox.sh && bash -n scripts/fixtures/slp-gc/run-tests.sh; then
+  ok "slp-gc and its test fixtures have valid bash syntax"
+else
+  fail "slp-gc or its test fixtures have a bash syntax error"
+fi
+if command -v shellcheck >/dev/null 2>&1; then
+  if shellcheck -S warning paseo/bin/slp-gc scripts/fixtures/slp-gc/sandbox.sh scripts/fixtures/slp-gc/run-tests.sh; then
+    ok "slp-gc and its test fixtures pass shellcheck -S warning"
+  else
+    fail "slp-gc or its test fixtures have shellcheck warnings"
+  fi
+else
+  ok "shellcheck not installed, skipping slp-gc lint"
+fi
+if [ -x paseo/bin/slp-gc ] && [ "$(stat -c %a paseo/bin/slp-gc 2>/dev/null || stat -f %Lp paseo/bin/slp-gc)" = "755" ]; then
+  ok "paseo/bin/slp-gc is executable (0755)"
+else
+  fail "paseo/bin/slp-gc must be mode 0755"
+fi
+SG_OUT="$TMP/slp-gc-tests.out"; SG_RC=0
+bash scripts/fixtures/slp-gc/run-tests.sh > "$SG_OUT" 2>&1 || SG_RC=$?
+cat "$SG_OUT"
+if [ "$SG_RC" -ne 0 ] || ! grep -q '^ok: ' "$SG_OUT"; then
+  fail "slp-gc sandbox tests failed (see FAIL lines above)"
+else
+  ok "slp-gc sandbox tests passed ($(grep -c '^ok: ' "$SG_OUT") checks)"
+fi
+
+# --- slp-gc install: plist, config opt-ins, --gc-only (sandbox HOME, stub launchctl) -------------
+if bash -n scripts/fixtures/slp-gc-install/run-tests.sh; then
+  ok "slp-gc install tests have valid bash syntax"
+else
+  fail "slp-gc install tests have a bash syntax error"
+fi
+if command -v shellcheck >/dev/null 2>&1; then
+  if shellcheck -S warning scripts/fixtures/slp-gc-install/run-tests.sh; then
+    ok "slp-gc install tests pass shellcheck -S warning"
+  else
+    fail "slp-gc install tests have shellcheck warnings"
+  fi
+else
+  ok "shellcheck not installed, skipping slp-gc install tests lint"
+fi
+SGI_OUT="$TMP/slp-gc-install-tests.out"; SGI_RC=0
+bash scripts/fixtures/slp-gc-install/run-tests.sh > "$SGI_OUT" 2>&1 || SGI_RC=$?
+grep '^FAIL' "$SGI_OUT" || true
+if [ "$SGI_RC" -ne 0 ] || ! grep -q '^ok: ' "$SGI_OUT"; then
+  fail "slp-gc install tests failed"
+else
+  ok "slp-gc install tests passed ($(grep -c '^ok: ' "$SGI_OUT") checks)"
+fi
+# validate.sh's own install.sh runs all use a sandbox HOME, so the login-home guard skips launchd for
+# every one of them: the stub must have logged exactly 0 calls (the fixture uses its own stub).
+if [ ! -s "$LAUNCHCTL_STUB_LOG" ]; then
+  ok "launchctl stub log is empty: every sandbox install.sh run skipped launchd, none reached a real launchctl"
+else
+  fail "launchctl stub log should hold 0 calls but has: $(tr '\n' ';' < "$LAUNCHCTL_STUB_LOG")"
+fi
+if [ "$(command -v launchctl)" = "$LAUNCHCTL_STUB_DIR/launchctl" ] && [ "$SLP_LAUNCHCTL" = "$LAUNCHCTL_STUB_DIR/launchctl" ]; then
+  ok "launchctl resolves to the stub on PATH and SLP_LAUNCHCTL is the stub"
+else
+  fail "launchctl or SLP_LAUNCHCTL no longer points at the stub"
 fi
 
 if [ "$FAILED" -ne 0 ]; then
