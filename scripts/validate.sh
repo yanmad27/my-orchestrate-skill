@@ -92,6 +92,11 @@ ROOM_PHRASES=(
   "SKILL.md|INTENT RECORD"
   "SKILL.md|KEEPING THE ROOM ON COURSE"
   "SKILL.md|Emergency brake"
+  "SKILL.md|SLP-GC ALERT"
+  "SKILL.md|Deliberate, bounded extension of your authority"
+  "SKILL.md|Only an explicit yes"
+  "SKILL.md|--apply --only"
+  "PROTOCOL.md|explicitly approved"
   "roles/lead.md|Your instruction's outcome, non-goals, authority, and acceptance evidence"
   "roles/lead.md|roles/peer.md"
   'roles/lead.md|Never delegate with the built-in `Agent` tool'
