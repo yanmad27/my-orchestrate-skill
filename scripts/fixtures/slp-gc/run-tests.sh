@@ -280,7 +280,7 @@ fx_gc report > "$WORK/orph.txt" 2>&1; fx_gc report --json > "$WORK/orph.json" 2>
 fx_snapshot "$WORK/sb" > "$WORK/snap3.after"; keep "$WORK/orph.txt" t3-orphan-report.txt
 check "T7 report is read-only with the ledger and orphan fixtures present (snapshot of the whole sandbox identical, no paseo call, no signal)" bash -c "cmp -s '$WORK/snap3.before' '$WORK/snap3.after' && test '$(logn paseo.log)' = 0 && test '$(logn kill.log)' = 0"
 check "T3: report always shows the orphan category with memory and owner: ledger orphan 310 (4500 MB, owner not live, orphaned 1 h ago) is an ORPHAN; env-proof orphan 312 is listed but waits for its orphaned-at" bash -c "grep -q '== (a2) orphaned agent descendants' '$WORK/orph.txt' && grep -E '^ +310 .*owner aaaaaaaa .*4500(\.0)? MB.*proof ledger.*ORPHAN' '$WORK/orph.txt' && grep -E '^ +312 .*owner aaaaaaaa .*2000(\.0)? MB.*proof env' '$WORK/orph.txt' | grep -qv ORPHAN && grep -A1 -E '^ +312 ' '$WORK/orph.txt' | grep -q 'real executable path not recorded'"
-check "N2/T7: a nohup dev server with ppid 1 whose owner agent is still live (350, owner A_LIVE with a running claude child) is listed as NOT an orphan" bash -c "grep -E '^ +350 ' '$WORK/orph.txt' | grep -qv ORPHAN && grep -A1 -E '^ +350 ' '$WORK/orph.txt' | grep -q 'is still live'"
+check "N2/T7: a nohup dev server with ppid 1 whose owner agent is still live (350, owner A_LIVE with a running claude child) is listed as NOT an orphan" bash -c "grep -E '^ +350 ' '$WORK/orph.txt' | grep -qv ORPHAN && grep -A1 -E '^ +350 ' '$WORK/orph.txt' | grep -q 'treated as LIVE'"
 check "T3: OrbStack-like /Applications/OrbStack.app ppid-1 process with PASEO env is reported as PROTECTED, not an orphan" bash -c "grep -E '^ +313 .*PROTECTED' '$WORK/orph.txt' | grep -qv ORPHAN && grep -A1 -E '^ +313 ' '$WORK/orph.txt' | grep -q 'inside an .app bundle'"
 check "T3: young (5 min < 10), non-allowlisted comm, other-home and no-provenance processes are not proven orphans" bash -c "grep -A1 -E '^ +314 ' '$WORK/orph.txt' | grep -q 'orphaned 300s ago < 600s' && grep -A1 -E '^ +315 ' '$WORK/orph.txt' | grep -q '(comm \"mytool\") is not in SLP_GC_KILL_COMMS' && ! grep -qE '^ +(316|317|311) ' '$WORK/orph.txt'"
 check "T3: the cwd hint is shown (supporting, never proof) for a listed orphan whose cwd is under the Paseo worktrees dir" bash -c "grep -q 'hint (never proof): cwd .*worktrees/abcd1234/dirty (under the Paseo worktrees dir)' '$WORK/orph.txt'"
@@ -383,13 +383,43 @@ FX_EXTRA_ENV="SLP_GC_MAX_KILLS=1" fx_gc report --apply --kill-over-memory > "$WO
 check "N3: SLP_GC_MAX_KILLS caps the signals per run (1 of the 3 eligible: 102, 300, 310) and the rest is logged as deferred" bash -c "test \"\$(wc -l < '$FX_LOGS/kill.log' | tr -d ' ')\" = 1 && grep -q 'SLP_GC_MAX_KILLS=1 reached' '$WORK/cap.txt'"
 fresh; fx_lean; FX_TRACE=1
 fx_gc report --apply --kill-over-memory > "$WORK/batch.txt" 2>&1
-check "N3: three kills cost ONE full recheck (the claude child's env is read twice: the evaluation and the batch recheck), not one per kill" bash -c "test \"\$(grep -cx 120 '$FX_LOGS/psenv.log')\" = 2 && test \"\$(wc -l < '$FX_LOGS/kill.log' | tr -d ' ')\" = 3"
+check "X1/N3: every kill is preceded by its own full recheck (the claude child's env is read 5 times: the evaluation + 4 rechecks for the 4 candidates: 102, 300, 342 refused at the exe check, 310)" bash -c "test \"\$(grep -cx 120 '$FX_LOGS/psenv.log')\" = 5 && test \"\$(wc -l < '$FX_LOGS/kill.log' | tr -d ' ')\" = 3"
 check "L3/L4: the rechecks skip the wide env reads and the cwd hints (OrbStack 313's env and the lsof cwd calls happen once, in the evaluation)" bash -c "test \"\$(grep -cx 313 '$FX_LOGS/psenv.log')\" = 1 && test \"\$(wc -l < '$FX_LOGS/lsof-cwd.log' | tr -d ' ')\" = 6"
 check "L1: only class-matched rows have their env read (the Supervisor 110, claude 120, ppid-1 candidates); a worker whose path merely says .paseo (360) is not; pool of 4 and a 3 s per-pid alarm in production (static)" bash -c "grep -qx 120 '$FX_LOGS/psenv.log' && grep -qx 110 '$FX_LOGS/psenv.log' && ! grep -qx 360 '$FX_LOGS/psenv.log' && grep -q 'ENV_JOBS=4' '$GC' && grep -q 'run_to 3 \"\$PSENV\"' '$GC'"
 # tick budget: a slow top makes the record itself take > 1 s, so the apply phase is skipped and logged; the sample is still written
 fresh; fx_lean; printf 'SLP_GC_APPLY=1\nSLP_GC_KILL_MEMORY=1\nSLP_GC_TICK_BUDGET_S=1\n' > "$FX_SB/slp-gc.conf"
 FX_EXTRA_ENV="SLP_GC_TOP=$FX_BIN/top-slow" fx_gc tick > "$WORK/budget.txt" 2>&1
-check "N3: the tick has a wall-clock budget (SLP_GC_TICK_BUDGET_S=1 with a 2 s top): record still samples, evaluation/apply/kills are skipped, and it is logged" bash -c "test -s '$FX_STATE/memory.jsonl' && ! test -e '$FX_LOGS/kill.log' && grep -q 'budget' '$FX_STATE/tick.log' && grep -q 'budget' '$WORK/budget.txt'"
+check "R2/N3: a record that uses the whole tick budget (1 s budget, 2 s top) does NOT starve the kill phase: the sample is written and the kills still run in the reserved window (hard cap 20 s), which is logged" bash -c "test -s '$FX_STATE/memory.jsonl' && test \"\$(wc -l < '$FX_LOGS/kill.log' | tr -d ' ')\" -ge 1 && grep -q 'reserved 20 s window' '$FX_STATE/tick.log'"
+fresh; printf 'SLP_GC_APPLY=1\nSLP_GC_TICK_BUDGET_S=1\n' > "$FX_SB/slp-gc.conf"
+FX_EXTRA_ENV="SLP_GC_TOP=$FX_BIN/top-slow" fx_gc tick > "$WORK/budget2.txt" 2>&1
+check "R2/N3: without kill flags an exhausted budget skips the whole apply phase (nothing is deleted) and says so" bash -c "test -s '$FX_STATE/memory.jsonl' && test '$(logn paseo.log)' = 0 && grep -q 'expired after record' '$FX_STATE/tick.log' && grep -q 'budget' '$WORK/budget2.txt'"
+# R3: readable Supervisor env without PASEO_HOME is accepted for the default home only; an unreadable env always refuses (see repair 6 / L2)
+fresh; sed -i.b "s#^  110 Paseo Supervisor PATH=/usr/bin PASEO_HOME=.*#  110 Paseo Supervisor PATH=/usr/bin#" "$FX_FIX/env.txt"; ln -s "$FX_PHOME" "$FX_HOME/.paseo"
+fx_gc report --apply > "$WORK/r3a.txt" 2>&1; rc=$?
+check "R3: a readable Supervisor env without PASEO_HOME is accepted for the default ~/.paseo (--apply runs: exit 0, 4 deletes)" test "$rc" = 0 -a "$(logn paseo.log)" = 4
+fresh; sed -i.b "s#^  110 Paseo Supervisor PATH=/usr/bin PASEO_HOME=.*#  110 Paseo Supervisor PATH=/usr/bin#" "$FX_FIX/env.txt"
+fx_gc report --apply > "$WORK/r3b.txt" 2>&1; rc=$?
+check "R3: the same readable env without PASEO_HOME is refused for a non-default home (exit 3, nothing called)" test "$rc" = 3 -a "$(logn paseo.log)" = 0
+# R1: the owner is LIVE unless provably dead
+fresh; fx_lean; fx_more; del_line 120
+fx_gc report --apply --kill-stale-processes --kill-over-memory > "$WORK/r1a.txt" 2>&1
+check "R1: with an agent-class process whose env is unreadable (env-blind) NO orphan is killed, not even one whose owner is archived (310) or by memory; the nohup dev server of a live agent (350) neither" bash -c "! grep -qE ' (310|312|350|351|352|374)\$' '$FX_LOGS/kill.log' && grep -q 'treated as LIVE' '$WORK/r1a.txt'"
+fresh; fx_lean; fx_more
+fx_gc report > "$WORK/r1b.txt" 2>&1
+check "R1: an owner in state unknown (374: no record, and the sandbox has unreadable agent records) is treated as live and not proven; a live idle agent (371, unarchived, no child) too" bash -c "grep -A1 -E '^ +374 ' '$WORK/r1b.txt' | grep -q 'treated as LIVE' && grep -A1 -E '^ +371 ' '$WORK/r1b.txt' | grep -q 'treated as LIVE' && ! grep -qE 'WOULD SIGTERM pid (374|371) ' '$WORK/r1b.txt'"
+check "R1: an archived owner (310, A_YOUNG) is dead: the orphan is proven and killed - only with the kill flag (see the T3/T7 check above)" grep -qE 'WOULD SIGTERM pid 310 ' "$WORK/r1b.txt"
+# X1: the owner becomes live between two kills of the same batch: the second kill must not happen
+fresh; fx_lean; fx_more
+printf '#!/bin/sh\nf=$(find "$PASEO_HOME/agents" -name "%s.json" | head -n 1); jq ".archivedAt = null" "$f" > "$f.t" && mv "$f.t" "$f"\n' "$A_YOUNG" > "$FX_FIX/after-kill.sh"; chmod +x "$FX_FIX/after-kill.sh"
+fx_gc report --apply --kill-stale-processes > "$WORK/x1a.txt" 2>&1
+check "X1: the owner (A_YOUNG) is un-archived after the first kill of a batch (310): the second orphan of the same owner (375) is re-evaluated and NOT killed" bash -c "grep -qE ' 310\$' '$FX_LOGS/kill.log' && ! grep -qE ' (375|319)\$' '$FX_LOGS/kill.log' && grep -q '375 -> skipped (no longer eligible' '$WORK/x1a.txt'"
+# X2: a live agent child carrying the owner's PASEO_AGENT_ID protects the owner although its record says archived
+fresh; fx_lean; fx_more
+fx_gc report > "$WORK/x2a.txt" 2>&1
+check "X2: an orphan whose owner record is archived (A_STALE) but a live agent child (121) still carries that PASEO_AGENT_ID is treated as live" bash -c "grep -A1 -E '^ +376 ' '$WORK/x2a.txt' | grep -q 'treated as LIVE' && ! grep -qE 'WOULD SIGTERM pid 376 ' '$WORK/x2a.txt'"
+# X3: ledger and env disagree about the owner
+check "X3: the ledger says archived owner A_YOUNG but the current env says the live agent A_LIVE (377, same pid, lstart, exe) => no proof, not killed" bash -c "grep -A1 -E '^ +377 ' '$WORK/x2a.txt' | grep -q 'contradicts the ledger owner' && ! grep -qE 'WOULD SIGTERM pid 377 ' '$WORK/x2a.txt'"
+
 # F7: quiet tick
 fresh; FX_EXTRA_ENV="SLP_GC_MEM_WARN_MB=999999 SLP_GC_MEM_KILL_MB=999999 SLP_GC_TREE_WARN_MB=99999999" fx_gc tick > "$WORK/quiet.txt" 2>&1
 check "F7: a tick on the normal path prints nothing (stdout/stderr empty) but writes the sample, the report and tick.log" bash -c "! test -s '$WORK/quiet.txt' && test -s '$FX_STATE/memory.jsonl' && test \"\$(ls '$FX_STATE/reports' | wc -l | tr -d ' ')\" = 1"
@@ -397,7 +427,7 @@ fresh; fx_gc tick > "$WORK/alert.txt" 2>&1
 check "F7: a tick prints on alerts (the ALERT line) and on errors only" grep -q ' ALERT ' "$WORK/alert.txt"
 fresh; head -c 1100000 /dev/zero | tr '\0' x > "$FX_STATE/launchd.log"; fx_gc tick >/dev/null 2>&1
 check "F7: <state>/launchd.log is rotated at the start of a tick (1 MiB, one predecessor)" bash -c "test -f '$FX_STATE/launchd.log.1' && test \"\$(wc -c < '$FX_STATE/launchd.log.1' | tr -d ' ')\" = 1100000"
-check "F7: --help shows the new defaults (MEM_WARN 3072, MEM_KILL 4096, TREE_WARN 50% of RAM) and the new keys" bash -c "'$GC' --help | grep -q 'SLP_GC_MEM_WARN_MB\[3072\]' && '$GC' --help | grep -q 'SLP_GC_MEM_KILL_MB\[4096' && '$GC' --help | grep -q 'SLP_GC_TREE_WARN_MB\[50% of RAM\]' && '$GC' --help | grep -q 'SLP_GC_MAX_KILLS\[20' && '$GC' --help | grep -q 'SLP_GC_TICK_BUDGET_S\[45\]'"
+check "F7: --help shows the new defaults (MEM_WARN 3072, MEM_KILL 4096, TREE_WARN 50% of RAM) and the new keys" bash -c "'$GC' --help | grep -q 'SLP_GC_MEM_WARN_MB\[3072\]' && '$GC' --help | grep -q 'SLP_GC_MEM_KILL_MB\[4096' && '$GC' --help | grep -q 'SLP_GC_TREE_WARN_MB\[50% of RAM\]' && '$GC' --help | grep -q 'SLP_GC_MAX_KILLS\[10' && '$GC' --help | grep -q 'SLP_GC_TICK_BUDGET_S\[45\]'"
 # L7: actions.log rotation
 fresh; head -c 1048540 /dev/zero | tr '\0' x > "$FX_STATE/actions.log"; fx_gc report --apply >/dev/null 2>&1
 check "L7: actions.log is rotated (1 MiB, one predecessor)" bash -c "test -f '$FX_STATE/actions.log.1' && test \"\$(wc -c < '$FX_STATE/actions.log' | tr -d ' ')\" -lt 100000"
@@ -419,7 +449,7 @@ fresh; fx_lean; fx_more; : > "$FX_LOGS/psenv.log"
 fx_gc report > "$WORK/x1.txt" 2>&1
 check "#3 an OrbStack-like process retitled 'node (helper)' whose real executable (ledger + lsof txt) is /Applications/OrbStack.app/... is reported PROTECTED, never an orphan" bash -c "grep -E '^ +318 .*PROTECTED' '$WORK/x1.txt' | grep -qv ORPHAN && grep -A1 -E '^ +318 ' '$WORK/x1.txt' | grep -q 'inside an .app bundle'"
 check "#2 ledger rows that fail validation (owner 'not-a-uuid', first-seen in the far future) are dropped and reported; the rows are not listed" bash -c "grep -q 'LEDGER: 2 row(s) failed validation' '$WORK/x1.txt' && ! grep -qE '^ +(372|373) ' '$WORK/x1.txt'"
-check "#2 a ledger-only orphan whose owner agent is unarchived and merely not running (371, owner A_CLOSEDU) is NOT proven: a ledger-only proof needs an archived or missing owner" bash -c "grep -E '^ +371 ' '$WORK/x1.txt' | grep -qv ORPHAN && grep -A1 -E '^ +371 ' '$WORK/x1.txt' | grep -q 'not proven dead'"
+check "#2 a ledger-only orphan whose owner agent is unarchived and merely not running (371, owner A_CLOSEDU) is NOT proven: a ledger-only proof needs an archived or missing owner" bash -c "grep -E '^ +371 ' '$WORK/x1.txt' | grep -qv ORPHAN && grep -A1 -E '^ +371 ' '$WORK/x1.txt' | grep -q 'treated as LIVE'"
 fresh; fx_lean; fx_more
 fx_gc report --apply --kill-stale-processes > "$WORK/x2.txt" 2>&1
 check "#2/#3 poisoned ledger rows are never killed: 319 (real exe /usr/local/bin/node differs from the recorded /opt/homebrew/bin/node) is skipped at action time; 318 (OrbStack exe), 371 (owner not dead) and the dropped rows 372/373 stay; 310 (a healthy row) is killed" bash -c "grep -q '319 -> skipped (executable path /usr/local/bin/node differs from the one recorded' '$WORK/x2.txt' && ! grep -qE ' (318|319|371|372|373|350)\$' '$FX_LOGS/kill.log' && grep -qE ' 310\$' '$FX_LOGS/kill.log'"

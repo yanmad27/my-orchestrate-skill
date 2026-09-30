@@ -84,7 +84,7 @@ norm_thresholds() {
   else KILL_MB=4096; [ "$KILL_MB" -ge "$WARN_MB" ] || KILL_MB="$WARN_MB"; fi
   if is_uint "$TREE_WARN_MB" && [ "$(dec "$TREE_WARN_MB")" -ge 1 ]; then TREE_WARN_MB="$(dec "$TREE_WARN_MB")"; else TREE_WARN_MB=$((RAM_MB / 2)); fi
   if is_uint "$ORPHAN_MIN_AGE_MIN" && [ "$(dec "$ORPHAN_MIN_AGE_MIN")" -ge 1 ]; then ORPHAN_MIN_AGE_MIN="$(dec "$ORPHAN_MIN_AGE_MIN")"; else ORPHAN_MIN_AGE_MIN=10; fi
-  if is_uint "$MAX_KILLS" && [ "$(dec "$MAX_KILLS")" -ge 1 ]; then MAX_KILLS="$(dec "$MAX_KILLS")"; else MAX_KILLS=20; fi
+  if is_uint "$MAX_KILLS" && [ "$(dec "$MAX_KILLS")" -ge 1 ]; then MAX_KILLS="$(dec "$MAX_KILLS")"; else MAX_KILLS=10; fi
   if is_uint "$TICK_BUDGET_S" && [ "$(dec "$TICK_BUDGET_S")" -ge 1 ]; then TICK_BUDGET_S="$(dec "$TICK_BUDGET_S")"; else TICK_BUDGET_S=45; fi
   if is_uint "$TEST_CONC_WARN"; then TEST_CONC_WARN="$(dec "$TEST_CONC_WARN")"; else TEST_CONC_WARN=3; fi
   set -f
@@ -129,11 +129,13 @@ env: SLP_GC_STATE_DIR (default ~/Library/Logs/slp-gc), SLP_GC_CONFIG (tick only,
   SLP_GC_MEM_WARN_MB[3072] SLP_GC_MEM_KILL_MB[4096, floor 1024, >= warn] SLP_GC_TREE_WARN_MB[50% of RAM]
   SLP_GC_KILL_COMMS[alias SLP_GC_ORPHAN_COMMS; node bun deno npm npx pnpm yarn esbuild tsc vitest jest python python3 uv pytest ruby java
   gradle go cargo] SLP_GC_ORPHAN_MIN_AGE_MIN[10] SLP_GC_TEST_CONCURRENCY_WARN[3]
-  SLP_GC_MAX_KILLS[20 per tick] SLP_GC_TICK_BUDGET_S[45] SLP_GC_REPORT_INTERVAL_MIN[60]),
+  SLP_GC_MAX_KILLS[10 per tick] SLP_GC_TICK_BUDGET_S[45] SLP_GC_REPORT_INTERVAL_MIN[60]),
   SLP_GC_CLI_TIMEOUT[30]. Probe/clock overrides (SLP_GC_PS, ...) exist for tests only (SLP_GC_TEST=1).
 Memory footprint = top's MEM (physical footprint, what Force Quit shows; CMPRS is its compressed
 part), falling back to ps rss. Kills never touch the app main or the Supervisor; the stale rule
 never touches a process that runs under the daemon (use `paseo agent stop` for those). The daemon is reported, never memory-killed.
+Limits: a memory kill may end a live agent's allowlisted process over the threshold (opt-in); every signal is
+authorised by its own fresh evaluation (one evaluate-light old, bounded by SLP_GC_MAX_KILLS and the tick budget).
 EOF
 }
 
@@ -177,7 +179,7 @@ if is_uint "$RAM_MB" && [ "$(dec "$RAM_MB")" -ge 1048576 ]; then RAM_MB=$(( $(de
 WARN_MB="${SLP_GC_MEM_WARN_MB:-3072}"; KILL_MB="${SLP_GC_MEM_KILL_MB:-4096}"; TREE_WARN_MB="${SLP_GC_TREE_WARN_MB:-$((RAM_MB / 2))}"
 KILL_COMMS="${SLP_GC_KILL_COMMS:-${SLP_GC_ORPHAN_COMMS:-$DEF_KILL_COMMS}}"; ORPHAN_MIN_AGE_MIN="${SLP_GC_ORPHAN_MIN_AGE_MIN:-10}"
 TEST_CONC_WARN="${SLP_GC_TEST_CONCURRENCY_WARN:-3}"
-MAX_KILLS="${SLP_GC_MAX_KILLS:-20}"; TICK_BUDGET_S="${SLP_GC_TICK_BUDGET_S:-45}"; TICK_START=""
+MAX_KILLS="${SLP_GC_MAX_KILLS:-10}"; TICK_BUDGET_S="${SLP_GC_TICK_BUDGET_S:-45}"; TICK_START=""
 WANT_LEDGER=0; ENV_WIDE=0
 norm_thresholds
 
@@ -202,6 +204,11 @@ def mb1: (. * 10 | round) / 10;
 
 # one agent record (a file argument) -> a flat object; anything odd is ok:false with a reason.
 # strict = every key the deletion rule depends on is present with the right type.
+# record only needs the owner states (id, archivedAt): a much lighter pass than AGENT_JQ
+AGENT_LIGHT_JQ='{path: input_filename} + (
+  if type != "object" then {ok: false, reason: "not a JSON object"}
+  elif (.id | type) != "string" or (.id | length) == 0 then {ok: false, reason: "missing id"}
+  else {ok: true, id: .id, archivedAt: (.archivedAt // null)} end)'
 AGENT_JQ="$JQ_COMMON"'
 {path: input_filename} + (
   if type != "object" then {ok: false, reason: "not a JSON object"}
@@ -323,14 +330,14 @@ def agentfam: . == "claude-child" or . == "codex-child" or . == "slp-wait" or . 
    appPid: (if $sup != null then $sup.ppid else null end),
    supHome: ($sup.home? // "unreadable"),
    listen: ($pf.listen? // null)} as $idt0
-| ($idt0 + {homeBound: ($idt0.supHome == "match")}) as $idt1
+| ($idt0 + {homeBound: (($idt0.supHome == "match") or (($idt0.supHome == "none") and $homeDefault))}) as $idt1
 | ($idt1 + {ok: ($dupes == 0 and $idt1.pidFile and $idt1.supervisor and $idt1.daemon and $idt1.listener and $idt1.homeBound),
    why: (if $dupes > 0 then "duplicate pid rows in the ps output"
          elif ($idt1.pidFile | not) then "paseo.pid missing/unparseable"
          elif ($idt1.supervisor | not) then "pid in paseo.pid is not a live \"Paseo Supervisor\" child of an app main"
          elif ($idt1.daemon | not) then "no single \"Paseo Daemon\" child of the Supervisor"
          elif ($idt1.listener | not) then "the daemon does not own the listener from paseo.pid"
-         elif ($idt1.homeBound | not) then ("the Supervisor'"'"'s PASEO_HOME is \"" + $idt1.supHome + "\": not proven to serve this home (the Supervisor env must be readable and match, for the default home too)")
+         elif ($idt1.homeBound | not) then ("the Supervisor'"'"'s PASEO_HOME is \"" + $idt1.supHome + "\": not proven to serve this home (an unreadable env always refuses; a readable env without PASEO_HOME is accepted only for the default home)")
          else "ok" end)}) as $idt
 | $orphanComms as $oc
 | ($rows | map({key: ((.pid | tostring) + "|" + .lstart), value: true}) | from_entries) as $liveSet
@@ -382,9 +389,10 @@ def agentfam: . == "claude-child" or . == "codex-child" or . == "slp-wait" or . 
 # owner agent not live, and orphaned (ledger ppid-1 first-seen) for at least the minimum
 | def ost($o): if $o == null then null elif ($agentIdx | length) == 0 or (($agentIdx | map(select(.ok)) | length) == 0) then "unknown"
     else ($ownerBy[$o] // (if $nbad > 0 then "unknown" else "missing" end)) end;
-  def ldead($o): if $o == null then false
+  (($final | map(select((.class | agentfam) and (.envRead | not))) | length) > 0) as $blindAgents
+  | def ldead($o): if $blindAgents then false elif $o == null then false
     elif ($o | startswith("pid:")) then (($liveSet[($o | ltrimstr("pid:") | split("@") | (.[0] + "|" + (.[1:] | join("@"))))] == true) | not)
-    else ((ost($o) == "archived") or (ost($o) == "missing")) end;
+    else (((ost($o) == "archived") or (ost($o) == "missing")) and (($procs | map(select((.class | agentish) and .owner == $o)) | length) == 0)) end;
   def olive($o): if $o == null then false
     elif ($o | startswith("pid:")) then ($liveSet[($o | ltrimstr("pid:") | split("@") | (.[0] + "|" + (.[1:] | join("@"))))] == true)
     else (((ost($o) == "archived") or (ost($o) == "missing")) | not) and (($procs | map(select((.class | agentish) and .owner == $o)) | length) > 0) end;
@@ -407,11 +415,12 @@ def agentfam: . == "claude-child" or . == "codex-child" or . == "slp-wait" or . 
        elif ($exe | test("\\.app/")) or ($rexe | test("\\.app/")) then "executable inside an .app bundle (GUI app / service): never garbage"
        elif ($exe | test("^/(System|Library)/")) or ($rexe | test("^/(System|Library)/")) then "executable under /System or /Library (system service): never garbage"
        else null end) as $prot
-    | (if $led != null and ($envProof | not) then ldead($owner) else (olive($owner) | not) end) as $ownerOk
+    | ldead($owner) as $ownerOk
     | (if $prot != null then {proven: false, why: ("protected: " + $prot)}
+       elif $led != null and $e.agent != null and $e.agent != $led.owner then {proven: false, why: ("the current env PASEO_AGENT_ID " + $e.agent + " contradicts the ledger owner " + $led.owner + ": no proof")}
        elif $rexe == "" then {proven: false, why: "real executable path not recorded in the ledger (needs the ledger row from a record tick): no proof"}
        elif ($oc | index($comm)) == null then {proven: false, why: ("report only: executable \"" + $rexe + "\" (comm \"" + $comm + "\") is not in SLP_GC_KILL_COMMS")}
-       elif ($ownerOk | not) then {proven: false, why: ("owner " + ($owner // "?") + " is still live (or not proven dead: a ledger-only proof needs an archived or missing owner record, or a vanished owner child): not an orphan")}
+       elif ($ownerOk | not) then {proven: false, why: ("owner " + ($owner // "?") + " is treated as LIVE (fail closed): it is dead only if its record is archived or missing (a valid record, not unknown) or its pid:N@lstart child is gone, and no agent-class process may have an unreadable env: not an orphan")}
        elif $oat == 0 then {proven: false, why: "orphaned-at not recorded yet (no ledger ppid-1 first-seen): waits for the next record tick"}
        elif ($now - $oat) < $orphanMinAge then {proven: false, why: ("orphaned " + (($now - $oat) | tostring) + "s ago < " + ($orphanMinAge | tostring) + "s")}
        else {proven: true, why: ("orphaned agent descendant: ppid 1, proven by " + (if $led != null then "the lineage ledger (pid+lstart)" else "env PASEO_HOME + PASEO_AGENT_ID" end) + ", owner not live, comm " + $comm + ", orphaned " + (($now - $oat) | tostring) + "s >= " + ($orphanMinAge | tostring) + "s")} end) as $ov
@@ -613,16 +622,17 @@ collect_listen() {  # pids listening on the port of "host:port"
 # the broken files are flagged. Any find/read error marks the index incomplete (apply is disabled).
 extract_agents() {
   : > "$T/agents.jsonl"
-  local files=() i=0 chunk f
+  local files=() i=0 chunk f prog="$AGENT_JQ"
+  [ "${1:-}" != light ] || prog="$AGENT_LIGHT_JQ"
   if [ ! -d "$PHOME/agents" ]; then echo '[]' > "$T/agents.json"; return 0; fi
   find "$PHOME/agents" -mindepth 2 -maxdepth 2 -type f -name '*.json' -print0 > "$T/agents.list" 2>/dev/null || idx_err "find over agents/ failed"
   read_nul files < "$T/agents.list"
   while [ "$i" -lt "${#files[@]}" ]; do
     chunk=("${files[@]:$i:200}")
-    if ! jq -c "$AGENT_JQ" "${chunk[@]}" > "$T/chunk.out" 2>/dev/null; then
+    if ! jq -c "$prog" "${chunk[@]}" > "$T/chunk.out" 2>/dev/null; then
       : > "$T/chunk.out"
       for f in "${chunk[@]}"; do
-        jq -c "$AGENT_JQ" "$f" 2>/dev/null || jq -nc --arg p "$f" '{path: $p, ok: false, reason: "invalid JSON"}'
+        jq -c "$prog" "$f" 2>/dev/null || jq -nc --arg p "$f" '{path: $p, ok: false, reason: "invalid JSON"}'
       done > "$T/chunk.out"
     fi
     cat "$T/chunk.out" >> "$T/agents.jsonl"
@@ -705,8 +715,8 @@ load_ledger() {
 }
 # The REAL executable path of a pid (argv and the process title can be rewritten): lsof's first txt entry, else ps comm; absolute paths only
 exe_of() {
-  local e; e="$(run_to 5 "$LSOF" -nP -a -p "$1" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)"
-  case "$e" in /*) ;; *) e="$(run_to 5 "$PS" -o comm= -p "$1" 2>/dev/null | head -n 1)" ;; esac
+  local e; e="$(run_to 3 "$LSOF" -nP -a -p "$1" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)"
+  case "$e" in /*) ;; *) e="$(run_to 3 "$PS" -o comm= -p "$1" 2>/dev/null | head -n 1)" ;; esac
   case "$e" in /*) printf '%s' "${e//$'\n'/ }" ;; esac
 }
 # record: fill the exe of ledger rows that have none yet (allowlisted comm only, at most 40 lookups per tick; an unreadable exe stays empty
@@ -716,6 +726,7 @@ fill_exe() {
   jq -e '.ledgerNext | type == "array"' "$T/procs.json" >/dev/null 2>&1 || return 0
   for pid in $(jq -r --argjson oc "$(printf '%s\n' $KILL_COMMS | jq -Rn '[inputs]')" '.ledgerNext[] | select((.exe // "") == "" and ((.comm as $c | $oc | index($c)) != null)) | .pid' "$T/procs.json" | head -n 40); do
     is_uint "$pid" || continue
+    budget_expired && break   # time-boxed: the rest is filled on the next tick
     exe="$(exe_of "$pid")"; [ -z "$exe" ] || printf '%s\t%s\n' "$pid" "$exe" >> "$T/exes.tsv"
   done
   [ -s "$T/exes.tsv" ] || return 0
@@ -1047,6 +1058,7 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
   if ! have_perl; then act refuse - refused "no perl: cannot enforce a timeout on the paseo CLI"; APPLY_RC=3; return 3; fi
   CLI="$(resolve_cli)" || CLI=""
   local ngar; ngar="$(jq '.garbage | length' "$T/report.json")"
+  [ "${KILLS_ONLY:-0}" != 1 ] || ngar=0   # the reserved kill window (below) never deletes
   if [ -z "$CLI" ] && [ "$ngar" -gt 0 ]; then act refuse - refused "paseo CLI not found (PATH / Paseo.app)"; fail=1; ngar=0; fi
   # test hook: something changes between the evaluation and the actions
   if [ "${SLP_GC_TEST:-}" = 1 ] && [ -n "${SLP_GC_TEST_HOOK:-}" ]; then PASEO_HOME="$PHOME" "$SLP_GC_TEST_HOOK" >/dev/null 2>&1; fi
@@ -1084,9 +1096,11 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
   done
   [ "$CLI_DEAD" = 0 ] || { act abort - failed "paseo CLI timed out: daemon hung, remaining items not touched"; fail=1; }
 
-  # signals: single pids, SIGTERM only, at most SLP_GC_MAX_KILLS per run. ONE full re-evaluation per batch (fresh files, ps,
-  # env, top), then per pid a cheap check: the ps identity, the pid's own proof (ledger row / env), its executable path.
-  local pid ppid lstart class cmd why kind row2 rrow rppid rlstart rcmd nk=0 batch=0 stop=0 seen=" " proof rowowner rowexe fa fh fr epath fnow ebase
+  # LIMITS (documented, accepted): a memory kill may end a live agent's allowlisted process that is over the threshold (opt-in flag);
+  # the evaluation that authorises a signal is one evaluate-light old (its own duration), not older.
+  # signals: single pids, SIGTERM only, at most SLP_GC_MAX_KILLS per run. Before EVERY signal a full evaluate light (fresh files, ps,
+  # env, top), then the per-pid checks: the ps identity, the pid's own proof (ledger row / env), its executable path, its footprint.
+  local pid ppid lstart class cmd why kind row2 rrow rppid rlstart rcmd nk=0 stop=0 seen=" " proof rowowner rowexe fa fh fr epath fnow ebase
   for kind in stale mem; do
     if [ "$kind" = stale ]; then [ "$ks" = 1 ] || continue; else [ "$km" = 1 ] || continue; fi
     [ "$stop" = 0 ] && [ "${BUDGET_HIT:-0}" = 0 ] || break
@@ -1098,10 +1112,8 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
       is_uint "$pid" && [ "$pid" -gt 1 ] || { act kill "$pid" skipped "bad pid"; continue; }
       case "$class" in app-main|supervisor|daemon) act kill "$pid" skipped "$class is never signalled"; continue ;; esac
       if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then act kill "$pid" skipped "slp-gc's own process"; continue; fi
-      if [ "$batch" = 0 ]; then
-        if ! recheck; then act kill "$pid" skipped "fresh re-evaluation failed: no kill this run"; stop=1; break; fi
-        batch=1
-      fi
+      # a fresh evaluate light before EVERY signal: identification, ancestry, agent records, owner state, invoker protection, env
+      if ! recheck; then act kill "$pid" skipped "fresh re-evaluation failed: no kill this run"; stop=1; break; fi
       row2="$(jq -c --argjson p "$pid" --arg l "$lstart" --arg k "$kind" \
         '.procs | (.procs + .orphans)[] | select(.pid == $p and .lstart == $l and (if $k == "stale" then .stale.eligible else .overmem.eligible end))' "$RC_JSON" 2>/dev/null)"
       if [ -z "$row2" ]; then act kill "$pid" skipped "no longer eligible on the fresh full re-evaluation (env, owner, parent, age, memory)"; continue; fi
@@ -1119,6 +1131,9 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
       case "$class" in
         orphan)
           if [ "$proof" = ledger ]; then
+            IFS=$'\t' read -r _ fa fh fr <<< "$(env_one "$pid")"
+            if [ "$fa" != "-" ] && [ "$fa" != "$rowowner" ]; then act kill "$pid" skipped "env PASEO_AGENT_ID $fa contradicts the ledger owner $rowowner"; continue; fi
+            if [ "$fh" = other ]; then act kill "$pid" skipped "env PASEO_HOME points at another home"; continue; fi
             load_ledger
             if ! jq -e --argjson p "$pid" --arg l "$lstart" '.[] | select(.pid == $p and .lstart == $l and (.orphaned // 0) > 0 and (.exe // "") != "")' "$T/ledger.json" >/dev/null 2>&1; then
               act kill "$pid" skipped "the ledger no longer proves this pid (row or orphaned-at gone, or the ledger is untrusted)"; continue; fi
@@ -1171,7 +1186,7 @@ do_record() {
   mkdir -p "$STATE" || die "cannot create $STATE"
   case "$(fum "$STATE")" in "$(id -u):700") ;; "$(id -u):"*) chmod 700 "$STATE" 2>/dev/null ;; esac   # our own dir: tighten it (the ledger needs 0700)
   WANT_LEDGER=1
-  extract_agents >/dev/null 2>&1 || true   # the agent index gives the owner states an orphan proof needs (files only, no paseo call)
+  extract_agents light >/dev/null 2>&1 || true   # the light agent index (id, archivedAt) gives the owner states an orphan proof needs (files only, no paseo call)
   collect_procs 1
   fill_exe
   write_lineage
@@ -1294,7 +1309,13 @@ do_tick() {
   [ -f "$STATE/.last-report" ] && last="$(cat "$STATE/.last-report" 2>/dev/null)"
   is_uint "$last" || last=0
   [ $((NOW - $(dec "$last"))) -ge $((CFG_REPORT_MIN * 60)) ] && due=1
-  if budget_expired && { [ "$due" = 1 ] || [ "$CFG_APPLY" = 1 ]; }; then
+  if budget_expired && [ "$CFG_APPLY" = 1 ] && { [ "$CFG_KILL_STALE" = 1 ] || [ "$CFG_KILL_MEM" = 1 ]; }; then
+    # record used the whole budget: the kill phase still gets a reserved window (hard cap 20 s; no report, no deletes)
+    echo "$(iso_now) tick budget (${TICK_BUDGET_S}s) used up by record: kill phase runs in a reserved 20 s window (deletes and report skipped)" >> "$STATE/tick.log"
+    TICK_START="$(date +%s)"; TICK_BUDGET_S=20; KILLS_ONLY=1
+    if evaluate light; then do_apply "$CFG_KILL_STALE" "$CFG_KILL_MEM"; render_actions >> "$STATE/tick.log"
+    else echo "$(iso_now) evaluation failed" >> "$STATE/tick.log"; echo "slp-gc tick: evaluation failed"; fi
+  elif budget_expired && { [ "$due" = 1 ] || [ "$CFG_APPLY" = 1 ]; }; then
     echo "$(iso_now) tick budget (${TICK_BUDGET_S}s) expired after record: evaluation/apply skipped" >> "$STATE/tick.log"
     echo "slp-gc tick: budget of ${TICK_BUDGET_S}s expired after record; evaluation/apply skipped"
   elif [ "$due" = 1 ] || [ "$CFG_APPLY" = 1 ]; then

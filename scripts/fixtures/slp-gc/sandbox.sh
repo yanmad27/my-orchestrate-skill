@@ -243,7 +243,12 @@ case "$*" in
   *) echo "total = 2048.00M  used = 1500.50M  free = 547.50M  (encrypted)" ;;
 esac
 S
-  printf '#!/bin/sh\necho "$*" >> "$SLPGC_LOGS/kill.log"\n' > "$SB/bin/kill"
+  cat > "$SB/bin/kill" <<'S'
+#!/bin/sh
+# stub kill: logs the argv; runs $SLPGC_FIX/after-kill.sh once after the first signal (something changes between two kills of a batch)
+echo "$*" >> "$SLPGC_LOGS/kill.log"
+if [ -x "$SLPGC_FIX/after-kill.sh" ]; then "$SLPGC_FIX/after-kill.sh"; rm -f "$SLPGC_FIX/after-kill.sh"; fi
+S
   printf '#!/bin/sh\necho "$*" >> "$SLPGC_LOGS/osascript.log"\n' > "$SB/bin/osascript"
   printf '#!/bin/sh\necho "2026-09-30 memorystatus: fixture line"\n' > "$SB/bin/log"
   cat > "$SB/bin/paseo" <<'S'
@@ -398,12 +403,17 @@ fx_more() {
     fx_psrow 371 1 03:00:00 200000 "$L2" "node closedu.js"
     fx_psrow 372 1 03:00:00 200000 "$L2" "node bad1.js"
     fx_psrow 373 1 03:00:00 200000 "$L2" "node bad2.js"
+    fx_psrow 374 1 03:00:00 200000 "$L2" "node unknown-owner.js"
+    fx_psrow 375 1 03:00:00 200000 "$L2" "node second.js"
+    fx_psrow 376 1 03:00:00 200000 "$L2" "node stale-owner.js"
+    fx_psrow 377 1 03:00:00 200000 "$L2" "node contradict.js"
   } | tee -a "$F/ps.txt" >> "$F/ps.recheck"
-  local n; for n in 318 319 351 352 353 371 372 373; do echo "  $n node (noenv)" >> "$F/env.txt"; done
-  printf '%s\n' '318    200M   10M' '319    200M   10M' '351    200M   10M' '352    200M   10M' '353    5000M  10M' '371    200M   10M' '372    200M   10M' '373    200M   10M' >> "$F/top.txt"
+  local n; for n in 318 319 351 352 353 371 372 373 374 375 376; do echo "  $n node (noenv)" >> "$F/env.txt"; done
+  printf '%s\n' '318    200M   10M' '319    200M   10M' '351    200M   10M' '352    200M   10M' '353    5000M  10M' '371    200M   10M' '372    200M   10M' '373    200M   10M' '374    200M   10M' '375    200M   10M' '376    200M   10M' '377    200M   10M' >> "$F/top.txt"
+  echo "  377 node PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE PASEO_HOME=$FX_PHOME" >> "$F/env.txt"
   printf '/Applications/OrbStack.app/Contents/MacOS/OrbStack\n' > "$F/txt.318"
   printf '/usr/local/bin/node\n' > "$F/txt.319"     # the ledger recorded /opt/homebrew/bin/node
-  for n in 351 352 353 371 372 373; do printf '/opt/homebrew/bin/node\n' > "$F/txt.$n"; done
+  for n in 351 352 353 371 372 373 374 375 376 377; do printf '/opt/homebrew/bin/node\n' > "$F/txt.$n"; done
   {
     printf '318\t%s\tnode\t%s\t1789990000\t%s\t/Applications/OrbStack.app/Contents/MacOS/OrbStack\n' "$L2" "$A_YOUNG" "$o"
     printf '319\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$A_YOUNG" "$o"
@@ -411,6 +421,10 @@ fx_more() {
     printf '352\t%s\tnode\tpid:190@%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$L2" "$o"
     printf '371\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$A_CLOSEDU" "$o"
     printf '372\t%s\tnode\tnot-a-uuid\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$o"
+    printf '374\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$A_MISSING" "$o"
+    printf '375\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$A_YOUNG" "$o"
+    printf '376\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$A_STALE" "$o"
+    printf '377\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$A_YOUNG" "$o"
     printf '373\t%s\tnode\t%s\t2999999999\t2999999999\t/opt/homebrew/bin/node\n' "$L2" "$A_YOUNG"
   } >> "$FX_STATE/lineage.tsv"
 }
