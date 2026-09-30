@@ -542,10 +542,10 @@ send_to() { awk '/^ARG:--$/ {getline; sub(/^ARG:/, ""); print}' "$FX_LOGS/send-a
 first_msg() { awk '/^=== to /{n++} n==1 && !/^=== to /' "$FX_LOGS/send-msgs.log" 2>/dev/null; }
 sups() {  # the standard cast: an archived Supervisor and a Lead that are newer than everything, two open Supervisors, one never used
   fx_sup "$S_ARCH" claude-supervisor "$(fx_iso 50)" "$(fx_iso 20)" "$(fx_iso 20)"
-  fx_sup "$S_LEAD" claude-lead null "$(fx_iso 10)" "$(fx_iso 10)"
-  fx_sup "$S_OLD" claude-supervisor null "$(fx_iso 5000)" "$(fx_iso 60)"
-  fx_sup "$S_NEW" claude-supervisor null "$(fx_iso 1000)" "$(fx_iso 900)"
-  fx_sup "$S_NULL" claude-supervisor null null "$(fx_iso 5)"
+  fx_sup "$S_LEAD" claude-lead MISSING "$(fx_iso 10)" "$(fx_iso 10)"
+  fx_sup "$S_OLD" claude-supervisor MISSING "$(fx_iso 5000)" "$(fx_iso 60)"
+  fx_sup "$S_NEW" claude-supervisor MISSING "$(fx_iso 1000)" "$(fx_iso 900)"
+  fx_sup "$S_NULL" claude-supervisor MISSING null "$(fx_iso 5)"
 }
 GCABS="$(cd "$(dirname "$GC")" && pwd -P)/$(basename "$GC")"
 
@@ -578,7 +578,7 @@ check "SLP_GC_ALERT_SUPERVISOR=0 (config file, last value wins): tick alerts but
 fresh; sups; printf 'SLP_GC_ALERT_SUPERVISOR=banana\n' > "$FX_SB/slp-gc.conf"; fx_gc tick >/dev/null 2>&1
 check "SLP_GC_ALERT_SUPERVISOR: an invalid value keeps the default (on): tick delivers once to the newest Supervisor" bash -c "test '$(nsend)' = 1 && test '$(send_to)' = '$S_NEW '"
 
-fresh; fx_sup "$S_ARCH" claude-supervisor "$(fx_iso 50)" "$(fx_iso 20)" "$(fx_iso 20)"; fx_sup "$S_LEAD" claude-lead null "$(fx_iso 10)" "$(fx_iso 10)"
+fresh; fx_sup "$S_ARCH" claude-supervisor "$(fx_iso 50)" "$(fx_iso 20)" "$(fx_iso 20)"; fx_sup "$S_LEAD" claude-lead MISSING "$(fx_iso 10)" "$(fx_iso 10)"
 fx_gc record >/dev/null 2>&1; rc=$?
 check "no open Supervisor (only an archived one and a Lead): no send, no paseo call, record exits 0, alerts.log + notification still happen, one tick-log line says so" bash -c "test '$rc' = 0 && test '$(nsend)' = 0 && test '$(logn paseo.log)' = 0 && test \$(wc -l < '$FX_STATE/alerts.log') = 1 && test \$(wc -l < '$FX_LOGS/osascript.log') = 1 && test \$(grep -c 'no open Supervisor' '$FX_STATE/tick.log') = 1"
 
@@ -587,7 +587,7 @@ check "send failure: exactly one attempt (no retry), record exits 0, alerts.log 
 fresh; sups; t0=$(date +%s); FX_EXTRA_ENV="SLPGC_SEND_HANG=1 SLP_GC_SEND_TIMEOUT=1" fx_gc record >/dev/null 2>&1; rc=$?; t1=$(date +%s)
 check "send timeout: a hanging paseo is cut off at the send timeout, one attempt, record exits 0, alerts.log + notification unaffected" bash -c "test '$rc' = 0 && test $((t1 - t0)) -lt 25 && test '$(nsend)' = 1 && test \$(wc -l < '$FX_STATE/alerts.log') = 1 && test \$(wc -l < '$FX_LOGS/osascript.log') = 1 && grep -q 'timed out after 1s' '$FX_STATE/tick.log' && ! ls '$FX_TMP'/slp-gc.*/prompt.* >/dev/null 2>&1"
 
-fresh; sups; fx_sup "$S_NEW" claude-supervisor null "$(fx_iso 1000)" "$(fx_iso 900)" permission
+fresh; sups; fx_sup "$S_NEW" claude-supervisor MISSING "$(fx_iso 1000)" "$(fx_iso 900)" permission
 fx_gc record >/dev/null 2>&1; rc=$?
 check "pending permission: the selected Supervisor is not sent to and there is no fallback to another Supervisor; the tick log says so; record exits 0" bash -c "test '$rc' = 0 && test '$(nsend)' = 0 && grep -q 'has a pending permission, not delivered' '$FX_STATE/tick.log' && test \$(wc -l < '$FX_STATE/alerts.log') = 1"
 
@@ -603,7 +603,7 @@ check "paths with spaces survive: the home is one argv element, and the command 
 
 # C7: the recipient's lastUserMessageAt is bumped by Paseo's own send; the ledger tells that echo from a person
 fresh; fx_sup "$S_ARCH" claude-supervisor "$(fx_iso 50)" "$(fx_iso 900)" "$(fx_iso 20)"      # B: newer genuine time, but archived right now
-fx_sup "$S_OLD" claude-supervisor null "$(fx_iso 3000)" "$(fx_iso 60)"                          # A: open, older genuine time
+fx_sup "$S_OLD" claude-supervisor MISSING "$(fx_iso 3000)" "$(fx_iso 60)"                          # A: open, older genuine time
 fx_gc record >/dev/null 2>&1; s1="$(send_to)"
 PA="$(agent_file "$S_OLD")"; PB="$(agent_file "$S_ARCH")"
 jq --arg t "$(fx_iso -1)" '.lastUserMessageAt = $t' "$PA" > "$PA.n" && mv "$PA.n" "$PA"          # Paseo's `agent send` bumped A's lastUserMessageAt to the send time
@@ -613,12 +613,12 @@ check "C7: the first alert goes to the only open Supervisor (A); after A's lastU
 rm -f "$FX_STATE/deliveries.jsonl" "$FX_STATE/.alert-stamp"; : > "$FX_LOGS/send-argv.log"; fx_gc record >/dev/null 2>&1
 check "C7 control: without the ledger the bumped A looks most recent and wins (the correction is what routes to B)" test "$(send_to)" = "$S_OLD "
 # a later genuine message (outside [sentAt-5s, sentAt+30s]) counts again
-fresh; fx_sup "$S_ARCH" claude-supervisor null "$(fx_iso 900)" "$(fx_iso 20)"; fx_sup "$S_OLD" claude-supervisor null "$(fx_iso 3000)" "$(fx_iso 60)"
+fresh; fx_sup "$S_ARCH" claude-supervisor MISSING "$(fx_iso 900)" "$(fx_iso 20)"; fx_sup "$S_OLD" claude-supervisor MISSING "$(fx_iso 3000)" "$(fx_iso 60)"
 mkdir -p "$FX_STATE"; printf '{"id":"%s","sentAt":"%s","priorLastUserMessageAt":"%s","alertId":"x","test":false}\n' "$S_OLD" "$(fx_iso 0)" "$(fx_iso 3000)" > "$FX_STATE/deliveries.jsonl"
 PA="$(agent_file "$S_OLD")"; jq --arg t "$(fx_iso -120)" '.lastUserMessageAt = $t' "$PA" > "$PA.n" && mv "$PA.n" "$PA"   # 120 s after the delivery: a person
 fx_gc record >/dev/null 2>&1
 check "C7: a genuine message 120 s after the delivery (outside the window) counts: A wins" test "$(send_to)" = "$S_OLD "
-fresh; fx_sup "$S_ARCH" claude-supervisor null "$(fx_iso 900)" "$(fx_iso 20)"; fx_sup "$S_OLD" claude-supervisor null "$(fx_iso 3000)" "$(fx_iso 60)"
+fresh; fx_sup "$S_ARCH" claude-supervisor MISSING "$(fx_iso 900)" "$(fx_iso 20)"; fx_sup "$S_OLD" claude-supervisor MISSING "$(fx_iso 3000)" "$(fx_iso 60)"
 printf '{"id":"%s","sentAt":"%s","priorLastUserMessageAt":"%s","alertId":"x","test":false}\n' "$S_OLD" "$(fx_iso 0)" "$(fx_iso 3000)" > "$FX_STATE/deliveries.jsonl" 2>/dev/null || { mkdir -p "$FX_STATE"; printf '{"id":"%s","sentAt":"%s","priorLastUserMessageAt":"%s","alertId":"x","test":false}\n' "$S_OLD" "$(fx_iso 0)" "$(fx_iso 3000)" > "$FX_STATE/deliveries.jsonl"; }
 PA="$(agent_file "$S_OLD")"; jq --arg t "$(fx_iso -20)" '.lastUserMessageAt = $t' "$PA" > "$PA.n" && mv "$PA.n" "$PA"    # 20 s after: still the echo window
 fx_gc record >/dev/null 2>&1
@@ -638,7 +638,7 @@ fresh; fx_gc test-alert > "$WORK/ta2.out" 2>&1; rc=$?
 check "C5 test-alert: no open Supervisor => exit 3, nothing sent" test "$rc" = 3 -a "$(nsend)" = 0 -a "$(logn paseo.log)" = 0
 fresh; sups; FX_EXTRA_ENV="SLPGC_SEND_FAIL=1" fx_gc test-alert > "$WORK/ta3.out" 2>&1; rc=$?
 check "C5 test-alert: send failed => exit 1 (the id is still printed), one attempt" test "$rc" = 1 -a "$(nsend)" = 1 -a "$(head -n 1 "$WORK/ta3.out")" = "$S_NEW"
-fresh; sups; fx_sup "$S_NEW" claude-supervisor null "$(fx_iso 1000)" "$(fx_iso 900)" permission; fx_gc test-alert > "$WORK/ta4.out" 2>&1; rc=$?
+fresh; sups; fx_sup "$S_NEW" claude-supervisor MISSING "$(fx_iso 1000)" "$(fx_iso 900)" permission; fx_gc test-alert > "$WORK/ta4.out" 2>&1; rc=$?
 check "C5 test-alert: the selected Supervisor has a pending permission => exit 3, nothing sent" test "$rc" = 3 -a "$(nsend)" = 0
 fresh; sups; fx_gc test-alert --apply >/dev/null 2>&1; rc1=$?; fx_gc test-alert --json >/dev/null 2>&1; rc2=$?
 check "C5 test-alert takes only --home: --apply / --json are refused (exit 2) without sending" test "$rc1" = 2 -a "$rc2" = 2 -a "$(nsend)" = 0
@@ -731,24 +731,26 @@ fresh; sups; FX_EXTRA_ENV="SLPGC_SEND_FAIL=1" fx_gc record >/dev/null 2>&1
 check "2 a failed send marks its ledger row ok:false" test "$(ledger_ok_last)" = false
 fresh; sups; FX_EXTRA_ENV="SLPGC_SEND_HANG=1 SLP_GC_SEND_TIMEOUT=1" fx_gc record >/dev/null 2>&1
 check "2 a timed-out send (outcome unknown) leaves ok:null, so a possible echo is still corrected" test "$(ledger_ok_last)" = null
-fresh; fx_sup "$S_OLD" claude-supervisor null "$(fx_iso 1000)" "$(fx_iso 60)"; fx_sup "$S_NEW" claude-supervisor null "$(fx_iso 2000)" "$(fx_iso 900)"; mkdir -p "$FX_STATE"
+fresh; fx_sup "$S_OLD" claude-supervisor MISSING "$(fx_iso 1000)" "$(fx_iso 60)"; fx_sup "$S_NEW" claude-supervisor MISSING "$(fx_iso 2000)" "$(fx_iso 900)"; mkdir -p "$FX_STATE"
 { printf '{"id":"%s","sentAt":"%s","priorLastUserMessageAt":"%s","alertId":"good","test":false,"ok":true}\n' "$S_OLD" "$(fx_iso 1000)" "$(fx_iso 9000)"
   printf '{"id":"%s","sentAt":"%s","priorLastUserMessageAt":"%s","alertId":"bad","test":false,"ok":false}\n' "$S_OLD" "$(fx_iso 100)" "$(fx_iso 1000)"; } > "$FX_STATE/deliveries.jsonl"
 fx_gc record >/dev/null 2>&1
 check "2 a later FAILED row does not shadow the real earlier echo: A's lastUserMessageAt (the echo of the good delivery) is corrected, so the genuinely newer B wins" test "$(send_to)" = "$S_NEW "
-fresh; fx_sup "$S_OLD" claude-supervisor null "$(fx_iso 1000)" "$(fx_iso 60)"; fx_sup "$S_NEW" claude-supervisor null "$(fx_iso 2000)" "$(fx_iso 900)"; mkdir -p "$FX_STATE"
+fresh; fx_sup "$S_OLD" claude-supervisor MISSING "$(fx_iso 1000)" "$(fx_iso 60)"; fx_sup "$S_NEW" claude-supervisor MISSING "$(fx_iso 2000)" "$(fx_iso 900)"; mkdir -p "$FX_STATE"
 { printf '{"id":"%s","sentAt":"%s","priorLastUserMessageAt":"%s","alertId":"good","test":false,"ok":true}\n' "$S_OLD" "$(fx_iso 1000)" "$(fx_iso 9000)"
   printf '{"id":"%s","sentAt":"%s","priorLastUserMessageAt":"%s","alertId":"bad","test":false,"ok":true}\n' "$S_OLD" "$(fx_iso 100)" "$(fx_iso 1000)"; } > "$FX_STATE/deliveries.jsonl"
 fx_gc record >/dev/null 2>&1
 check "2 control: the same ledger with the later row ok:true DOES shadow (A keeps winning), so the ok flag is what matters" test "$(send_to)" = "$S_OLD "
 
-# (3) archivedAt must be present and exactly null
-for v in MISSING false "2026-09-01T00:00:00.000Z"; do
+# (3) open = archivedAt absent or null; any other value is not open
+for v in false 0 7 "2026-09-01T00:00:00.000Z"; do
   fresh; fx_sup "$S_NEW" claude-supervisor "$v" "$(fx_iso 1000)" "$(fx_iso 900)"; fx_gc record >/dev/null 2>&1; rc=$?
   check "3 a Supervisor whose archivedAt is [$v] is not open: nothing sent, no paseo call, record exits 0" test "$rc" = 0 -a "$(nsend)" = 0 -a "$(logn paseo.log)" = 0
 done
 fresh; fx_sup "$S_NEW" claude-supervisor null "$(fx_iso 1000)" "$(fx_iso 900)"; fx_gc record >/dev/null 2>&1
-check "3 control: archivedAt present and null is open" test "$(send_to)" = "$S_NEW "
+check "3 archivedAt explicitly null is open" test "$(send_to)" = "$S_NEW "
+fresh; fx_sup "$S_NEW" claude-supervisor MISSING "$(fx_iso 1000)" "$(fx_iso 900)"; fx_gc record >/dev/null 2>&1
+check "3 archivedAt missing (the live open shape) is open" test "$(send_to)" = "$S_NEW "
 
 # (4) the switch disables test-alert too
 fresh; sups; FX_EXTRA_ENV="SLP_GC_ALERT_SUPERVISOR=0" fx_gc test-alert > "$WORK/sw.out" 2> "$WORK/sw.err"; rc=$?

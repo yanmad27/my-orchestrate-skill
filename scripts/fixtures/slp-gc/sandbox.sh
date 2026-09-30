@@ -291,11 +291,11 @@ S
 }
 A_INVOKER2=$A_INVOKER
 
-# a Supervisor-ish record for the delivery tests: fx_sup <id> <provider> <archivedAt|null> <lastUserMessageAt|null> <lastActivityAt> [attentionReason]
+# a Supervisor-ish record for the delivery tests: fx_sup <id> <provider> <MISSING (no key, the live open shape)|null|false|0|7|ISO> <lastUserMessageAt|null> <lastActivityAt> [attentionReason]
 fx_sup() {
   local id="$1" prov="$2" arch="$3" lum="$4" lact="$5" att="${6:-null}"
   local archkv;
-  case "$arch" in MISSING) archkv="" ;; false) archkv='"archivedAt":false,' ;; null) archkv='"archivedAt":null,' ;; *) archkv="\"archivedAt\":\"$arch\"," ;; esac
+  case "$arch" in MISSING) archkv="" ;; false) archkv='"archivedAt":false,' ;; 0|7) archkv="\"archivedAt\":$arch,";; null) archkv='"archivedAt":null,' ;; *) archkv="\"archivedAt\":\"$arch\"," ;; esac
   [ "$lum" = null ] || lum="\"$lum\""; [ "$att" = null ] || att="\"$att\""
   mkdir -p "$FX_PHOME/agents/slug-sup"
   cat > "$FX_PHOME/agents/slug-sup/$id.json" <<J

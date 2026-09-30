@@ -238,7 +238,7 @@ def mb1: (. * 10 | round) / 10;
 AGENT_LIGHT_JQ='{path: input_filename} + (
   if type != "object" then {ok: false, reason: "not a JSON object"}
   elif (.id | type) != "string" or (.id | length) == 0 then {ok: false, reason: "missing id"}
-  else {ok: true, id: .id, archivedAt: (.archivedAt // null), archivedNull: (has("archivedAt") and .archivedAt == null), provider: (.provider // null),
+  else {ok: true, id: .id, archivedAt: (.archivedAt // null), unarchived: ((has("archivedAt") | not) or .archivedAt == null), provider: (.provider // null),
         lastUserMessageAt: (.lastUserMessageAt // null), lastActivityAt: (.lastActivityAt // null), attentionReason: (.attentionReason // null)} end)'
 AGENT_JQ="$JQ_COMMON"'
 {path: input_filename} + (
@@ -1255,7 +1255,7 @@ def ms: if type == "string" and test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-
   then ((sub("\\.[0-9]+"; "") | fromdateiso8601) * 1000) + ((([match("\\.([0-9]+)").captures[0].string] | first // "0") + "000")[:3] | tonumber) else null end;
 ($led[0] | map(select(type == "object" and (.id | type) == "string" and (.sentAt | ms) != null and .ok != false)) | group_by(.id)
    | map(max_by(.sentAt | ms)) | map({key: .id, value: .}) | from_entries) as $L
-| [ .[] | select(.ok == true and .provider == "claude-supervisor" and .archivedNull == true
+| [ .[] | select(.ok == true and .provider == "claude-supervisor" and .unarchived == true
                  and ((.id | test("\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z"))
                  and ((.path | split("/") | last | sub("\\.json\\z"; "")) == .id)))
     | . as $r | ($r.lastUserMessageAt | ms) as $u | $L[$r.id] as $e

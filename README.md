@@ -421,7 +421,7 @@ one attempt, 10 s timeout, no retry. A failed, timed-out or skipped delivery
 is one line in `tick.log` and never changes the exit status or blocks the other two.
 
 - *Which Supervisor.* Records under `<home>/agents` with `provider` exactly
-  `claude-supervisor`, `archivedAt` null and a file name equal to the id. They are
+  `claude-supervisor`, `archivedAt` absent or null (Paseo omits the key on an open agent) and a file name equal to the id. They are
   ranked by `lastUserMessageAt` (a heartbeat does not move it), then
   `lastActivityAt`, then id; a Supervisor that was never used ranks last. None
   open: nothing is sent and `tick.log` says so.
