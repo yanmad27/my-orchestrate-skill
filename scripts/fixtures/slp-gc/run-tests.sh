@@ -149,6 +149,15 @@ fx_gc_canary tick > "$WORK/c6b.txt" 2>&1
 fx_gc_canary report --apply --kill-stale-processes --kill-over-memory > "$WORK/c6c.txt" 2>&1
 check "C6 canary: an alerting record/tick ran (alerts.log written) yet the logging osascript on PATH never ran" bash -c "test -s '$FX_STATE/alerts.log' && test '$(logn osascript.log)' = 0"
 check "C6 canary: an --apply attempt with the kill flags ran the PATH paseo and kill zero times" bash -c "test '$(logn paseo.log)' = 0 && test '$(logn kill.log)' = 0"
+fresh; printf '#!/bin/sh\necho "$*" >> "$SLPGC_LOGS/paseo-ambient.log"\n' > "$FX_BIN/paseo-ambient"; chmod +x "$FX_BIN/paseo-ambient"
+FX_CANARY_PASEO_CLI="$FX_BIN/paseo-ambient"
+fx_gc_canary record > "$WORK/c6d.txt" 2>&1
+fx_gc_canary tick > "$WORK/c6e.txt" 2>&1
+fx_gc_canary report --apply --kill-stale-processes --kill-over-memory > "$WORK/c6f.txt" 2>&1
+unset FX_CANARY_PASEO_CLI
+check "C6 canary: with the ambient PASEO_CLI set to a logging stub and SLP_GC_PASEO unset, an alerting record/tick and an --apply attempt never run it (nor the PATH paseo)" bash -c "test -s '$FX_STATE/alerts.log' && test '$(logn paseo-ambient.log)' = 0 && test '$(logn paseo.log)' = 0"
+test_branch_has_ambient_cli() { sed -n '/^resolve_cli()/,/^  fi$/p' "$GC" | grep -qF 'ovr "${PASEO_CLI'; }
+if test_branch_has_ambient_cli; then fail "C6: the test branch of resolve_cli reads the ambient PASEO_CLI (static)"; else ok "C6: the test branch of resolve_cli never reads the ambient PASEO_CLI (static)"; fi
 check "C6: under SLP_GC_TEST=1 the notifier, CLI and kill fall back to inert no-ops (static)" bash -c "grep -q 'OSASCRIPT=\"\$INERT\"' '$GC' && grep -q 'KILL=\"\$INERT\"' '$GC' && grep -q 'an unset override is \"no CLI\"' '$GC'"
 
 # --- (iii) kills ---------------------------------------------------------------------------------

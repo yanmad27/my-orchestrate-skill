@@ -1031,12 +1031,11 @@ act() {  # kind target result detail
 }
 # the tick's wall-clock budget (real time; TICK_START is set by the tick only)
 budget_expired() { [ -n "$TICK_START" ] && [ $(( $(date +%s) - TICK_START )) -ge "$TICK_BUDGET_S" ]; }
-resolve_cli() {  # test override, else PATH, else the Paseo.app bundle
+resolve_cli() {  # test override (SLP_GC_PASEO only), else PASEO_CLI, PATH, the Paseo.app bundle
   local c
   if [ "${SLP_GC_TEST:-}" = 1 ]; then   # never PATH or the app bundle under test: an unset override is "no CLI"
-    for c in "$(ovr "${SLP_GC_PASEO:-}")" "$(ovr "${PASEO_CLI:-}")"; do
-      [ -n "$c" ] && [ -x "$c" ] && { printf '%s' "$c"; return 0; }
-    done
+    c="$(ovr "${SLP_GC_PASEO:-}")"   # only the test override: the ambient PASEO_CLI of every Paseo agent shell is ignored
+    [ -n "$c" ] && [ -x "$c" ] && { printf '%s' "$c"; return 0; }
     return 1
   fi
   for c in "$(ovr "${SLP_GC_PASEO:-}")" "$(ovr "${PASEO_CLI:-}")" "$(command -v paseo 2>/dev/null)" \

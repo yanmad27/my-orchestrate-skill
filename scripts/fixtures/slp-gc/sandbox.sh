@@ -300,12 +300,12 @@ fx_gc_min() {
     SLP_GC_PS="$FX_BIN/ps" SLP_GC_PSENV="$FX_BIN/psenv" SLP_GC_TOP="$FX_BIN/top" SLP_GC_LSOF="$FX_BIN/lsof" SLP_GC_VMSTAT="$FX_BIN/vm_stat" \
     SLP_GC_SYSCTL="$FX_BIN/sysctl" SLPGC_FIX="$FX_FIX" "$FX_GC" "$@"   # slpgc-sandboxed
 }
-# C6 canary: SLP_GC_TEST=1 with the notifier/CLI/kill overrides unset and logging osascript/paseo/kill first on PATH
+# C6 canary (FX_CANARY_PASEO_CLI is passed through as the ambient PASEO_CLI): SLP_GC_TEST=1 with the notifier/CLI/kill overrides unset and logging osascript/paseo/kill first on PATH
 fx_gc_canary() {
   env -i PATH="$FX_BIN:/usr/bin:/bin" SLP_GC_TEST=1 HOME="$FX_HOME" TMPDIR="$FX_TMP" SLP_GC_STATE_DIR="$FX_STATE" SLP_GC_CONFIG="$FX_SB/slp-gc.conf" \
     PASEO_HOME="$FX_PHOME" PASEO_AGENT_ID="${FX_INVOKER:-$A_INVOKER}" SLP_GC_NOW="$FX_NOW" \
     SLP_GC_PS="$FX_BIN/ps" SLP_GC_PSENV="$FX_BIN/psenv" SLP_GC_TOP="$FX_BIN/top" SLP_GC_LSOF="$FX_BIN/lsof" SLP_GC_VMSTAT="$FX_BIN/vm_stat" \
-    SLP_GC_SYSCTL="$FX_BIN/sysctl" SLPGC_FIX="$FX_FIX" SLPGC_LOGS="$FX_LOGS" SLP_GC_SKIP_RETENTION=1 "$FX_GC" "$@"   # slpgc-sandboxed
+    SLP_GC_SYSCTL="$FX_BIN/sysctl" SLPGC_FIX="$FX_FIX" SLPGC_LOGS="$FX_LOGS" SLP_GC_SKIP_RETENTION=1 ${FX_CANARY_PASEO_CLI:+PASEO_CLI="$FX_CANARY_PASEO_CLI"} "$FX_GC" "$@"   # slpgc-sandboxed
 }
 # no SLP_GC_TEST: proves the test overrides are ignored. Read-only `report` only; anything else is refused here.
 fx_gc_bare() {
