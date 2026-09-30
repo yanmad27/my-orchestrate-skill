@@ -191,8 +191,8 @@ guard() {
 guard other-home "$tmp/dscl-other" "$stubs/launchctl" --gc-only
 check "a login home that is not HOME: nothing reaches the logging stub or PATH's launchctl" test "$RC" = 0 -a ! -s "$tmp/launchctl.log"
 check "...with a loud WARNING and 'launchd agent NOT loaded' in the summary" bash -c 'grep -q "^WARNING: the launchd agent was written but NOT loaded" "$0" && grep -q "launchd agent NOT loaded" "$0"' "$tmp/other-home.out"
-guard unresolved-nostub "$tmp/dscl-none" - --gc-only
-check "an unresolvable login home without SLP_LAUNCHCTL fails closed (PATH's launchctl stub logged nothing)" test "$RC" = 0 -a ! -s "$tmp/launchctl.log" && grep -q "launchd agent NOT loaded" "$tmp/unresolved-nostub.out"
+guard unresolved-nostub "$tmp/dscl-other" - --gc-only
+check "without SLP_LAUNCHCTL the PATH dscl/id stubs are ignored and launchd is skipped (nothing logged)" test "$RC" = 0 -a ! -s "$tmp/launchctl.log" && grep -q "launchd agent NOT loaded" "$tmp/unresolved-nostub.out" && ! grep -q "other-home" "$tmp/unresolved-nostub.out"
 guard unresolved-stub "$tmp/dscl-none" "$stubs/launchctl" --gc-only
 check "an unresolvable login home with SLP_LAUNCHCTL set may load through it" test "$RC" = 0 -a "$(wc -l < "$tmp/launchctl.log" | tr -d ' ')" = 2
 guard relative - launchctl --gc-only
@@ -201,6 +201,14 @@ guard nonexec - "$tmp/no-such-launchctl" --gc-only
 check "a missing SLP_LAUNCHCTL path is refused" test "$RC" = 0 -a ! -s "$tmp/launchctl.log" && grep -q "not an existing executable" "$tmp/nonexec.out"
 guard no-launchd - "$stubs/launchctl" --gc-only --no-gc-launchd
 check "--no-gc-launchd says the agent was not installed" grep -q "launchd agent not installed" "$tmp/no-launchd.out"
+
+# --- 4c. state dir mode, early symlink refusal ------------------------------------------------------
+mkdir -p "$tmp/sd-home/.config/slp-room" "$tmp/sd-home/Library/Logs/slp-gc"; chmod 755 "$tmp/sd-home/Library/Logs/slp-gc"
+RC=0; HOME="$tmp/sd-home" PATH="$stubs:$PATH" SLP_LAUNCHCTL="$stubs/launchctl" bash "$REPO/install.sh" --gc-only --no-gc-launchd > "$tmp/sd.out" 2>&1 < /dev/null || RC=$?
+check "an existing state dir keeps its mode (0755) and the install warns" test "$RC" = 0 -a "$(stat -c %a "$tmp/sd-home/Library/Logs/slp-gc" 2>/dev/null || stat -f %Lp "$tmp/sd-home/Library/Logs/slp-gc")" = 755 && grep -q "not owned by you or not mode 0700" "$tmp/sd.out"
+mkdir -p "$tmp/sl-home/.config/slp-room"; : > "$tmp/sl-target"; ln -s "$tmp/sl-target" "$tmp/sl-home/.config/slp-room/slp-gc.conf"
+RC=0; HOME="$tmp/sl-home" PATH="$stubs:$PATH" SLP_LAUNCHCTL="$stubs/launchctl" bash "$REPO/install.sh" > "$tmp/sl.out" 2>&1 < /dev/null || RC=$?
+check "a symlinked config is refused before any install step: no partial install (default mode too)" test "$RC" -ne 0 -a "$(cd "$tmp/sl-home" && find . -mindepth 1 | sort | tr '\n' ' ')" = "./.config ./.config/slp-room ./.config/slp-room/slp-gc.conf " && grep -q symlink "$tmp/sl.out"
 
 # --- 5. nothing real was touched ----------------------------------------------------------------------
 [ -n "${EVIDENCE_DIR:-}" ] && { cp "$tmp/launchctl.stubbed.log" "$EVIDENCE_DIR/stub-launchctl.log"; (cd "$H" && find . | sort) > "$EVIDENCE_DIR/home-after-default-install.txt"; }

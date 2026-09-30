@@ -879,12 +879,12 @@ if [ "$SGI_RC" -ne 0 ] || ! grep -q '^ok: ' "$SGI_OUT"; then
 else
   ok "slp-gc install tests passed ($(grep -c '^ok: ' "$SGI_OUT") checks)"
 fi
-# Every install.sh run in this file had SLP_LAUNCHCTL and PATH pointing at the logging stub (see the
-# top): whatever it recorded may only be the agent's bootout/bootstrap with a plist under $TMP.
-if ! grep -vE "^(bootout gui/[0-9]+/com\.paseo-slp\.slp-gc|bootstrap gui/[0-9]+ $TMP/.*/Library/LaunchAgents/com\.paseo-slp\.slp-gc\.plist)$" "$LAUNCHCTL_STUB_LOG" | grep -q .; then
-  ok "launchctl stub log shows only sandbox plist paths ($(wc -l < "$LAUNCHCTL_STUB_LOG" | tr -d ' ') calls); no install.sh run reached a real launchctl"
+# validate.sh's own install.sh runs all use a sandbox HOME, so the login-home guard skips launchd for
+# every one of them: the stub must have logged exactly 0 calls (the fixture uses its own stub).
+if [ ! -s "$LAUNCHCTL_STUB_LOG" ]; then
+  ok "launchctl stub log is empty: every sandbox install.sh run skipped launchd, none reached a real launchctl"
 else
-  fail "launchctl stub log holds a call that is not a sandbox bootout/bootstrap: $(tr '\n' ';' < "$LAUNCHCTL_STUB_LOG")"
+  fail "launchctl stub log should hold 0 calls but has: $(tr '\n' ';' < "$LAUNCHCTL_STUB_LOG")"
 fi
 if [ "$(command -v launchctl)" = "$LAUNCHCTL_STUB_DIR/launchctl" ] && [ "$SLP_LAUNCHCTL" = "$LAUNCHCTL_STUB_DIR/launchctl" ]; then
   ok "launchctl resolves to the stub on PATH and SLP_LAUNCHCTL is the stub"

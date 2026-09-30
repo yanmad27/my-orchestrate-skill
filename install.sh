@@ -72,6 +72,12 @@ fi
 if [ "$DO_GC" = 0 ] && [ "$((GC_APPLY + GC_KILL_STALE + GC_KILL_MEM + GC_REPORT_ONLY))" -gt 0 ]; then
   echo "--gc-apply, the --gc-kill flags and --gc-report-only need slp-gc to be installed (drop --no-gc / --skill-only)." >&2; exit 1
 fi
+# The config is read by tick and edited below: a symlink could redirect either. Refuse it before any
+# install step, so a refusal never leaves a partial install.
+if [ "$DO_GC" = 1 ] && [ -L "$ROOM_HOME/slp-gc.conf" ]; then
+  echo "$ROOM_HOME/slp-gc.conf is a symlink; refusing to read or edit it. Replace it with a regular file and re-run." >&2
+  exit 1
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -629,13 +635,17 @@ if [ "$DO_GC" = 1 ]; then
   GC_LOG="$GC_STATE/launchd.log"
   GC_PLIST="$HOME/Library/LaunchAgents/$GC_LABEL.plist"
 
-  # The config is read by tick and edited here: a symlink could redirect either, so refuse one.
-  if [ -L "$GC_CONF" ]; then
-    echo "$GC_CONF is a symlink; refusing to read or edit it. Replace it with a regular file and re-run." >&2
-    exit 1
-  fi
   mkdir -p "$ROOM_HOME/bin"
-  (umask 077 && mkdir -p "$GC_STATE") && chmod 700 "$GC_STATE"
+  # A state dir this run creates is private (0700); an existing one keeps its mode, with a warning
+  # when it is not yours or not 0700.
+  if [ -e "$GC_STATE" ]; then
+    GC_STATE_MODE="$(stat -c %a "$GC_STATE" 2>/dev/null || stat -f %Lp "$GC_STATE" 2>/dev/null || true)"
+    if [ ! -O "$GC_STATE" ] || [ "$GC_STATE_MODE" != 700 ]; then
+      echo "WARNING: slp-gc state dir $GC_STATE is not owned by you or not mode 0700 (mode ${GC_STATE_MODE:-unknown}); it holds process and memory reports. Left as is." >&2
+    fi
+  else
+    (umask 077 && mkdir -p "$GC_STATE") && chmod 700 "$GC_STATE"
+  fi
   # Atomic: a running tick never sees a half-written slp-gc.
   GC_TMP="$(mktemp "$ROOM_HOME/bin/.slp-gc.XXXXXX")"
   cp "$SRC/paseo/bin/slp-gc" "$GC_TMP"
@@ -744,6 +754,10 @@ CONF
     # (a test sandbox) never reaches launchd, even so: loading would replace the real agent with one
     # pointing at that HOME. An unresolvable login home loads only with SLP_LAUNCHCTL set.
     LAUNCHCTL=launchctl; GC_SKIP=""
+    # Production resolves the user and their home with fixed system tools; PATH lookups (the
+    # fixtures' stubs) are honoured only when SLP_LAUNCHCTL is set.
+    if [ -n "${SLP_LAUNCHCTL:-}" ]; then GC_ID=id; GC_DSCL=dscl; GC_GETENT=getent
+    else GC_ID=/usr/bin/id; GC_DSCL=/usr/bin/dscl; GC_GETENT=/usr/bin/getent; fi
     if [ -n "${SLP_LAUNCHCTL:-}" ]; then
       case "$SLP_LAUNCHCTL" in
         /*) if [ -f "$SLP_LAUNCHCTL" ] && [ -x "$SLP_LAUNCHCTL" ]; then LAUNCHCTL="$SLP_LAUNCHCTL"
@@ -752,11 +766,11 @@ CONF
       esac
     fi
     if [ -z "$GC_SKIP" ]; then
-      GC_USER="$(id -un 2>/dev/null || true)"
+      GC_USER="$("$GC_ID" -un 2>/dev/null || true)"
       LOGIN_HOME=""
       if [ -n "$GC_USER" ]; then
-        LOGIN_HOME="$(dscl . -read "/Users/$GC_USER" NFSHomeDirectory 2>/dev/null </dev/null | sed -n 's/^NFSHomeDirectory: //p' | head -1 || true)"
-        [ -n "$LOGIN_HOME" ] || LOGIN_HOME="$(getent passwd "$GC_USER" 2>/dev/null </dev/null | cut -d: -f6 || true)"
+        LOGIN_HOME="$("$GC_DSCL" . -read "/Users/$GC_USER" NFSHomeDirectory 2>/dev/null </dev/null | sed -n 's/^NFSHomeDirectory: //p' | head -1 || true)"
+        [ -n "$LOGIN_HOME" ] || LOGIN_HOME="$("$GC_GETENT" passwd "$GC_USER" 2>/dev/null </dev/null | cut -d: -f6 || true)"
       fi
       if [ -n "$LOGIN_HOME" ] && [ -d "$LOGIN_HOME" ]; then
         if [ "$(cd -P "$LOGIN_HOME" && pwd -P)" != "$(cd -P "$HOME" && pwd -P)" ]; then
@@ -774,7 +788,7 @@ CONF
       echo "  slp-gc is not running every 60 s. Load it from your own login: launchctl bootstrap gui/\$(id -u) $GC_PLIST" >&2
       GC_LAUNCHD_NOTE="NOT loaded ($GC_SKIP)"
     else
-      GC_DOMAIN="gui/$(id -u)"
+      GC_DOMAIN="gui/$("$GC_ID" -u)"
       "$LAUNCHCTL" bootout "$GC_DOMAIN/$GC_LABEL" </dev/null >/dev/null 2>&1 || true
       if "$LAUNCHCTL" bootstrap "$GC_DOMAIN" "$GC_PLIST" </dev/null; then
         GC_LOADED=1; GC_LAUNCHD_NOTE="loaded ($GC_LABEL, 'slp-gc tick' every 60 s)"
