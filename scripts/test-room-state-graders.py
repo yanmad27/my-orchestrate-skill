@@ -67,6 +67,10 @@ BLOCKS_BAD = [
     HDR + L2 + "🤖 docs · running\n" + P4 + "Peers: readme",
     HDR + L2 + "🤖 docs · running\n  Now: checking",
     HDR + CARD_A + "\n" + P4 + "◉ card",
+    "prefix " + HDR + CARD_A,
+    "**" + HDR + CARD_A,
+    "```text\n" + HDR + CARD_A,
+    "```\n" + HDR + CARD_A,
 ]
 TRAIL = "\n\nThat is the current state."
 BLANK_OK = HDR + CARD_A + "\n\n  \n\t\n"
