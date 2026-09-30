@@ -736,17 +736,6 @@ for f in SKILL.md PROTOCOL.md; do
   else
     ok "$ROOM_DIR/$f carries no old room-state form (├─, └─, |_, ↳, ⏳, ◉, Peers:)"
   fi
-  if python3 - "$ROOM_DIR/$f" <<'PY'
-import re, sys
-t = open(sys.argv[1], encoding="utf-8").read()
-ok = re.search(r"^🕒 Working\n-{3,}\n🤖 \S.* · .*\n(?:&\w+;)+🦾 \S.* · ", t, re.M)
-sys.exit(0 if ok and "\u2003" not in t else 1)
-PY
-  then
-    ok "$ROOM_DIR/$f shows the entity-indented 🤖/🦾 room-state tree and carries no raw U+2003"
-  else
-    fail "$ROOM_DIR/$f must show the entity-indented 🤖 Lead row with a 🦾 Peer row nested under it, and no raw U+2003"
-  fi
 done
 
 if python3 scripts/test-room-state-graders.py >"$TMP/graders.out" 2>&1; then

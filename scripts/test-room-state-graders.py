@@ -96,6 +96,9 @@ BLOCKS_BAD = [
     "```text\n" + HDR + CARD_A + "\n```",
     "```\n" + HDR + CARD_A + "\n```",
 ]
+for opener in ("```markdown", "````", "~~~", "~~~text", "```text", "   ```text", "```"):
+    BLOCKS_BAD.append(opener + "\n" + HDR + CARD_A)
+    BLOCKS_BAD.append("intro\n" + opener + "\r\n" + HDR + CARD_A)
 for w in WRONG_PEER_INDENTS:
     BLOCKS_BAD.append(HDR + "🤖 docs · running\n" + w + ROW)
     BLOCKS_BAD.append(HDR + CARD_A + "\n" + CARD_B.replace(PEER_INDENT, w))
@@ -196,10 +199,17 @@ EXPECT = {"🤖": LEAD, "🦾": PEER_INDENT}
 RAW_SPACES = re.compile("[\\u2002\\u2003]")
 
 
+SEP_LINE = SEPARATOR.strip("\n")
+
+
 def check_file(rel, text):
     check("consistency", not RAW_SPACES.search(text), f"{rel} has no raw U+2002/U+2003")
-    bad = sorted(set(re.findall(ENTITY, text)) - ALLOWED)
-    check("consistency", not bad, f"{rel} uses only the entities of PEER_INDENT (others: {bad})")
+    runs = sorted({r for r in re.findall(r"(?:&[A-Za-z0-9#]+;)+", text) if r != PEER_INDENT})
+    check("consistency", not runs, f"{rel} writes every entity run as PEER_INDENT (others: {runs})")
+    dashes = sorted({d for d in re.findall(r"`(-{3,})`", text) if d != SEP_LINE})
+    check("consistency", not dashes, f"{rel} writes every quoted dash line as SEPARATOR (others: {dashes})")
+    counts = sorted({n for n in re.findall(r"(\d+) dashes", text) if int(n) != len(SEP_LINE)})
+    check("consistency", not counts, f"{rel} states {len(SEP_LINE)} dashes wherever it gives a count (others: {counts})")
 
 
 for rel in DOCS:
@@ -209,6 +219,10 @@ for rel in DOCS:
     rows = re.findall(r"^((?:&[A-Za-z0-9#]+;)*)([🤖🦾]) ", text, re.M)
     wrong = [(p, m) for p, m in rows if p != EXPECT[m]]
     check("consistency", not wrong, f"{rel} tree rows use the constants (wrong: {wrong[:2]})")
+    heads = [m.end() for m in re.finditer(r"^" + TITLE + r"(?=\n)", text, re.M)]
+    check("consistency", all(text.startswith(SEPARATOR, h) for h in heads), f"{rel} follows every header row with SEPARATOR")
+    if rel.endswith(("PROTOCOL.md", "SKILL.md", "CONTRIBUTING.md")):
+        check("consistency", SEP_LINE in text, f"{rel} states the SEPARATOR line {SEP_LINE}")
     stray = re.findall(r"^[ \t ]+[🤖🦾] ", text, re.M)
     check("consistency", not stray, f"{rel} has no space-indented tree rows")
     if rel.endswith(("PROTOCOL.md", "SKILL.md")):
