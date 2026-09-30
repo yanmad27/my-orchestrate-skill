@@ -215,6 +215,7 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/slp-gc.XXXXXX")" || die "cannot create a temp di
 T0="$T"
 cleanup() {
   rm -rf "$T0"
+  if [ "${DLOCK_HELD:-0}" = 1 ] && [ -f "$DLOCKDIR/owner" ] && [ "$(cat "$DLOCKDIR/owner" 2>/dev/null)" = "$DLOCK_NONCE" ]; then rm -rf "$DLOCKDIR"; fi
   if [ "${LOCK_HELD:-0}" = 1 ] && [ -f "$LOCKDIR/owner" ] && [ "$(cat "$LOCKDIR/owner" 2>/dev/null)" = "$NONCE" ]; then rm -rf "$LOCKDIR"; fi
 }
 trap cleanup EXIT
@@ -1280,11 +1281,13 @@ shq() {  # quote for a shell command line only when needed; fails (rc 1) rather 
   esac
 }
 nctl() { printf '%s' "$1" | tr -d '\000-\037\177'; }
-utf8_ok() { printf '%s' "$1" | "$PERL" -e 'local $/; my $s = <STDIN>; exit(utf8::decode($s) ? 0 : 1)'; }
+utf8_ok() {   # valid UTF-8 without C1 controls (U+0080-9F, so U+0085) or the line/paragraph separators U+2028, U+2029
+  printf '%s' "$1" | "$PERL" -e 'local $/; my $s = <STDIN>; exit((utf8::decode($s) && $s !~ /[\x{80}-\x{9f}\x{2028}\x{2029}]/) ? 0 : 1)'
+}
 # stdin -> stdout, at most $1 bytes of valid UTF-8 with no control or line-separator characters; cut on a character boundary, ending "..."
 fit_text() {
   "$PERL" -e 'use Encode; binmode(STDIN); binmode(STDOUT); local $/; my $s = <STDIN>; my $n = shift;
-    my $d = Encode::decode("UTF-8", $s); $d =~ s/[\x00-\x1f\x7f\x{85}\x{2028}\x{2029}]//g; my $b = Encode::encode("UTF-8", $d);
+    my $d = Encode::decode("UTF-8", $s); $d =~ s/[\x00-\x1f\x7f-\x{9f}\x{2028}\x{2029}\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}\x{2066}-\x{2069}\x{FEFF}]//g; my $b = Encode::encode("UTF-8", $d);
     if (length($b) <= $n) { print $b; exit }
     my $k = $n >= 3 ? $n - 3 : $n; my $c = substr($b, 0, $k); my $q = Encode::decode("UTF-8", $c, Encode::FB_QUIET);
     print Encode::encode("UTF-8", $q), ($n >= 3 ? "..." : "")' "$1"
@@ -1310,24 +1313,24 @@ build_alert_msg() {
   line="$(printf '%s' "$2" | fit_text "$budget")" || { DELIVER_WHY="alert not sent: cannot fit the alert text"; return 1; }
   printf '%s%s%s\n' "$pre" "$line" "$post"
 }
-# ledger_mark <alertId> <id> <true|false>: set .ok of that row (atomic rewrite in the state dir)
-ledger_mark() {
+ledger_mark() {   # ledger_mark <rowId> <true|false>: set .ok of exactly that row (atomic rewrite in the state dir)
   local f="$STATE/deliveries.jsonl" TL
   [ -f "$f" ] && [ ! -L "$f" ] || return 1
   TL="$(mktemp "$STATE/deliveries.XXXXXX")" || return 1
-  if jq -R -c --arg a "$1" --arg i "$2" --argjson v "$3" 'fromjson? | select(type == "object") | if .alertId == $a and .id == $i then .ok = $v else . end' "$f" > "$TL" 2>/dev/null && mv -f "$TL" "$f"; then return 0; fi
-  return 1
+  if jq -R -c --arg r "$1" --argjson v "$2" 'fromjson? | select(type == "object") | if .rowId == $r then .ok = $v else . end' "$f" > "$TL" 2>/dev/null && mv -f "$TL" "$f"; then return 0; fi
+  rm -f "$TL"; return 1
 }
-# ledger_append <row json>: trim atomically to make room, then append; rc 1 unless the row is really in the file
+# ledger_append <row json> <rowId>: trim atomically to make room, then append; rc 1 unless the row is really in the file
 ledger_append() {
   local f="$STATE/deliveries.jsonl" TL n
   mkdir -p "$STATE" 2>/dev/null || return 1
   if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then return 1; fi
   if [ -f "$f" ]; then
     n="$(wc -l < "$f" 2>/dev/null | tr -d ' ')"; is_uint "$n" || return 1
+    if grep -qF "\"rowId\":\"$2\"" "$f" 2>/dev/null; then return 1; fi
     if [ "$n" -ge "$LEDGER_LINES" ]; then
       TL="$(mktemp "$STATE/deliveries.XXXXXX")" || return 1
-      tail -n $((LEDGER_LINES - 1)) "$f" > "$TL" 2>/dev/null && mv -f "$TL" "$f" || return 1
+      if ! { tail -n $((LEDGER_LINES - 1)) "$f" > "$TL" 2>/dev/null && mv -f "$TL" "$f"; }; then rm -f "$TL"; return 1; fi
     fi
   fi
   printf '%s\n' "$1" >> "$f" 2>/dev/null || return 1
@@ -1337,8 +1340,8 @@ ledger_append() {
 # rc 0 delivered; 3 nothing delivered on purpose (delivery off, no open Supervisor, pending permission);
 # 1 not delivered: send failed, or a precondition (CLI, perl, message, ledger row) failed so nothing was sent.
 # DELIVER_ID = the selected Supervisor, DELIVER_WHY = one log line.
-deliver_alert() {
-  local pick id pend prior pf rc sent row dead
+deliver_alert_locked() {
+  local pick id pend prior pf rc sent row dead rid
   DELIVER_ID=""; DELIVER_WHY=""
   [ "$ALERT_SUPERVISOR" = 1 ] || { DELIVER_WHY="delivery disabled (SLP_GC_ALERT_SUPERVISOR=0), alert not delivered"; return 3; }
   extract_agents light >/dev/null 2>&1 || true
@@ -1357,20 +1360,60 @@ deliver_alert() {
   chmod 600 "$pf"
   if ! build_alert_msg "$1" "$2" > "$pf"; then rm -f "$T0"/prompt.*; return 1; fi
   sent="$NOW"; [ -n "$(ovr "${SLP_GC_NOW:-}")" ] || sent="$(date +%s)"
+  ROW_SEQ=$(( ${ROW_SEQ:-0} + 1 )); rid="$$-$(date +%s)-$RANDOM$RANDOM-$ROW_SEQ"
   row="$(jq -nc --arg id "$id" --arg sentAt "$(date -u -r "$sent" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$sent" +%Y-%m-%dT%H:%M:%SZ)" --argjson prior "$prior" \
-      --arg alertId "$MSG_ALERT_ID" --argjson test "$([ "$1" = 1 ] && echo true || echo false)" \
-      '{id: $id, sentAt: $sentAt, priorLastUserMessageAt: $prior, alertId: $alertId, test: $test, ok: null}')" || { rm -f "$T0"/prompt.*; DELIVER_WHY="cannot build the delivery ledger row, alert not sent"; return 1; }
-  if ! ledger_append "$row"; then
+      --arg alertId "$MSG_ALERT_ID" --arg rowId "$rid" --argjson test "$([ "$1" = 1 ] && echo true || echo false)" \
+      '{id: $id, sentAt: $sentAt, priorLastUserMessageAt: $prior, alertId: $alertId, test: $test, ok: null, rowId: $rowId}')" || { rm -f "$T0"/prompt.*; DELIVER_WHY="cannot build the delivery ledger row, alert not sent"; return 1; }
+  if ! ledger_append "$row" "$rid"; then
     rm -f "$T0"/prompt.*; DELIVER_WHY="alert $MSG_ALERT_ID NOT sent to Supervisor $id: the delivery ledger $STATE/deliveries.jsonl cannot be written (symlink, unwritable or trim failed)"; return 1
   fi
   dead="$CLI_DEAD"   # a send timeout must not make the same tick's deletes believe the daemon is hung
   CLI_TO="$SEND_TIMEOUT" run_cli agent send --home "$PHOME" --no-wait --prompt-file "$pf" -- "$id"; rc=$?
   CLI_DEAD="$dead"
   rm -f "$T0"/prompt.*
-  if [ "$rc" = 0 ]; then ledger_mark "$MSG_ALERT_ID" "$id" true || true; DELIVER_WHY="alert $MSG_ALERT_ID delivered to Supervisor $id"; return 0; fi
+  if [ "$rc" = 0 ]; then ledger_mark "$rid" true || true; DELIVER_WHY="alert $MSG_ALERT_ID delivered to Supervisor $id"; return 0; fi
   if [ "$rc" = 2 ]; then DELIVER_WHY="alert $MSG_ALERT_ID NOT delivered to Supervisor $id: paseo agent send timed out after ${SEND_TIMEOUT}s"   # outcome unknown: the row keeps counting
-  else ledger_mark "$MSG_ALERT_ID" "$id" false || true; DELIVER_WHY="alert $MSG_ALERT_ID NOT delivered to Supervisor $id: paseo agent send failed: $CLI_OUT"; fi
+  else ledger_mark "$rid" false || true; DELIVER_WHY="alert $MSG_ALERT_ID NOT delivered to Supervisor $id: paseo agent send failed: $CLI_OUT"; fi
   return 1
+}
+# The delivery lock (separate from tick.lock, always taken inside it): one holder at a time covers pick -> ledger_append ->
+# send -> ledger_mark, so a standalone record, a tick and test-alert never rewrite the ledger under each other.
+# Same protocol as take_lock (owner = pid<TAB>lstart, a dead owner is taken over under a second mkdir-lock), bounded wait.
+dlock_take() {
+  local tries=0 nonce
+  DLOCKDIR="$STATE/delivery.lock"
+  nonce="$(printf '%s\t%s' "$$" "$(lstart_of $$)")"
+  while :; do
+    if mkdir "$DLOCKDIR" 2>/dev/null; then printf '%s\n' "$nonce" > "$DLOCKDIR/owner"; DLOCK_NONCE="$nonce"; DLOCK_HELD=1; return 0; fi
+    if ! lock_owner_live "$DLOCKDIR"; then
+      if mkdir "$DLOCKDIR.takeover" 2>/dev/null; then
+        if ! lock_owner_live "$DLOCKDIR"; then
+          rm -rf "$DLOCKDIR"
+          if mkdir "$DLOCKDIR" 2>/dev/null; then printf '%s\n' "$nonce" > "$DLOCKDIR/owner"; DLOCK_NONCE="$nonce"; DLOCK_HELD=1; rmdir "$DLOCKDIR.takeover"; return 0; fi
+        fi
+        rmdir "$DLOCKDIR.takeover"
+      else
+        local m; m="$(fmtime "$DLOCKDIR.takeover")"
+        if is_uint "$m" && [ $(( $(date +%s) - m )) -gt 120 ]; then rm -rf "$DLOCKDIR.takeover"; fi
+      fi
+    fi
+    tries=$((tries + 1)); [ "$tries" -lt 12 ] || return 1
+    sleep 0.25
+  done
+}
+dlock_release() {
+  if [ "${DLOCK_HELD:-0}" = 1 ] && [ -f "$DLOCKDIR/owner" ] && [ "$(cat "$DLOCKDIR/owner" 2>/dev/null)" = "$DLOCK_NONCE" ]; then rm -rf "$DLOCKDIR"; fi
+  DLOCK_HELD=0
+}
+deliver_alert() {
+  local rc
+  DELIVER_ID=""; DELIVER_WHY=""
+  [ "$ALERT_SUPERVISOR" = 1 ] || { DELIVER_WHY="delivery disabled (SLP_GC_ALERT_SUPERVISOR=0), alert not delivered"; return 3; }
+  mkdir -p "$STATE" 2>/dev/null
+  dlock_take || { DELIVER_WHY="delivery lock busy, not delivered"; return 1; }
+  deliver_alert_locked "$@"; rc=$?
+  dlock_release
+  return "$rc"
 }
 do_test_alert() {
   local rc text
@@ -1489,12 +1532,12 @@ read_config() {
 # serialised by a second mkdir-lock, and cleanup removes the lock only if the owner file is still ours.
 lstart_of() { /bin/ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
 lock_owner_live() {
-  local pid ls
-  if [ ! -f "$LOCKDIR/owner" ]; then   # being created right now: live unless it has sat there for a while
-    local m; m="$(fmtime "$LOCKDIR")"; is_uint "$m" || return 1
+  local pid ls d="${1:-$LOCKDIR}"   # [dir]: default the tick lock
+  if [ ! -f "$d/owner" ]; then   # being created right now: live unless it has sat there for a while
+    local m; m="$(fmtime "$d")"; is_uint "$m" || return 1
     [ $(( $(date +%s) - m )) -lt 60 ]; return
   fi
-  IFS=$'\t' read -r pid ls < "$LOCKDIR/owner" || return 1
+  IFS=$'\t' read -r pid ls < "$d/owner" || return 1
   is_uint "$pid" && kill -0 "$pid" 2>/dev/null && [ "$(lstart_of "$pid")" = "$ls" ]
 }
 take_lock() {

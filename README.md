@@ -445,6 +445,10 @@ is one line in `tick.log` and never changes the exit status or blocks the other 
   is sent (no fallback to another Supervisor) and `tick.log` says so. Residual risk:
   the record is read a moment before the send, so a permission raised in between is
   still cleared; Supervisors run in `bypassPermissions` mode, so this is rare.
+- *One delivery at a time.* Pick, ledger append, send and the ok-marking of the row (each row has a
+  unique `rowId`) run under a separate `delivery.lock` in the state dir (dead owners are taken over, the wait
+  is a few seconds). If it is busy nothing is sent ("delivery lock busy, not delivered"), and the alert, the
+  notification and the exit status are unaffected. It is taken inside the tick lock, never the other way round.
 - *Undelivered alerts.* An alert that is not delivered (no open Supervisor,
   pending permission, a failure) still uses the 15-minute window: by contract there
   is no retry, the next chance is the next alert after the window.
