@@ -270,7 +270,7 @@ case "$1 $2" in
   "agent send")   # agent send --home <dir> --no-wait --prompt-file <file> -- <uuid>: logs one arg per line, the prompt file mode and text
     [ "$3" = --home ] && [ "$5" = --no-wait ] && [ "$6" = --prompt-file ] && [ "$8" = -- ] && [ "$#" = 9 ] || { echo "bad argv: $*" >&2; exit 2; }
     { echo "SEND"; for a in "$@"; do echo "ARG:$a"; done; echo "END"; } >> "$SLPGC_LOGS/send-argv.log"
-    m="$(stat -f %Lp "$7" 2>/dev/null || stat -c %a "$7" 2>/dev/null)"; echo "$m $7" >> "$SLPGC_LOGS/send-file.log"
+    m="$(stat -c %a "$7" 2>/dev/null || stat -f %Lp "$7" 2>/dev/null)"; echo "$m $7" >> "$SLPGC_LOGS/send-file.log"
     { echo "=== to $9"; cat "$7"; } >> "$SLPGC_LOGS/send-msgs.log"
     [ -z "$SLPGC_SEND_HANG" ] || exec sleep 30
     [ -z "$SLPGC_SEND_FAIL" ] || { echo "send refused" >&2; exit 1; }
@@ -293,7 +293,7 @@ A_INVOKER2=$A_INVOKER
 
 # a Supervisor-ish record for the delivery tests: fx_sup <id> <provider> <MISSING (no key, the live open shape)|null|false|0|7|ISO> <lastUserMessageAt|null> <lastActivityAt> [attentionReason]
 fx_sup() {
-  local id="$1" prov="$2" arch="$3" lum="$4" lact="$5" att="${6:-null}"
+  local id="$1" prov="$2" arch="$3" lum="$4" att="${6:-null}"
   local archkv;
   case "$arch" in MISSING) archkv="" ;; false) archkv='"archivedAt":false,' ;; 0|7) archkv="\"archivedAt\":$arch,";; null) archkv='"archivedAt":null,' ;; *) archkv="\"archivedAt\":\"$arch\"," ;; esac
   [ "$lum" = null ] || lum="\"$lum\""; [ "$att" = null ] || att="\"$att\""

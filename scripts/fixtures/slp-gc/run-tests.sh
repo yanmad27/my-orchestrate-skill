@@ -158,6 +158,7 @@ fx_gc_canary report --apply --kill-stale-processes --kill-over-memory > "$WORK/c
 check "C6 canary: an alerting record/tick ran (alerts.log written) yet the logging osascript on PATH never ran" bash -c "test -s '$FX_STATE/alerts.log' && test '$(logn osascript.log)' = 0"
 check "C6 canary: an --apply attempt with the kill flags ran the PATH paseo and kill zero times" bash -c "test '$(logn paseo.log)' = 0 && test '$(logn kill.log)' = 0"
 fresh; printf '#!/bin/sh\necho "$*" >> "$SLPGC_LOGS/paseo-ambient.log"\n' > "$FX_BIN/paseo-ambient"; chmod +x "$FX_BIN/paseo-ambient"
+# shellcheck disable=SC2034  # read by the sourced sandbox.sh (fx_canary)
 FX_CANARY_PASEO_CLI="$FX_BIN/paseo-ambient"
 fx_gc_canary record > "$WORK/c6d.txt" 2>&1
 fx_gc_canary tick > "$WORK/c6e.txt" 2>&1
@@ -567,7 +568,7 @@ check "C3: line 2 is the From line; then the Alert (the alerts.log line), Home, 
 check "C3: the message holds no other process's command line or environment (no FAKE-/stream-json/mcp-config tokens)" bash -c "! grep -qE 'FAKE-|stream-json|mcp-config|output-format' '$WORK/d1.msg'"
 check "C2: the prompt file is 0600 while it exists and is gone after the run" bash -c "test \"\$(cut -d' ' -f1 '$FX_LOGS/send-file.log')\" = 600 && ! test -e \"\$(cut -d' ' -f2- '$FX_LOGS/send-file.log')\""
 check "the tick log records the delivery" grep -q "delivered to Supervisor $S_NEW" "$FX_STATE/tick.log"
-check "C7: the ledger holds one entry {id, sentAt, priorLastUserMessageAt (the recipient's lastUserMessageAt), alertId, test:false}, mode 0600" bash -c "test \$(wc -l < '$FX_STATE/deliveries.jsonl') = 1 && jq -e --arg id '$S_NEW' --arg p \"\$(jq -r .lastUserMessageAt '$SEND_BEFORE_ID')\" '.id == \$id and .priorLastUserMessageAt == \$p and .test == false and (.sentAt | test(\"Z\$\")) and (.alertId | test(\"^[0-9]{8}T[0-9]{6}Z\$\"))' '$FX_STATE/deliveries.jsonl' >/dev/null && test \"\$(stat -f %Lp '$FX_STATE/deliveries.jsonl' 2>/dev/null || stat -c %a '$FX_STATE/deliveries.jsonl')\" = 600"
+check "C7: the ledger holds one entry {id, sentAt, priorLastUserMessageAt (the recipient's lastUserMessageAt), alertId, test:false}, mode 0600" bash -c "test \$(wc -l < '$FX_STATE/deliveries.jsonl') = 1 && jq -e --arg id '$S_NEW' --arg p \"\$(jq -r .lastUserMessageAt '$SEND_BEFORE_ID')\" '.id == \$id and .priorLastUserMessageAt == \$p and .test == false and (.sentAt | test(\"Z\$\")) and (.alertId | test(\"^[0-9]{8}T[0-9]{6}Z\$\"))' '$FX_STATE/deliveries.jsonl' >/dev/null && test \"\$(stat -c %a '$FX_STATE/deliveries.jsonl' 2>/dev/null || stat -f %Lp '$FX_STATE/deliveries.jsonl')\" = 600"
 fx_gc record >/dev/null 2>&1
 check "rate limit: a second record within 15 min sends nothing more (still one send, one alert, one notification)" bash -c "test '$(nsend)' = 1 && test \$(wc -l < '$FX_STATE/alerts.log') = 1 && test \$(wc -l < '$FX_LOGS/osascript.log') = 1"
 
@@ -628,11 +629,11 @@ fx_gc record >/dev/null 2>&1
 check "C7: the ledger stays bounded (250 lines + 1 new => the last 200) and keeps the newest entry" bash -c "test \$(wc -l < '$FX_STATE/deliveries.jsonl') = 200 && tail -n 1 '$FX_STATE/deliveries.jsonl' | jq -e --arg id '$S_NEW' '.id == \$id' >/dev/null"
 
 # C5: test-alert
-fresh; sups; mkdir -p "$FX_STATE"; echo 12345 > "$FX_STATE/.alert-stamp"; touch -t 202001010000 "$FX_STATE/.alert-stamp"; STAMP_BEFORE="$(cat "$FX_STATE/.alert-stamp") $(stat -f %m "$FX_STATE/.alert-stamp" 2>/dev/null || stat -c %Y "$FX_STATE/.alert-stamp")"
+fresh; sups; mkdir -p "$FX_STATE"; echo 12345 > "$FX_STATE/.alert-stamp"; touch -t 202001010000 "$FX_STATE/.alert-stamp"; STAMP_BEFORE="$(cat "$FX_STATE/.alert-stamp") $(stat -c %Y "$FX_STATE/.alert-stamp" 2>/dev/null || stat -f %m "$FX_STATE/.alert-stamp")"
 fx_gc test-alert > "$WORK/ta.out" 2> "$WORK/ta.err"; rc=$?; first_msg > "$WORK/ta.msg"; keep "$WORK/ta.msg" t2b-sample-test-message.txt
 check "C5 test-alert: exit 0, prints the selected Supervisor id, exactly one send to it" bash -c "test '$rc' = 0 && test \"\$(cat '$WORK/ta.out')\" = '$S_NEW' && test '$(nsend)' = 1 && test '$(send_to)' = '$S_NEW '"
 check "C5 test-alert: first line 'SLP-GC ALERT (TEST) <id>', the From line, and the TEST ONLY line" bash -c "head -n 1 '$WORK/ta.msg' | grep -qE '^SLP-GC ALERT \(TEST\) [0-9]{8}T[0-9]{6}Z\$' && sed -n 2p '$WORK/ta.msg' | grep -qx 'From: slp-gc (automated message, not the person)' && grep -qF 'TEST ONLY' '$WORK/ta.msg' && test \$(wc -c < '$WORK/ta.msg') -le 2048"
-check "C5 test-alert: writes no alerts.log line, leaves .alert-stamp untouched, no notification, no kill" bash -c "test ! -e '$FX_STATE/alerts.log' && test \"\$(cat '$FX_STATE/.alert-stamp') \$(stat -f %m '$FX_STATE/.alert-stamp' 2>/dev/null || stat -c %Y '$FX_STATE/.alert-stamp')\" = '$STAMP_BEFORE' && test '$(logn osascript.log)' = 0 && test '$(logn kill.log)' = 0"
+check "C5 test-alert: writes no alerts.log line, leaves .alert-stamp untouched, no notification, no kill" bash -c "test ! -e '$FX_STATE/alerts.log' && test \"\$(cat '$FX_STATE/.alert-stamp') \$(stat -c %Y '$FX_STATE/.alert-stamp' 2>/dev/null || stat -f %m '$FX_STATE/.alert-stamp')\" = '$STAMP_BEFORE' && test '$(logn osascript.log)' = 0 && test '$(logn kill.log)' = 0"
 check "C5/C7 test-alert: writes a ledger entry with test:true" bash -c "test \$(wc -l < '$FX_STATE/deliveries.jsonl') = 1 && jq -e --arg id '$S_NEW' '.id == \$id and .test == true' '$FX_STATE/deliveries.jsonl' >/dev/null"
 fresh; fx_gc test-alert > "$WORK/ta2.out" 2>&1; rc=$?
 check "C5 test-alert: no open Supervisor => exit 3, nothing sent" test "$rc" = 3 -a "$(nsend)" = 0 -a "$(logn paseo.log)" = 0

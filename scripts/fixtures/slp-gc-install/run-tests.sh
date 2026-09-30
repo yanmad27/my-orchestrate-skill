@@ -59,6 +59,7 @@ chmod +x "$stubs"/*
 # fixture agent ids (aaaaaaaa-0000-4000-8000-* / bbbbbbbb-0000-4000-8000-*, never a real random uuid).
 AGENT_STATE_NAMES=(.alert-stamp .last-report '.lineage.*' actions.log alerts.log 'deliveries.*' 'delivery.lock*'
                    launchd.log lineage.tsv memory.jsonl reports tick.lock tick.log)
+# shellcheck disable=SC2254  # the AGENT_STATE_NAMES entries are intentional glob patterns
 agent_state_name() { local n; for n in "${AGENT_STATE_NAMES[@]}"; do case "$1" in $n) return 0 ;; esac; done; return 1; }
 snap_real() {
   {
