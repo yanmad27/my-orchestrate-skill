@@ -228,7 +228,8 @@ S
 case "$*" in
   *"-d cwd"*) [ -z "$SLPGC_TRACE" ] || echo "$*" >> "$SLPGC_LOGS/lsof-cwd.log"; p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
               [ -f "$SLPGC_FIX/cwd.$p" ] && { echo "p$p"; echo fcwd; echo "n$(cat "$SLPGC_FIX/cwd.$p")"; }; exit 0 ;;
-  *"-F fan"*) [ -z "$SLPGC_TRACE" ] || echo "$*" >> "$SLPGC_LOGS/lsof-fan.log"; p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
+  *"-F fan"*) [ ! -x "$SLPGC_FIX/fan-hook.sh" ] || "$SLPGC_FIX/fan-hook.sh"
+              [ -z "$SLPGC_TRACE" ] || echo "$*" >> "$SLPGC_LOGS/lsof-fan.log"; p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
               [ -f "$SLPGC_FIX/supfiles.$p" ] && { echo "p$p"; cat "$SLPGC_FIX/supfiles.$p"; }; exit 0 ;;
   *"-d txt"*) p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
               [ -f "$SLPGC_FIX/txt.$p" ] && { echo "p$p"; echo ftxt; echo "n$(cat "$SLPGC_FIX/txt.$p")"; }; exit 0 ;;

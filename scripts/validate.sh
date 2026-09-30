@@ -862,20 +862,12 @@ else
   ok "slp-gc sandbox tests passed ($(grep -c '^ok: ' "$SG_OUT") checks)"
 fi
 
-# C6 guard: every fixture invocation of slp-gc goes through a sandboxed wrapper (marker "# slpgc-sandboxed"),
-# and each marked line sits below an env block that sets SLP_GC_TEST=1 and a sandbox HOME.
-SG_GUARD_BAD=""
-for f in scripts/fixtures/slp-gc/run-tests.sh scripts/fixtures/slp-gc/sandbox.sh scripts/fixtures/slp-gc-install/run-tests.sh; do
-  while IFS=: read -r n line; do
-    case "$line" in *"# slpgc-sandboxed"*) ;; *) SG_GUARD_BAD="$SG_GUARD_BAD $f:$n"; continue ;; esac
-    start=$((n > 12 ? n - 12 : 1))
-    sed -n "${start},${n}p" "$f" | grep -q 'SLP_GC_TEST=1' && sed -n "${start},${n}p" "$f" | grep -q 'HOME="\$' || SG_GUARD_BAD="$SG_GUARD_BAD $f:$n(no SLP_GC_TEST=1/HOME)"
-  done < <(grep -nE '["'"'"']?\$\{?(GC|FX_GC|BIN)\}?["'"'"']?[[:space:]]+(tick|record|report|test-alert|--[a-z]+|"\$@")|[^[:space:]]*paseo/bin/slp-gc[[:space:]]+(tick|record|report|test-alert|--[a-z]+)' "$f" | grep -vE '^[0-9]+:[[:space:]]*#')
-done
-if [ -z "$SG_GUARD_BAD" ]; then
+# C6 guard: every execution of the slp-gc binary in the fixtures (whatever the arguments) goes through a
+# wrapper marked "# slpgc-sandboxed" whose env block sets SLP_GC_TEST=1 and a sandbox HOME.
+if SG_GUARD_BAD="$(perl scripts/fixtures/slp-gc/check-sandboxed.pl scripts/fixtures/slp-gc/run-tests.sh scripts/fixtures/slp-gc/sandbox.sh scripts/fixtures/slp-gc-install/run-tests.sh)"; then
   ok "every slp-gc fixture invocation runs through a sandboxed wrapper with SLP_GC_TEST=1 (C6)"
 else
-  fail "slp-gc fixture invoked outside the sandbox path (C6):$SG_GUARD_BAD"
+  fail "slp-gc fixture invoked outside the sandbox path (C6): $(printf '%s' "$SG_GUARD_BAD" | tr '\n' ' ')"
 fi
 
 # --- slp-gc install: plist, config opt-ins, --gc-only (sandbox HOME, stub launchctl) -------------

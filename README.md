@@ -421,7 +421,8 @@ environment is unreadable, slp-gc accepts its home binding only if it holds
 
 **Test mode.** With `SLP_GC_TEST=1` (fixtures only) an unset notifier, `paseo`
 CLI or `kill` override falls back to an inert no-op — never `osascript`, `PATH`,
-the Paseo.app bundle or a real signal — and `scripts/validate.sh` fails if a
+the ambient `PASEO_CLI`, the Paseo.app bundle, a real `kill` binary or a terminating
+signal (a signal-0 liveness probe, which terminates nothing, is still allowed) — and `scripts/validate.sh` fails if a
 fixture runs slp-gc outside the sandboxed wrappers.
 
 **Output** lands in `~/Library/Logs/slp-gc` (`SLP_GC_STATE_DIR` overrides):

@@ -25,6 +25,8 @@ SYSCTL="$(probe "$(ovr "${SLP_GC_SYSCTL:-}")" /usr/sbin/sysctl sysctl)"
 LSOF="$(probe "$(ovr "${SLP_GC_LSOF:-}")" /usr/sbin/lsof lsof)"
 # Test isolation: under SLP_GC_TEST=1 the notifier, the paseo CLI and kill never resolve to the real
 # thing; an unset override falls back to an inert no-op (never /usr/bin/osascript, PATH, Paseo.app, kill).
+# Meaning: no terminating signal and no real kill binary are reachable. The builtin `kill -0` liveness
+# probes (signal 0, terminates nothing) are allowed and deliberately bypass $KILL.
 INERT=/usr/bin/true; [ -x "$INERT" ] || INERT=/bin/true
 if [ "${SLP_GC_TEST:-}" = 1 ]; then
   OSASCRIPT="$(ovr "${SLP_GC_OSASCRIPT:-}")"; [ -n "$OSASCRIPT" ] || OSASCRIPT="$INERT"
@@ -331,12 +333,13 @@ def agentfam: . == "claude-child" or . == "codex-child" or . == "slp-wait" or . 
 | ($procs | map(select(.class == "supervisor" and $pf != null and .pid == $pf.pid)) | .[0]) as $sup
 | ($procs | map(select(.class == "app-main")) | map(.pid)) as $apps
 | ($procs | map(select(.class == "daemon" and $sup != null and .ppid == $sup.pid))) as $daemons
+| (($supLsof | rtrimstr("\n") | split("\t")) as $sl | ($sl | length) == 2 and $sl[1] == "match" and $sup != null and $sl[0] == ($sup.pid | tostring)) as $lsofOk
 | {pidFile: ($pf != null), supervisor: ($sup != null and (($apps | index($sup.ppid)) != null)),
    daemon: (($daemons | length) == 1), listener: ($daemons | length == 1 and ($listen | index($daemons[0].pid)) != null),
    supervisorPid: ($sup.pid? // null), daemonPid: (if ($daemons | length) == 1 then $daemons[0].pid else null end),
    appPid: (if $sup != null then $sup.ppid else null end),
-   supHome: (($sup.home? // "unreadable") as $h | if $h == "unreadable" and ($supLsof | rtrimstr("\n")) == "match" then "match" else $h end),
-   supHomeSource: (if ($sup.home? // "unreadable") != "unreadable" then "env" elif ($supLsof | rtrimstr("\n")) == "match" then "lsof" else "none" end),
+   supHome: (($sup.home? // "unreadable") as $h | if $h == "unreadable" and $lsofOk then "match" else $h end),
+   supHomeSource: (if ($sup.home? // "unreadable") != "unreadable" then "env" elif $lsofOk then "lsof" else "none" end),
    listen: ($pf.listen? // null)} as $idt0
 | ($idt0 + {homeBound: (($idt0.supHome == "match") or (($idt0.supHome == "none") and $homeDefault))}) as $idt1
 | ($idt1 + {ok: ($dupes == 0 and $idt1.pidFile and $idt1.supervisor and $idt1.daemon and $idt1.listener and $idt1.homeBound),
@@ -613,18 +616,18 @@ collect_env() {
 # The Paseo Supervisor rewrites its process title and shows no environment. Its home binding is then
 # proven by the daemon.log it holds open for writing: match = every writable */daemon.log is this home's,
 # other = a writable daemon.log of another home (also when both, ambiguous), none = no entry / unreadable.
-# Only asked when the paseo.pid process exists and its env was not readable.
+# Only asked when the paseo.pid process exists and its env was not readable. $1 = the pid taken from the
+# ONE paseo.pid snapshot of this evaluation; the answer is "<pid><TAB><result>" so it can only ever bind to that pid.
 sup_lsof_home() {
-  local sp phys r=none
-  sp="$(jq -r 'if type == "object" and (.pid | type) == "number" then .pid else empty end' "$PHOME/paseo.pid" 2>/dev/null)"
-  is_uint "$sp" || { echo none; return 0; }
-  awk -F'\t' -v p="$sp" '$1 == p && $4 == 1 { f = 1 } END { exit !f }' "$T/env.txt" && { echo none; return 0; }
+  local sp="$1" phys r
+  is_uint "$sp" || return 0
+  awk -F'\t' -v p="$sp" '$1 == p && $4 == 1 { f = 1 } END { exit !f }' "$T/env.txt" && return 0
   phys="$(cd -P "$PHOME" 2>/dev/null && pwd)"
   r="$(run_to 10 "$LSOF" -w -nP -p "$sp" -F fan 2>/dev/null | awk -v h1="$PHOME/daemon.log" -v h2="${phys:-$PHOME}/daemon.log" '
     /^a/ { w = ($0 ~ /^a[wu]/) }
     /^n/ { n = substr($0, 2); if (w && n ~ /\/daemon\.log$/) { if (n == h1 || n == h2) m = 1; else o = 1 } }
     END { print (o ? "other" : (m ? "match" : "none")) }')"
-  echo "${r:-none}"
+  printf '%s\t%s\n' "$sp" "${r:-none}"
 }
 top_parse() {  # top output on stdin -> "pid mem_mb cmprs_mb" (values like 63M, 512K, 2G, 7M+)
   awk '
@@ -794,12 +797,12 @@ collect_procs() {  # $1 = 1: use the agents index for owner states
   [ -z "$p2" ] || pids="${pids:+$pids,}$p2"
   pids="$(printf '%s' "$pids" | tr ',' '\n' | awk 'NF && !seen[$0]++' | paste -sd, -)"
   collect_env "$pids" > "$T/env.txt" || true
-  sup_lsof_home > "$T/suplsof.txt"
-  load_ledger
-  collect_top > "$T/top.txt" || true
-  pidfile=null
+  pidfile=null   # the single paseo.pid snapshot: the lsof proof and the identification below both use it
   if [ -f "$PHOME/paseo.pid" ] && [ ! -L "$PHOME/paseo.pid" ]; then pidfile="$(jq -c '.' "$PHOME/paseo.pid" 2>/dev/null || echo null)"; fi
   [ -n "$pidfile" ] || pidfile=null
+  sup_lsof_home "$(printf '%s' "$pidfile" | jq -r 'if type == "object" and (.pid | type) == "number" then .pid else empty end' 2>/dev/null)" > "$T/suplsof.txt"
+  load_ledger
+  collect_top > "$T/top.txt" || true
   listen="$(printf '%s' "$pidfile" | jq -r 'if type == "object" then (.listen // "") else "" end' 2>/dev/null)"
   collect_listen "$listen" > "$T/listen.json"
   if [ "$1" = 1 ]; then cp "$T/agents.json" "$T/agents.idx"; else echo '[]' > "$T/agents.idx"; fi

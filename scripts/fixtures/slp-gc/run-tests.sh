@@ -142,6 +142,14 @@ fresh; sup_files /elsewhere/.paseo/daemon.log
 fx_gc report > "$WORK/lsof6.txt" 2>&1
 check "ident/lsof: a readable env is authoritative (lsof is not consulted: identification ok via env even with another home's daemon.log listed)" grep -q 'identification: ok (Supervisor 110, home via env' "$WORK/lsof6.txt"
 
+# the lsof proof binds to the paseo.pid snapshot of ONE evaluation: paseo.pid is decoy 999 (lsof says "match" for
+# it), and the lsof stub rewrites paseo.pid to the real Supervisor 110 (env unreadable, no lsof proof) mid-run
+fresh; del_line 110; printf 'f21\naw\nn%s\n' "$RP/daemon.log" > "$FX_FIX/supfiles.999"
+cp "$FX_PHOME/paseo.pid" "$FX_FIX/paseo.pid.real"; jq -c '.pid = 999' "$FX_FIX/paseo.pid.real" > "$FX_PHOME/paseo.pid"
+printf '#!/bin/sh\ncp "%s" "%s"\n' "$FX_FIX/paseo.pid.real" "$FX_PHOME/paseo.pid" > "$FX_FIX/fan-hook.sh"; chmod +x "$FX_FIX/fan-hook.sh"
+fx_gc report --apply > "$WORK/lsof7.txt" 2>&1; rc=$?
+check "ident/lsof: paseo.pid changing between the lsof probe and the assembly fails closed (no 'home via lsof', refused, exit 3)" bash -c "test '$rc' = 3 -a '$(logn paseo.log)' = 0 && grep -q 'identification: FAILED' '$WORK/lsof7.txt' && ! grep -q 'home via lsof' '$WORK/lsof7.txt' && cmp -s '$FX_FIX/paseo.pid.real' '$FX_PHOME/paseo.pid'"
+
 # C6: test isolation. Overrides for notifier/CLI/kill unset + logging osascript/paseo/kill first on PATH: none runs
 fresh; : > "$FX_LOGS/osascript.log"
 fx_gc_canary record > "$WORK/c6a.txt" 2>&1
@@ -251,7 +259,8 @@ check "L4: duplicate pid rows in the ps output fail identification and refuse --
 fresh; FX_EXTRA_ENV="SLP_GC_CLI_TIMEOUT=abc SLP_GC_MEM_WARN_MB=0800" fx_gc report > "$WORK/num.txt" 2>&1; rc=$?
 check "L7/L13: an invalid SLP_GC_CLI_TIMEOUT falls back (exit 0); 0800 is read as decimal 800" bash -c "test '$rc' = 0 && grep -q 'warn >= 800 MB' '$WORK/num.txt'"
 check "L2: uuid validation is newline-safe (a trailing newline or CR fails)" bash -c "eval \"\$(grep -E '^(UUID_RE|uuid_ok)' '$GC')\"; uuid_ok $A_GC1 && ! uuid_ok \"$A_GC1\$'\\n'\" && ! uuid_ok \"$A_GC1\$'\\r'\" && ! uuid_ok 'x'"
-check "the bundle subcommand is gone: 'slp-gc bundle' is a usage error (exit 2) and no bundle code remains" bash -c "'$GC' bundle >/dev/null 2>&1; test \$? = 2 && ! grep -qiE 'do_bundle|tar -c|--since|REDACT_PL|DiagnosticReports' '$GC'"
+fresh; fx_gc bundle >/dev/null 2>&1; rc=$?
+check "the bundle subcommand is gone: 'slp-gc bundle' is a usage error (exit 2) and no bundle code remains" bash -c "test '$rc' = 2 && ! grep -qiE 'do_bundle|tar -c|--since|REDACT_PL|DiagnosticReports' '$GC'"
 
 # ====================================================================================================
 # B1b: inspect proof, lineage ledger, orphaned agent descendants, memory guard, concurrency, heartbeats
