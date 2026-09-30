@@ -17,6 +17,8 @@ A_INFLIGHT=aaaaaaaa-0000-4000-8000-000000000026  # archived 30 d, referenced by 
 A_CLOSEDU=aaaaaaaa-0000-4000-8000-000000000027   # closed but not archived
 A_STALE=aaaaaaaa-0000-4000-8000-000000000028      # archived 30 d, owner of an old claude child (pid 121)
 A_MISSING=aaaaaaaa-0000-4000-8000-0000000000ff   # no record on disk
+A_NOINT=aaaaaaaa-0000-4000-8000-000000000029      # archived 30 d but the record has no internal key (strict: skipped)
+A_NLREF=aaaaaaaa-0000-4000-8000-00000000002a     # archived 30 d, named only by a malformed file whose name has a newline
 FAKE_CFG_TOKEN=FAKE-CFG-TOKEN-1234567890
 FAKE_ENV_TOKEN=FAKE-ENV-TOKEN-abcdefghij
 FAKE_LOG_TOKEN=FAKE-LOG-TOKEN-9999999999
@@ -24,13 +26,14 @@ FAKE_LOG_TOKEN=FAKE-LOG-TOKEN-9999999999
 fx_iso() { date -u -r $((FX_NOW - $1)) +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$((FX_NOW - $1))" +%Y-%m-%dT%H:%M:%S.000Z; }
 
 fx_agent() {  # dir id status archivedDaysAgo|- provider [parentId]
-  local dir="$1" id="$2" st="$3" ad="$4" prov="$5" parent="${6:-}" arch=null labels='{}'
+  local dir="$1" id="$2" st="$3" ad="$4" prov="$5" parent="${6:-}" noint="${7:-}" arch=null labels='{}' intr='"internal":false,'
   [ "$ad" = - ] || arch="\"$(fx_iso $((ad * 86400)))\""
   [ -z "$parent" ] || labels="{\"paseo.parent-agent-id\":\"$parent\"}"
+  [ -z "$noint" ] || intr=""
   mkdir -p "$dir"
   cat > "$dir/$id.json" <<J
 {"id":"$id","provider":"$prov","cwd":"/tmp/fx","createdAt":"$(fx_iso 4000000)","updatedAt":"$(fx_iso 100)","lastStatus":"$st",
- "title":"SECRET-PROMPT-TITLE","labels":$labels,"internal":false,"archivedAt":$arch,"runtimeInfo":{"sessionId":"sess-$id"}}
+ "title":"SECRET-PROMPT-TITLE","labels":$labels,$intr"archivedAt":$arch,"runtimeInfo":{"sessionId":"sess-$id"}}
 J
 }
 fx_sched() {  # dir id status target updatedAgo lastRunAgo|- room(0/1) runs
@@ -73,6 +76,11 @@ slug" "$A_GC2" closed 20 claude
   fx_agent "$P/agents/slug-a" "$A_INFLIGHT" closed 30 claude
   fx_agent "$P/agents/slug-a" "$A_CLOSEDU" closed - claude
   fx_agent "$P/agents/slug-a" "$A_STALE" closed 30 claude
+  fx_agent "$P/agents/slug-a" "$A_NOINT" closed 30 claude "" noint
+  fx_agent "$P/agents/slug-a" "$A_NLREF" closed 30 claude
+  printf '{not json, mentions %s\n' "$A_NLREF" > "$P/agents/odd
+slug/bad
+name.json"
   printf '{not json\n' > "$P/agents/slug-a/bad.json"
   ln -s "$A_GC1.json" "$P/agents/slug-a/link.json"
   mkdir -p "$P/schedules"
@@ -80,9 +88,12 @@ slug" "$A_GC2" closed 20 claude
   fx_sched "$P/schedules" 0000000b completed "$A_MISSING" 432000 259200      # garbage (target absent)
   fx_sched "$P/schedules" 0000000c active "$A_LIVE" 60 60 1 50               # protected: live target
   fx_sched "$P/schedules" 0000000d completed "$A_GC2" 600 900                # too young
+  perl -pi -e 's/"supervisor: room"/"supervisor: \\u001b[31mred"/' "$P/schedules/0000000d.json"
   fx_sched "$P/schedules" 0000000e active "$A_YOUNG" 7200 7200              # anomaly, report only
   fx_sched "$P/schedules" 0000000f completed "$A_LIVE" 432000 259200         # completed but target live
   printf '{"id": ' > "$P/schedules/00000010.json"
+  fx_sched "$P/schedules" 00000011 completed "$A_MISSING" 432000 259200
+  sed -i.b 's/"lastRunAt":[^,]*,//' "$P/schedules/00000011.json"; rm -f "$P/schedules/00000011.json.b"
   ln -s 0000000a.json "$P/schedules/lnk00000.json"
   mkdir -p "$P/creations"
   printf '{"fingerprint":"f","inFlight":{"x":1},"snapshot":{"phase":"running","agentId":"%s"}}\n' "$A_INFLIGHT" > "$P/creations/c1.json"
@@ -131,21 +142,24 @@ slug" "$A_GC2" closed 20 claude
     fx_psrow 170 1 03:00:00 200000 "$L2" "$CL"
     fx_psrow 180 111 01:30:00 200000 "$L2" "$CL"
     fx_psrow 190 1 04:00:00 1000 "$L2" "$CL"
+    fx_psrow 195 999 03:00:00 200000 "$L2" "$CL"
+    fx_psrow 200 1 05:00:00 900000 "$L1" "/Applications/Paseo.app/Contents/MacOS/Paseo"
+    fx_psrow 201 200 05:00:00 900000 "$L1" "$HP --type=gpu-process"
     printf 'garbage row that is not a ps row\n'
   } > "$F/ps.txt"
   sed 's/^\(   125 .*\)Wed Sep 30 09:00:00 2026/\1Wed Sep 30 09:59:59 2026/' "$F/ps.txt" > "$F/ps.recheck"
   local ID="PASEO_HOME=$P"
   {
-    echo "  100 /Applications/Paseo.app/Contents/MacOS/Paseo HOME=/Users/x SECRET_KEY=$FAKE_ENV_TOKEN"
-    echo "  110 Paseo Supervisor $ID"
-    echo "  111 Paseo Daemon $ID CLAUDE_CODE_OAUTH_TOKEN=$FAKE_ENV_TOKEN"
-    for i in "120 $A_LIVE" "121 $A_STALE" "122 $A_LIVE" "123 $A_LIVE" "124 $A_INVOKER2" "125 $A_LIVE" "160 $A_PROC" "180 $A_LIVE"; do
+    echo "  100 /Applications/Paseo.app/Contents/MacOS/Paseo PATH=/usr/bin HOME=/Users/x SECRET_KEY=$FAKE_ENV_TOKEN"
+    echo "  110 Paseo Supervisor PATH=/usr/bin $ID"
+    echo "  111 Paseo Daemon PATH=/usr/bin $ID CLAUDE_CODE_OAUTH_TOKEN=$FAKE_ENV_TOKEN"
+    for i in "120 $A_LIVE" "121 $A_STALE" "122 $A_LIVE" "123 $A_LIVE" "124 $A_INVOKER2" "125 $A_LIVE" "160 $A_PROC" "180 $A_LIVE" "190 $A_LIVE" "195 $A_LIVE"; do
       set -- $i
       echo "  $1 /opt/homebrew/bin/claude --output-format stream-json PATH=/usr/bin PASEO_AGENT_ID=$2 $ID CLAUDE_CODE_OAUTH_TOKEN=$FAKE_ENV_TOKEN ANTHROPIC_AUTH_TOKEN=$FAKE_ENV_TOKEN"
     done
-    echo "  130 /bin/sh $W PASEO_AGENT_ID=$A_LIVE $ID"
-    echo "  190 /opt/homebrew/bin/claude --output-format stream-json PASEO_AGENT_ID=$A_LIVE $ID"
-    echo "  170 /opt/homebrew/bin/claude --output-format stream-json PASEO_AGENT_ID=$A_LIVE PASEO_HOME=/somewhere/else ANTHROPIC_API_KEY=$FAKE_ENV_TOKEN"
+    echo "  130 /bin/sh $W PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE $ID"
+    echo "  131 Paseo Helper node PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE $ID"
+    echo "  170 /opt/homebrew/bin/claude --output-format stream-json PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE PASEO_HOME=/somewhere/else ANTHROPIC_API_KEY=$FAKE_ENV_TOKEN"
   } > "$F/env.txt"
   # claude 124 is the invoker's own child; give the sandbox one more agent id for it
   cat > "$F/top.txt" <<T
@@ -170,6 +184,9 @@ PID    MEM    CMPRS
 150    9000K  0B
 160    200M   30M
 170    200M   30M
+195    20000M 15000M
+200    100M   10M
+201    20000M 15000M
 T
   printf '%s\n' 'Mach Virtual Memory Statistics: (page size of 16384 bytes)' 'Pages free: 10.' 'Pages stored in compressor: 221406.' 'Pages occupied by compressor: 100000.' 'Swapouts: 5.' 'Pageouts: 11040.' > "$F/vm_stat.txt"
   # --- stubs ---
@@ -200,15 +217,22 @@ S
   printf '#!/bin/sh\necho "2026-09-30 memorystatus: fixture line"\n' > "$SB/bin/log"
   cat > "$SB/bin/paseo" <<'S'
 #!/bin/sh
-# stub paseo: logs argv, then plays the daemon (removes the record it is asked to delete)
+# stub paseo: logs argv, then plays the daemon (removes the record it is asked to delete).
+# Wants the exact argv slp-gc must use: <group> <cmd> --home <dir> -- <id>   (or agent ls ... --home <dir>)
 echo "$*" >> "$SLPGC_LOGS/paseo.log"
 echo "PASEO_HOME=$PASEO_HOME" >> "$SLPGC_LOGS/paseo.env"
 [ "$1" = --version ] && { echo "0.10.2-stub"; exit 0; }
 [ -z "$SLPGC_PASEO_HANG" ] || exec sleep 30
 case "$1 $2" in
-  "agent delete") find "$PASEO_HOME/agents" -mindepth 2 -maxdepth 2 -type f -name "$3.json" -exec rm -f {} + ;;
-  "schedule delete") rm -f "$PASEO_HOME/schedules/$3.json" ;;
+  "agent ls") [ -f "$SLPGC_FIX/agents-ls.json" ] || exit 1; cat "$SLPGC_FIX/agents-ls.json"; exit 0 ;;
+  "agent delete"|"schedule delete") ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
+esac
+[ "$3" = --home ] && [ "$5" = -- ] && [ "$#" = 6 ] || { echo "bad argv: $*" >&2; exit 2; }
+id="$6"
+case "$1" in
+  agent) find "$PASEO_HOME/agents" -mindepth 2 -maxdepth 2 -type f -name "$id.json" -exec rm -f {} + ;;
+  schedule) rm -f "$PASEO_HOME/schedules/$id.json" ;;
 esac
 S
   chmod +x "$SB"/bin/*
@@ -219,14 +243,14 @@ A_INVOKER2=$A_INVOKER
 
 # run slp-gc inside the sandbox environment
 fx_gc() {  # fx_gc <args...>
-  env -i PATH="/usr/bin:/bin:/usr/local/bin" HOME="$FX_HOME" TMPDIR="$FX_TMP" \
+  env -i PATH="/usr/bin:/bin:/usr/local/bin" SLP_GC_TEST=1 SLP_GC_TEST_HOOK="${FX_HOOK:-}" HOME="$FX_HOME" TMPDIR="$FX_TMP" \
     PASEO_HOME="$FX_PHOME" PASEO_AGENT_ID="${FX_INVOKER:-$A_INVOKER}" CLAUDE_CONFIG_DIR="$FX_SB/cfg" \
     SLP_GC_STATE_DIR="$FX_STATE" SLP_GC_CONFIG="$FX_SB/slp-gc.conf" SLP_GC_NOW="$FX_NOW" \
     SLP_GC_PS="$FX_BIN/ps" SLP_GC_PSENV="$FX_BIN/psenv" SLP_GC_TOP="$FX_BIN/top" SLP_GC_LSOF="$FX_BIN/lsof" \
     SLP_GC_VMSTAT="$FX_BIN/vm_stat" SLP_GC_SYSCTL="$FX_BIN/sysctl" SLP_GC_KILL="$FX_BIN/kill" \
-    SLP_GC_OSASCRIPT="$FX_BIN/osascript" SLP_GC_LOG="$FX_BIN/log" SLP_GC_PASEO="$FX_BIN/paseo" \
+    SLP_GC_OSASCRIPT="$FX_BIN/osascript" SLP_GC_PASEO="$FX_BIN/paseo" \
     SLPGC_FIX="$FX_FIX" SLPGC_LOGS="$FX_LOGS" SLPGC_PASEO_HANG="${SLPGC_PASEO_HANG:-}" SLPGC_ADD_SELF="${SLPGC_ADD_SELF:-}" \
-    SLP_GC_DIAG_DIRS="$FX_HOME/Library/Logs/DiagnosticReports" SLP_GC_CLI_TIMEOUT="${SLP_GC_CLI_TIMEOUT:-5}" ${FX_EXTRA_ENV:-} \
+    SLP_GC_CLI_TIMEOUT="${SLP_GC_CLI_TIMEOUT:-5}" ${FX_EXTRA_ENV:-} \
     "$FX_GC" "$@"
 }
 
@@ -240,4 +264,15 @@ fx_snapshot() {
     m="$(stat -c %a "$p" 2>/dev/null || stat -f %Lp "$p")"; mt="$(stat -c %Y "$p" 2>/dev/null || stat -f %m "$p")"
     printf '%q %s %s %q %s %s\n' "${p#"$root"}" "$t" "$m" "$s" "$h" "$mt"
   done
+}
+
+# a hook that runs after slp-gc's evaluation and before its first action: it UNARCHIVES two of the
+# targets (A_GC1: an archived agent that a garbage schedule points at; A_GC2), the way a user could
+fx_make_hook() {
+  cat > "$FX_SB/hook.sh" <<'H'
+#!/bin/sh
+find "$PASEO_HOME/agents" -type f \( -name 'aaaaaaaa-0000-4000-8000-000000000011.json' -o -name 'aaaaaaaa-0000-4000-8000-000000000012.json' \) -exec sh -c 'for f; do jq ".archivedAt = null" "$f" > "$f.tmp" && mv "$f.tmp" "$f"; done' sh {} +
+H
+  chmod +x "$FX_SB/hook.sh"
+  FX_HOOK="$FX_SB/hook.sh"
 }
