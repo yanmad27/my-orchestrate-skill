@@ -56,7 +56,7 @@ fx_psrow() {  # pid ppid etime rssKB lstart cmd
 make_sandbox() {  # make_sandbox <dir>
   local SB="$1" P H F i
   P="$SB/paseo home"; H="$SB/home"; F="$SB/fix"
-  mkdir -p "$P" "$H/Library/Logs/DiagnosticReports" "$H/Library/Logs/Paseo" "$SB/bin" "$F" "$SB/logs" "$SB/state" "$SB/cfg"
+  mkdir -p "$P" "$H/Library/Logs/DiagnosticReports" "$H/Library/Logs/Paseo" "$SB/bin" "$F" "$SB/logs" "$SB/state" "$SB/cfg"; chmod 700 "$SB/state"
   FX_TMP="$SB.tmp"; mkdir -p "$FX_TMP"; FX_SB="$SB"; FX_PHOME="$P"; FX_HOME="$H"; FX_FIX="$F"; FX_LOGS="$SB/logs"; FX_STATE="$SB/state"; FX_BIN="$SB/bin"
   # --- Paseo home ---
   printf '{"pid":110,"startedAt":"x","listen":"127.0.0.1:6767","desktopManaged":true}\n' > "$P/paseo.pid"
@@ -194,8 +194,11 @@ T
 #!/bin/sh
 # stub ps: -p N reads ps.recheck (if present) filtered to that pid, otherwise the whole ps.txt.
 # SLPGC_ADD_SELF=1 adds a row for the caller (slp-gc) whose parent is claude 190: its process tree.
-pid=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && pid="$2"; shift; done
-if [ -n "$pid" ]; then
+pid=""; comm=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && pid="$2"; [ "$1" = "comm=" ] && comm=1; shift; done
+if [ -n "$comm" ]; then   # -o comm= -p N: the executable path (fixture comm.N, else the first word of the command line)
+  if [ -f "$SLPGC_FIX/comm.$pid" ]; then cat "$SLPGC_FIX/comm.$pid"
+  else f="$SLPGC_FIX/ps.recheck"; [ -f "$f" ] || f="$SLPGC_FIX/ps.txt"; awk -v p="$pid" '$1 == p {print $11}' "$f"; fi
+elif [ -n "$pid" ]; then
   f="$SLPGC_FIX/ps.recheck"; [ -f "$f" ] || f="$SLPGC_FIX/ps.txt"; awk -v p="$pid" '$1 == p' "$f"
 else
   cat "$SLPGC_FIX/ps.txt"
@@ -206,22 +209,31 @@ S
 #!/bin/sh
 # stub ps for the environment: -p N prints the command + env of that pid (the fixture line minus its pid)
 pid=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && pid="$2"; shift; done
+[ -z "$SLPGC_TRACE" ] || echo "$pid" >> "$SLPGC_LOGS/psenv.log"
 # pure sh (no awk): line = "<spaces><pid> <rest>"
 while IFS= read -r line; do
   set -f; set -- $line; set +f
   if [ "$1" = "$pid" ]; then shift; echo "$*"; fi
 done < "$SLPGC_FIX/env.txt"
 S
-  printf '#!/bin/sh\ncat "$SLPGC_FIX/top.txt"\n' > "$SB/bin/top"
+  cat > "$SB/bin/top" <<'S'
+#!/bin/sh
+# stub top: `-pid N` answers from top.pid when present (a later, different reading), else the full listing
+case "$*" in *" -pid "*) [ -f "$SLPGC_FIX/top.pid" ] && { cat "$SLPGC_FIX/top.pid"; exit 0; } ;; esac
+cat "$SLPGC_FIX/top.txt"
+S
   cat > "$SB/bin/lsof" <<'S'
 #!/bin/sh
 # stub lsof: `-d cwd -p N` prints the fixture cwd.N (if any); the listener query prints the daemon pid
 case "$*" in
-  *"-d cwd"*) p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
+  *"-d cwd"*) [ -z "$SLPGC_TRACE" ] || echo "$*" >> "$SLPGC_LOGS/lsof-cwd.log"; p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
               [ -f "$SLPGC_FIX/cwd.$p" ] && { echo "p$p"; echo fcwd; echo "n$(cat "$SLPGC_FIX/cwd.$p")"; }; exit 0 ;;
+  *"-d txt"*) p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
+              [ -f "$SLPGC_FIX/txt.$p" ] && { echo "p$p"; echo ftxt; echo "n$(cat "$SLPGC_FIX/txt.$p")"; }; exit 0 ;;
 esac
 echo p111
 S
+  printf '#!/bin/sh\nsleep 2\ncat "$SLPGC_FIX/top.txt"\n' > "$SB/bin/top-slow"
   printf '#!/bin/sh\ncat "$SLPGC_FIX/vm_stat.txt"\n' > "$SB/bin/vm_stat"
   cat > "$SB/bin/sysctl" <<'S'
 #!/bin/sh
@@ -245,6 +257,7 @@ echo "PASEO_HOME=$PASEO_HOME" >> "$SLPGC_LOGS/paseo.env"
 case "$1 $2" in
   "agent inspect")   # agent inspect --home <dir> --json -- <uuid>: prints $SLPGC_FIX/inspect-<uuid>.json (else fails)
     [ "$3" = --home ] && [ "$5" = --json ] && [ "$6" = -- ] && [ "$#" = 7 ] || { echo "bad argv: $*" >&2; exit 2; }
+    echo "warning: stderr noise that must not reach the JSON parser" >&2
     [ -f "$SLPGC_FIX/inspect-$7.json" ] || exit 1; cat "$SLPGC_FIX/inspect-$7.json"; exit 0 ;;
   "agent delete"|"schedule delete") ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
@@ -270,7 +283,7 @@ fx_gc() {  # fx_gc <args...>
     SLP_GC_PS="$FX_BIN/ps" SLP_GC_PSENV="$FX_BIN/psenv" SLP_GC_TOP="$FX_BIN/top" SLP_GC_LSOF="$FX_BIN/lsof" \
     SLP_GC_VMSTAT="$FX_BIN/vm_stat" SLP_GC_SYSCTL="$FX_BIN/sysctl" SLP_GC_KILL="$FX_BIN/kill" \
     SLP_GC_OSASCRIPT="$FX_BIN/osascript" SLP_GC_PASEO="$FX_BIN/paseo" \
-    SLPGC_FIX="$FX_FIX" SLPGC_LOGS="$FX_LOGS" SLPGC_PASEO_HANG="${SLPGC_PASEO_HANG:-}" SLPGC_ADD_SELF="${SLPGC_ADD_SELF:-}" SLPGC_MEMSIZE="${SLPGC_MEMSIZE:-}" SLP_GC_SKIP_RETENTION="$([ "${FX_RETENTION:-}" = on ] && echo 0 || echo 1)" \
+    SLPGC_FIX="$FX_FIX" SLPGC_LOGS="$FX_LOGS" SLPGC_PASEO_HANG="${SLPGC_PASEO_HANG:-}" SLPGC_ADD_SELF="${SLPGC_ADD_SELF:-}" SLPGC_MEMSIZE="${SLPGC_MEMSIZE:-}" SLPGC_TRACE="${FX_TRACE:-}" SLP_GC_SKIP_RETENTION="$([ "${FX_RETENTION:-}" = on ] && echo 0 || echo 1)" \
     SLP_GC_CLI_TIMEOUT="${SLP_GC_CLI_TIMEOUT:-5}" ${FX_EXTRA_ENV:-} \
     "$FX_GC" "$@"
 }
@@ -306,7 +319,8 @@ H
 #   300 node (vitest 3)  under claude 120 (live agent), 5000 MB      301 node (vitest 4) under 120, 500 MB
 #   310 ppid 1, retitled, EMPTY env, ledger row matches              311 same, but the ledger lstart differs
 #   312 ppid 1, argv vitest, env PASEO_HOME + PASEO_AGENT_ID         313 OrbStack (.app) ppid 1 with PASEO env, 9000 MB
-#   314 ppid 1, ledger match, 5 min old                              315 ppid 1, ledger match, comm mytool (not allowlisted)
+#   314 ppid 1, ledger match, orphaned 5 min ago     350 ppid 1 nohup dev server, ledger match, owner A_LIVE still live
+#   340-343 workers under claude 120 (5000 MB): Xcode swift-frontend, mytool, a benign argv whose real exe is in an .app, an .app node                              315 ppid 1, ledger match, comm mytool (not allowlisted)
 #   316 ppid 1, env proof but another PASEO_HOME                     317 ppid 1, retitled, no ledger/env, cwd under the worktrees dir
 fx_orphans() {
   local P="$FX_PHOME" F="$FX_FIX" L2="Wed Sep 30 09:00:00 2026" L3="Wed Sep 30 09:30:00 2026" OB="/Applications/OrbStack.app/Contents/MacOS/OrbStack Helper"
@@ -321,6 +335,12 @@ fx_orphans() {
     fx_psrow 315 1 01:00:00 200000 "$L2" "mytool --serve"
     fx_psrow 316 1 01:00:00 200000 "$L2" "node /w/other.js"
     fx_psrow 317 1 01:00:00 200000 "$L2" "node (vitest 3)"
+    fx_psrow 340 120 01:00:00 5000000 "$L2" "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend -frontend"
+    fx_psrow 341 120 01:00:00 5000000 "$L2" "mytool --serve"
+    fx_psrow 342 120 01:00:00 5000000 "$L2" "node /w/srv.js"
+    fx_psrow 343 120 01:00:00 5000000 "$L2" "/Applications/Xcode.app/Contents/Developer/usr/bin/node /w/x.js"
+    fx_psrow 350 1 03:00:00 100000 "$L2" "node /w/devserver.js"
+    fx_psrow 360 111 01:00:00 10000 "$L2" "node $P/worktrees/y/run.js"
   } >> "$F/ps.txt"
   sed -n '/^ *3[0-9][0-9] /p' "$F/ps.txt" >> "$F/ps.recheck"   # the -p re-read stub answers from ps.recheck
   {
@@ -328,18 +348,28 @@ fx_orphans() {
     echo "  301 node (vitest 4)"
     echo "  310 node (vitest 3)"
     echo "  311 node (vitest 3)"
-    echo "  312 node PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE PASEO_HOME=$P PASEO_AGENT_CWD=/w"
-    echo "  313 $OB PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE PASEO_HOME=$P"
+    echo "  312 node PATH=/usr/bin PASEO_AGENT_ID=$A_YOUNG PASEO_HOME=$P PASEO_AGENT_CWD=/w"
+    echo "  313 $OB PATH=/usr/bin PASEO_AGENT_ID=$A_YOUNG PASEO_HOME=$P"
     echo "  314 node (vitest 3)"
-    echo "  315 mytool --serve PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE PASEO_HOME=$P"
-    echo "  316 node PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE PASEO_HOME=/somewhere/else"
+    echo "  315 mytool --serve PATH=/usr/bin PASEO_AGENT_ID=$A_YOUNG PASEO_HOME=$P"
+    echo "  316 node PATH=/usr/bin PASEO_AGENT_ID=$A_YOUNG PASEO_HOME=/somewhere/else"
     echo "  317 node (vitest 3)"
+    echo "  350 node PATH=/usr/bin PASEO_AGENT_ID=$A_LIVE PASEO_HOME=$P"
   } >> "$F/env.txt"
   printf '%s\n' '300    5000M  100M' '301    500M   50M' '310    4500M  50M' '311    200M   50M' '312    2000M  50M' '313    9000M  50M' \
-    '314    5000M  50M' '315    200M   50M' '316    200M   50M' '317    200M   50M' >> "$F/top.txt"
-  # the lineage ledger record wrote when 310/311/314 were still under an agent (311's lstart is stale)
-  printf '310\t%s\tnode\t%s\t1789990000\n311\t%s\tnode\t%s\t1789990000\n314\t%s\tnode\t%s\t1789990000\n315\t%s\tmytool\t%s\t1789990000\n' \
-    "$L2" "$A_LIVE" "$L2" "$A_LIVE" "$L2" "$A_LIVE" "$L2" "$A_LIVE" > "$FX_STATE/lineage.tsv"
+    '314    5000M  50M' '315    200M   50M' '316    200M   50M' '317    200M   50M' \
+    '340    5000M  50M' '341    5000M  50M' '342    5000M  50M' '343    5000M  50M' '350    100M   10M' '360    10M    1M' >> "$F/top.txt"
+
+  # the lineage ledger record wrote (pid, lstart, comm, owner, first-seen, orphaned-at); 311's lstart is stale, 314 was orphaned 5 min ago,
+  # 350 belongs to the live agent A_LIVE, 312 has no row (env proof only: record adds one)
+  printf '310\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n311\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n314\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n315\t%s\tmytool\t%s\t1789990000\t%s\t/usr/local/bin/mytool\n350\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' \
+    "$L2" "$A_YOUNG" $((FX_NOW - 3600)) "$L2" "$A_YOUNG" $((FX_NOW - 3600)) "$L2" "$A_YOUNG" $((FX_NOW - 300)) \
+    "$L2" "$A_YOUNG" $((FX_NOW - 3600)) "$L2" "$A_LIVE" $((FX_NOW - 7200)) > "$FX_STATE/lineage.tsv"
+  local n
+  for n in 300 301 310 311 312 314 350; do printf '/opt/homebrew/bin/node\n' > "$F/txt.$n"; done
+  printf '/usr/local/bin/mytool\n' > "$F/txt.315"
+  printf '/Applications/Foo.app/Contents/MacOS/node\n' > "$F/txt.342"   # argv is harmless, the real executable is inside an .app
+  chmod 600 "$FX_STATE/lineage.tsv"
   P="$(cd -P "$P" && pwd -P)"
   printf '%s' "$P/worktrees/abcd1234/dirty" > "$F/cwd.317"
   printf '%s' "$P/worktrees/abcd1234/dirty" > "$F/cwd.310"
@@ -351,4 +381,36 @@ fx_lean() {
   rm -f "$FX_PHOME"/schedules/0000000[ab].json
   find "$FX_PHOME/agents" -type f \( -name "$A_GC1.json" -o -name "$A_GC2.json" \) -exec rm -f {} +
   sed -E -i.b '/^ *(122|125|130|190) /d' "$FX_FIX/ps.txt" "$FX_FIX/ps.recheck"; rm -f "$FX_FIX/ps.txt.b" "$FX_FIX/ps.recheck.b"
+}
+
+# more orphan cases (each test that needs them calls fx_more after fx_orphans; ledger rows: pid lstart comm owner first orphaned exe)
+#   318 retitled `node`, real exe inside OrbStack.app   319 exe differs from the one recorded (poisoned row)
+#   351 owner A_GC1 (an archived, otherwise garbage agent)   352 owner pid:190@... (the invoker's child)   353 worker under claude 190, 5000 MB
+#   371 owner A_CLOSEDU (unarchived, no child: not dead for a ledger-only proof)   372 owner "garbage" (bad syntax)   373 first-seen in the far future
+fx_more() {
+  local F="$FX_FIX" L2="Wed Sep 30 09:00:00 2026" o=$((FX_NOW - 3600))
+  {
+    fx_psrow 318 1 03:00:00 200000 "$L2" "node (helper)"
+    fx_psrow 319 1 03:00:00 200000 "$L2" "node old.js"
+    fx_psrow 351 1 03:00:00 200000 "$L2" "node z.js"
+    fx_psrow 352 1 03:00:00 200000 "$L2" "node inv.js"
+    fx_psrow 353 190 01:00:00 5000000 "$L2" "node sub.js"
+    fx_psrow 371 1 03:00:00 200000 "$L2" "node closedu.js"
+    fx_psrow 372 1 03:00:00 200000 "$L2" "node bad1.js"
+    fx_psrow 373 1 03:00:00 200000 "$L2" "node bad2.js"
+  } | tee -a "$F/ps.txt" >> "$F/ps.recheck"
+  local n; for n in 318 319 351 352 353 371 372 373; do echo "  $n node (noenv)" >> "$F/env.txt"; done
+  printf '%s\n' '318    200M   10M' '319    200M   10M' '351    200M   10M' '352    200M   10M' '353    5000M  10M' '371    200M   10M' '372    200M   10M' '373    200M   10M' >> "$F/top.txt"
+  printf '/Applications/OrbStack.app/Contents/MacOS/OrbStack\n' > "$F/txt.318"
+  printf '/usr/local/bin/node\n' > "$F/txt.319"     # the ledger recorded /opt/homebrew/bin/node
+  for n in 351 352 353 371 372 373; do printf '/opt/homebrew/bin/node\n' > "$F/txt.$n"; done
+  {
+    printf '318\t%s\tnode\t%s\t1789990000\t%s\t/Applications/OrbStack.app/Contents/MacOS/OrbStack\n' "$L2" "$A_YOUNG" "$o"
+    printf '319\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$A_YOUNG" "$o"
+    printf '351\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$A_GC1" "$o"
+    printf '352\t%s\tnode\tpid:190@%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$L2" "$o"
+    printf '371\t%s\tnode\t%s\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$A_CLOSEDU" "$o"
+    printf '372\t%s\tnode\tnot-a-uuid\t1789990000\t%s\t/opt/homebrew/bin/node\n' "$L2" "$o"
+    printf '373\t%s\tnode\t%s\t2999999999\t2999999999\t/opt/homebrew/bin/node\n' "$L2" "$A_YOUNG"
+  } >> "$FX_STATE/lineage.tsv"
 }
