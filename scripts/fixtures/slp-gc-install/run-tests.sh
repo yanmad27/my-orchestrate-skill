@@ -52,13 +52,33 @@ chmod +x "$stubs"/*
 
 # What install.sh would write in the real HOME. The seats' Claude runtimes (claude-*/) hold live
 # session transcripts (and codex-peer/ a live Codex state), so only the room's own files are compared.
+# ~/Library/Logs/slp-gc is also rewritten by the live launchd agent (memory.jsonl, lineage.tsv, .last-report,
+# launchd.log, reports/, and tick.log/alerts.log/actions.log/.alert-stamp when it has something to say), so it is
+# not compared byte for byte: snap_logs compares the set of files outside those agent-owned names exactly, and
+# real_logs_clean proves that no file in it mentions this run's sandbox (every test write carries $tmp).
 snap_real() {
   {
     find "$REAL_HOME/.config/slp-room" -maxdepth 1 -type f -ls
     find "$REAL_HOME/.config/slp-room/bin" "$REAL_HOME/.config/slp-room/room" \
-      "$REAL_HOME/Library/LaunchAgents" "$REAL_HOME/Library/Logs/slp-gc" "$REAL_HOME/.claude/skills/supervisor" -type f -ls
+      "$REAL_HOME/Library/LaunchAgents" "$REAL_HOME/.claude/skills/supervisor" -type f -ls
     find "$REAL_HOME/.paseo" -maxdepth 1 -name 'config.json*' -type f -ls
+    snap_logs
   } 2>/dev/null | sort
+}
+snap_logs() {
+  local d="$REAL_HOME/Library/Logs/slp-gc"
+  [ -d "$d" ] || return 0
+  find "$d" \( -type l -o -type f -o -type d \) ! -path "$d" ! -path "$d/reports" ! -path "$d/reports/*" \
+    ! -name memory.jsonl ! -name lineage.tsv ! -name .last-report ! -name launchd.log ! -name tick.log ! -name alerts.log \
+    ! -name actions.log ! -name .alert-stamp ! -name tick.lock ! -name '.lineage.*' 2>/dev/null | sed "s|^$REAL_HOME/||; s|^|logs-extra: |"
+}
+real_logs_clean() {
+  local d="$REAL_HOME/Library/Logs/slp-gc" t
+  [ -d "$d" ] || return 0
+  for t in "$tmp" "$(cd -P "$tmp" 2>/dev/null && pwd -P)"; do
+    [ -n "$t" ] || continue
+    ! grep -rqF -- "$t" "$d" 2>/dev/null || { echo "a file in $d mentions the sandbox $t" >&2; return 1; }
+  done
 }
 REAL_BEFORE="$(snap_real)"
 
@@ -363,6 +383,7 @@ check "the stub log holds only bootout/bootstrap/print of the agent" bash -c '! 
 REAL_AFTER="$(snap_real)"
 [ "$REAL_AFTER" = "$REAL_BEFORE" ] || diff <(printf '%s\n' "$REAL_BEFORE") <(printf '%s\n' "$REAL_AFTER") | head -10
 check "the real HOME's slp-room, LaunchAgents, slp-gc logs and Paseo config are unchanged" test "$REAL_AFTER" = "$REAL_BEFORE"
+check "no file in the real slp-gc logs mentions this run's sandbox" real_logs_clean
 
 if [ "$FAILED" -ne 0 ]; then echo "slp-gc-install tests: FAILED"; exit 1; fi
 echo "slp-gc-install tests: all checks passed"
