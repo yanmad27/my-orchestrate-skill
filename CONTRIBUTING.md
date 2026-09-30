@@ -8,6 +8,8 @@ Invariants it checks:
 - SKILL.md frontmatter: valid YAML, exactly `name`/`description`,
   `name == "supervisor"`, one-line description mentioning `create_agent`,
   supervisor, orchestrate, delegate.
+- The `⏳` eval grader regexes are proven against card-form positive and negative
+  samples (`scripts/test-room-state-graders.py`).
 - Room files (`skills/supervisor/SKILL.md`, `PROTOCOL.md`, `roles/lead.md`,
   `roles/peer.md`) exist and keep their contract phrases: `create_agent`,
   the ban on the built-in `Agent` tool, `list_profiles`, the heartbeat
@@ -16,6 +18,7 @@ Invariants it checks:
   the debate signals, the recap contract, `$ARGUMENTS`.
 - Wait / state rules (static): `SKILL.md` names `slp-wait`, carries the three
   room-state prefixes (`⏳ Working:`, `✅ Done:`, `❓ Waiting on you:`), the
+  `◉` Lead card form of the `⏳` block, the
   fixed-name `supervisor: room` find-or-create and adoption rule, and has no
   instruction to reply with a bare no-change line or to reuse a heartbeat via
   `list_schedules`; `PROTOCOL.md`, `lead.md`, and `peer.md` keep the

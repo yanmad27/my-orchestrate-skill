@@ -31,7 +31,7 @@ Cases:
   `sleep`/`pgrep`/`paseo wait` runs.
 - `behaviour-wait-person-midrun`: a person asks a question while room work
   runs and the wait was interrupted; the reply text (not thinking) must give
-  a visible answer first and END on the `⏳ Working:` tree — never `✅`/`❓`,
+  a visible answer first and END on the `⏳ Working:` card block — never `✅`/`❓`,
   and no `slp-wait` re-arm after it (text or Bash call): the heartbeat
   restarts the spin (normally within 2 minutes, rarely up to about 4).
 - `behaviour-wait-handoff`: nothing in the room runs, but a Lead's latest

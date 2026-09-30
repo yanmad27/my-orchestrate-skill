@@ -183,11 +183,22 @@ the Supervisor sends a `DONE` with a Peer still running back for correction.
 
 The Supervisor ends every turn — heartbeat wakes and precondition stops
 included — with exactly one room-state block, its last row the turn's last line: `✅ Done`
-or `❓ Waiting on you` (one row each), or `⏳ Working` (a header row plus a
-Lead/Peer tree) only after answering the person mid-run or when `slp-wait`
-failed; `⏳ Working` otherwise precedes each
+or `❓ Waiting on you` (one row each), or `⏳ Working` (a header row plus one
+compact `◉ <Lead workstream> · <Lead state>` card per Lead, optionally with a
+detail and `Peers:` line, cards separated by one blank line) only after
+answering the person mid-run or when `slp-wait` failed; `⏳ Working` otherwise precedes each
 `slp-wait` and never ends a turn (see its role). The
 person always sees the state, and no turn ends on a bare acknowledgement.
+For example:
+
+```text
+⏳ Working:
+◉ auth refactor · running
+  Now: reviewing token store diff · Peers: token store, token store diff
+
+◉ billing export · STATUS: waiting on CI
+  Peers: csv writer (permission pending)
+```
 
 ## Independent judgment and debate
 

@@ -173,35 +173,46 @@ running and what each owns.
 precondition/error stops included, ends with exactly one room-state block,
 and its last row is the turn's last line: `✅` or `❓`; `⏳` only after
 answering the person mid-run, or when `slp-wait` failed (said explicitly).
-`✅` and `❓` are one row; `⏳` is a header row plus a Lead/Peer tree. In these
-forms (keep the prefixes and the `↳ ` connector):
+`✅` and `❓` are one row; `⏳` is a header row plus one compact card per Lead.
+In these forms (keep the `◉ ` marker):
 
 ```text
 ⏳ Working:
-<Lead title> (<its state, e.g. running / STATUS: …>)
-↳ <Peer title> (running|permission pending)
+◉ <Lead workstream> · <Lead state>
+  <Key: value> · Peers: <short Peer names>
 ✅ Done: <outcome in one line>
 ❓ Waiting on you: <decision>
 ```
 
-Titles carry their `[Lead]`/`[Peer]`/`[Review]` prefix (Title
-`[Lead] <workstream>`, above), so it is not repeated in the template.
-`⏳ Working:` is its own header row. Each Lead gets one row; beneath it, one
-`↳ ` row (no indentation) per Peer of that Lead that is running or
-permission-pending (finished or archived Peers are omitted); a Lead with none
-is just its Lead row. With several Leads, the tree lists each. `⏳` is printed
-right before each `slp-wait`, so the latest visible text plus the spinner shows
-the state.
+`⏳ Working:` is its own header row. Each Lead gets one card. Line 1 is
+`◉ <Lead workstream> · <Lead state>`: the workstream is the Lead's title
+without its `[Lead]` prefix, and the state is a short lifecycle word
+(`running`, `resuming`, `permission pending`, `idle`) or the Lead's last
+report signal with its gist (`STATUS: waiting on CI`). Line 2 is optional,
+indented two spaces, and holds at most one detail `Key: value` from the fixed
+keys `Now:` (current step), `Queue:` (next queued work), `Scope:` (scope or
+area), and, when the Lead has running or permission-pending Peers,
+`Peers: <short names, comma-separated>`; join the two parts with ` · `, detail
+first. A short Peer name is the Peer's title without its
+`[Peer]`/`[Review]`/`[Committee]`/`[Advisor]` prefix; a permission-pending Peer
+is suffixed ` (permission pending)`, a running Peer has no suffix, and finished
+or archived Peers are omitted. A Lead with neither a detail nor Peers has no
+line 2. Put exactly one blank line between cards and none after the last; the
+last card's final row is the turn's last line. `⏳` is printed right before
+each `slp-wait`, so the latest visible text plus the spinner shows the state.
 A turn that ends stops spinning, so it ends on `⏳` only in the two cases above.
 Rendered:
 
 ```text
 ⏳ Working:
-[Lead] auth refactor (running)
-↳ [Peer] token store (running)
-↳ [Review] token store diff (running)
-[Lead] billing export (STATUS: waiting on CI)
-↳ [Peer] csv writer (permission pending)
+◉ auth refactor · running
+  Now: reviewing token store diff · Peers: token store, token store diff
+
+◉ billing export · STATUS: waiting on CI
+  Peers: csv writer (permission pending)
+
+◉ search index · resuming
+  Scope: platform
 ✅ Done: auth refactor committed on feat/auth, 14 tests pass, nothing pushed
 ❓ Waiting on you: push feat/auth to origin, or leave it local?
 ```
