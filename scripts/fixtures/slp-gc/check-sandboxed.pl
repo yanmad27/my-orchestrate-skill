@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 # C6 static guard: every place a fixture EXECUTES the slp-gc binary (whatever the arguments) must be a line
-# marked "# slpgc-sandboxed" sitting under an env block that sets SLP_GC_TEST=1 and a sandbox HOME=.
+# marked "# slpgc-sandboxed" whose OWN command (its backslash-continued env -i lines) sets SLP_GC_TEST=1 and a
+# sandbox HOME=. Only fx_gc_bare (read-only report, production mode) is exempt from SLP_GC_TEST, with structural checks.
 # Usage: check-sandboxed.pl <fixture file>...   Prints one "file:line: reason" per violation; exit 1 if any.
 use strict; use warnings;
 my $bad = 0;
@@ -30,9 +31,28 @@ for my $f (@ARGV) {
     next unless $hit;
     my $n = $i + 1;
     if ($line !~ /# slpgc-sandboxed/) { print "$f:$n: slp-gc executed outside a sandboxed wrapper\n"; $bad = 1; next }
-    my $from = $i >= 12 ? $i - 12 : 0;
-    my $blk = join "\n", @l[$from .. $i];
-    unless ($blk =~ /SLP_GC_TEST=1/ && $blk =~ /HOME="\$/) { print "$f:$n: wrapper env lacks SLP_GC_TEST=1 / sandbox HOME\n"; $bad = 1 }
+    my $s = $i;   # the marked line's own command: its backslash-continued lines, nothing from neighbours
+    $s-- while $s > 0 && $l[$s - 1] =~ /\\\s*$/;
+    my $cmd = join "\n", @l[$s .. $i];
+    my $h = $s; $h-- while $h > 0 && $l[$h] !~ /^(\w+)\(\)\s*\{/;
+    my $fn = $l[$h] =~ /^(\w+)\(\)\s*\{/ ? $1 : '';
+    if ($fn eq 'fx_gc_bare') {   # the one production-mode exception: read-only `report`, structurally enforced
+      my $body = join "\n", @l[$h .. $i];
+      my @miss;
+      push @miss, 'env -i' unless $cmd =~ /\benv -i\b/;
+      push @miss, 'sandbox HOME' unless $cmd =~ /HOME="\$/;
+      push @miss, 'logging stubs first on PATH' unless $cmd =~ /PATH="\$FX_BIN:/;
+      push @miss, 'SLP_GC_TEST must not be set' if $cmd =~ /SLP_GC_TEST=/;
+      push @miss, 'report-only guard' unless $body =~ /case " \$\* " in \*" report "\*\) ;; \*\) [^\n]*return 2/;
+      push @miss, '--apply refusal' unless $body =~ /\*" --apply "\*\) [^\n]*return 2/;
+      if (@miss) { print "$f:$n: fx_gc_bare violates its read-only contract: " . join(', ', @miss) . "\n"; $bad = 1 }
+      next;
+    }
+    my @miss;
+    push @miss, 'env -i' unless $cmd =~ /\benv -i\b/;
+    push @miss, 'SLP_GC_TEST=1' unless $cmd =~ /SLP_GC_TEST=1/;
+    push @miss, 'sandbox HOME' unless $cmd =~ /HOME="\$/;
+    if (@miss) { print "$f:$n: wrapper " . ($fn || '(none)') . " lacks in its own command: " . join(', ', @miss) . "\n"; $bad = 1 }
   }
 }
 exit($bad ? 1 : 0);
