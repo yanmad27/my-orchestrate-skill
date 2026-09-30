@@ -12,6 +12,17 @@ fail() { printf 'FAIL: %s\n' "$1"; FAILED=1; }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# launchd isolation for every install.sh run below: install.sh only touches launchd through
+# $SLP_LAUNCHCTL, so it is a logging stub here (also first on PATH under the name launchctl).
+# The slp-gc install section at the end checks the log shows only sandbox plist paths.
+LAUNCHCTL_STUB_DIR="$TMP/launchctl-stub"; mkdir -p "$LAUNCHCTL_STUB_DIR"
+LAUNCHCTL_STUB_LOG="$LAUNCHCTL_STUB_DIR/calls.log"; : > "$LAUNCHCTL_STUB_LOG"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 0\n' "$LAUNCHCTL_STUB_LOG" > "$LAUNCHCTL_STUB_DIR/launchctl"
+chmod 755 "$LAUNCHCTL_STUB_DIR/launchctl"
+export SLP_LAUNCHCTL="$LAUNCHCTL_STUB_DIR/launchctl"
+export PATH="$LAUNCHCTL_STUB_DIR:$PATH"
+unset SLP_ROOM_HOME SLP_GC_STATE_DIR SLP_GC_CONFIG
+
 # --- SKILL.md frontmatter -------------------------------------------------
 
 SKILL_MD="skills/supervisor/SKILL.md"
@@ -867,6 +878,18 @@ if [ "$SGI_RC" -ne 0 ] || ! grep -q '^ok: ' "$SGI_OUT"; then
   fail "slp-gc install tests failed"
 else
   ok "slp-gc install tests passed ($(grep -c '^ok: ' "$SGI_OUT") checks)"
+fi
+# Every install.sh run in this file had SLP_LAUNCHCTL and PATH pointing at the logging stub (see the
+# top): whatever it recorded may only be the agent's bootout/bootstrap with a plist under $TMP.
+if ! grep -vE "^(bootout gui/[0-9]+/com\.paseo-slp\.slp-gc|bootstrap gui/[0-9]+ $TMP/.*/Library/LaunchAgents/com\.paseo-slp\.slp-gc\.plist)$" "$LAUNCHCTL_STUB_LOG" | grep -q .; then
+  ok "launchctl stub log shows only sandbox plist paths ($(wc -l < "$LAUNCHCTL_STUB_LOG" | tr -d ' ') calls); no install.sh run reached a real launchctl"
+else
+  fail "launchctl stub log holds a call that is not a sandbox bootout/bootstrap: $(tr '\n' ';' < "$LAUNCHCTL_STUB_LOG")"
+fi
+if [ "$(command -v launchctl)" = "$LAUNCHCTL_STUB_DIR/launchctl" ] && [ "$SLP_LAUNCHCTL" = "$LAUNCHCTL_STUB_DIR/launchctl" ]; then
+  ok "launchctl resolves to the stub on PATH and SLP_LAUNCHCTL is the stub"
+else
+  fail "launchctl or SLP_LAUNCHCTL no longer points at the stub"
 fi
 
 if [ "$FAILED" -ne 0 ]; then

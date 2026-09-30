@@ -153,7 +153,7 @@ it uses the checkout.
 | `--skill-only` | Only steps 0-1 |
 | `--paseo-only` | Only steps 0 and 2-4 — e.g. when the skill comes from the plugin marketplace |
 | `--no-reload` | Skip `paseo daemon reload` |
-| `--gc-only`, `--no-gc`, `--no-gc-launchd`, `--gc-apply`, `--gc-kill`, `--gc-report-only` | slp-gc install and opt-ins — see [slp-gc](#slp-gc) |
+| `--gc-only`, `--no-gc`, `--no-gc-launchd`, `--gc-apply`, `--gc-kill-stale`, `--gc-kill-memory`, `--gc-kill`, `--gc-report-only` | slp-gc install and opt-ins — see [slp-gc](#slp-gc) |
 | `SLP_REF=<branch or tag>` | Install that version instead of `main` (piped runs) |
 | `SLP_ROOM_HOME=<dir>` | Build the runtimes somewhere other than `~/.config/slp-room` |
 | `--token` | Ask for a new Claude token and replace the saved one (e.g. to rotate it) |
@@ -413,13 +413,21 @@ opt in below.
 
 **Opt in.** Reclaiming and killing are enabled in `~/.config/slp-room/slp-gc.conf`
 (`KEY=VALUE`, on only when exactly `1`), or with install flags, which edit only
-those keys:
+those keys. The kill flags need `--gc-apply`. When the agent is loaded with an
+opt-in on, the install summary names each active one.
 
 | Flag | Config key | Effect |
 |---|---|---|
 | `--gc-apply` | `SLP_GC_APPLY=1` | Delete completed room schedules and long-archived agents via `paseo` |
-| `--gc-kill` (needs `--gc-apply`) | `SLP_GC_KILL_STALE=1`, `SLP_GC_KILL_MEMORY=1` | SIGTERM proven orphaned processes; SIGTERM an agent descendant above `SLP_GC_MEM_KILL_MB` |
+| `--gc-kill-stale` | `SLP_GC_KILL_STALE=1` | SIGTERM proven orphaned processes |
+| `--gc-kill-memory` | `SLP_GC_KILL_MEMORY=1` | SIGTERM an agent descendant above `SLP_GC_MEM_KILL_MB` |
+| `--gc-kill` | both kill keys | Shorthand for the two flags above |
 | `--gc-report-only` | all three `=0` | Back to report-only |
+
+The launchd agent is only loaded when `HOME` is your own login home; for any
+other `HOME` the plist is written and the install warns that the agent is
+**not loaded**. `~/.config/slp-room/slp-gc.conf` must be a regular file — a
+symlink is refused.
 
 **Uninstall.**
 

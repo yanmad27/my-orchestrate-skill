@@ -17,8 +17,9 @@
 # (SLP_CLAUDE_API_KEY is still accepted as an older alias for SLP_CLAUDE_AUTH_TOKEN) (bearer, the default → ANTHROPIC_AUTH_TOKEN; or x-api-key → ANTHROPIC_API_KEY).
 # SLP_REF picks a branch or tag.
 # slp-gc options: --gc-only (just slp-gc: touches no seats, Paseo config, or daemon), --no-gc,
-# --no-gc-launchd (skip the launchd agent), --gc-apply / --gc-kill / --gc-report-only (edit the
-# opt-in keys of slp-gc.conf; --gc-kill needs --gc-apply). SLP_LAUNCHCTL overrides launchctl (tests).
+# --no-gc-launchd (skip the launchd agent), --gc-apply / --gc-kill-stale / --gc-kill-memory (--gc-kill
+# is both) / --gc-report-only (edit the opt-in keys of slp-gc.conf; the kill flags need --gc-apply).
+# SLP_LAUNCHCTL (an absolute path to an executable) overrides launchctl, for tests.
 set -euo pipefail
 
 REPO="yanmad27/paseo-slp"
@@ -30,7 +31,7 @@ DO_PASEO=1
 RELOAD=1
 ASK_TOKEN=0
 ASK_ENDPOINT=0
-GC_ONLY=0; NO_GC=0; GC_LAUNCHD=1; GC_APPLY=0; GC_KILL=0; GC_REPORT_ONLY=0
+GC_ONLY=0; NO_GC=0; GC_LAUNCHD=1; GC_APPLY=0; GC_KILL_STALE=0; GC_KILL_MEM=0; GC_REPORT_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --skill-only) DO_PASEO=0 ;;
@@ -39,7 +40,9 @@ for arg in "$@"; do
     --no-gc) NO_GC=1 ;;
     --no-gc-launchd) GC_LAUNCHD=0 ;;
     --gc-apply) GC_APPLY=1 ;;
-    --gc-kill) GC_KILL=1 ;;
+    --gc-kill) GC_KILL_STALE=1; GC_KILL_MEM=1 ;;
+    --gc-kill-stale) GC_KILL_STALE=1 ;;
+    --gc-kill-memory) GC_KILL_MEM=1 ;;
     --gc-report-only) GC_REPORT_ONLY=1 ;;
     --no-reload) RELOAD=0 ;;
     --token) ASK_TOKEN=1 ;;
@@ -60,14 +63,14 @@ if [ "$GC_ONLY" = 1 ]; then
   DO_SKILL=0; DO_PASEO=0; DO_GC=1
 fi
 [ "$NO_GC" = 0 ] || DO_GC=0
-if [ "$GC_KILL" = 1 ] && [ "$GC_APPLY" = 0 ]; then
-  echo "--gc-kill needs --gc-apply: the kill flags only act together with apply." >&2; exit 1
+if [ "$((GC_KILL_STALE + GC_KILL_MEM))" -gt 0 ] && [ "$GC_APPLY" = 0 ]; then
+  echo "--gc-kill, --gc-kill-stale and --gc-kill-memory need --gc-apply: the kill flags only act together with apply." >&2; exit 1
 fi
-if [ "$GC_REPORT_ONLY" = 1 ] && [ "$GC_APPLY" = 1 ]; then
-  echo "--gc-report-only cannot be combined with --gc-apply or --gc-kill." >&2; exit 1
+if [ "$GC_REPORT_ONLY" = 1 ] && [ "$((GC_APPLY + GC_KILL_STALE + GC_KILL_MEM))" -gt 0 ]; then
+  echo "--gc-report-only cannot be combined with --gc-apply or the --gc-kill flags." >&2; exit 1
 fi
-if [ "$DO_GC" = 0 ] && [ "$((GC_APPLY + GC_REPORT_ONLY))" -gt 0 ]; then
-  echo "--gc-apply, --gc-kill and --gc-report-only need slp-gc to be installed (drop --no-gc / --skill-only)." >&2; exit 1
+if [ "$DO_GC" = 0 ] && [ "$((GC_APPLY + GC_KILL_STALE + GC_KILL_MEM + GC_REPORT_ONLY))" -gt 0 ]; then
+  echo "--gc-apply, the --gc-kill flags and --gc-report-only need slp-gc to be installed (drop --no-gc / --skill-only)." >&2; exit 1
 fi
 
 WORK="$(mktemp -d)"
@@ -626,13 +629,22 @@ if [ "$DO_GC" = 1 ]; then
   GC_LOG="$GC_STATE/launchd.log"
   GC_PLIST="$HOME/Library/LaunchAgents/$GC_LABEL.plist"
 
-  mkdir -p "$ROOM_HOME/bin" "$GC_STATE"
-  cp "$SRC/paseo/bin/slp-gc" "$GC_BIN"
-  chmod 755 "$GC_BIN"
+  # The config is read by tick and edited here: a symlink could redirect either, so refuse one.
+  if [ -L "$GC_CONF" ]; then
+    echo "$GC_CONF is a symlink; refusing to read or edit it. Replace it with a regular file and re-run." >&2
+    exit 1
+  fi
+  mkdir -p "$ROOM_HOME/bin"
+  (umask 077 && mkdir -p "$GC_STATE") && chmod 700 "$GC_STATE"
+  # Atomic: a running tick never sees a half-written slp-gc.
+  GC_TMP="$(mktemp "$ROOM_HOME/bin/.slp-gc.XXXXXX")"
+  cp "$SRC/paseo/bin/slp-gc" "$GC_TMP"
+  chmod 755 "$GC_TMP"
+  mv -f "$GC_TMP" "$GC_BIN"
   echo "Installed slp-gc: $GC_BIN"
 
   # --- config: written once, never reset. KEY=VALUE, parsed (not sourced) by `slp-gc tick`.
-  if [ ! -f "$GC_CONF" ]; then
+  if [ ! -e "$GC_CONF" ] && [ ! -L "$GC_CONF" ]; then
     (umask 077 && cat > "$GC_CONF" <<'CONF'
 # slp-gc configuration (KEY=VALUE, parsed not sourced; the last value wins). Read by `slp-gc tick`
 # only. A flag is on only when its value is exactly 1. install.sh never resets this file: change
@@ -672,22 +684,31 @@ CONF
     gc_conf_set SLP_GC_APPLY 0; gc_conf_set SLP_GC_KILL_STALE 0; gc_conf_set SLP_GC_KILL_MEMORY 0
     echo "slp-gc opt-ins cleared (report-only): $GC_CONF"
   fi
-  if [ "$GC_APPLY" = 1 ]; then
-    gc_conf_set SLP_GC_APPLY 1
-    echo "slp-gc apply enabled: $GC_CONF"
-  fi
-  if [ "$GC_KILL" = 1 ]; then
-    gc_conf_set SLP_GC_KILL_STALE 1; gc_conf_set SLP_GC_KILL_MEMORY 1
-    echo "slp-gc kill flags enabled: $GC_CONF"
-  fi
-  # The effective opt-ins: a flag is on only when its last value is exactly 1.
-  gc_flag() { [ "$(awk -F= -v k="$1" '$1 == k { v = substr($0, length(k) + 2) } END { print v }' "$GC_CONF")" = 1 ]; }
-  GC_MODE=""
-  gc_flag SLP_GC_APPLY && GC_MODE="apply"
-  gc_flag SLP_GC_KILL_STALE && GC_MODE="${GC_MODE:+$GC_MODE, }kill stale processes"
-  gc_flag SLP_GC_KILL_MEMORY && GC_MODE="${GC_MODE:+$GC_MODE, }kill over-memory"
+  if [ "$GC_APPLY" = 1 ]; then gc_conf_set SLP_GC_APPLY 1; echo "slp-gc apply enabled: $GC_CONF"; fi
+  if [ "$GC_KILL_STALE" = 1 ]; then gc_conf_set SLP_GC_KILL_STALE 1; echo "slp-gc kill-stale enabled: $GC_CONF"; fi
+  if [ "$GC_KILL_MEM" = 1 ]; then gc_conf_set SLP_GC_KILL_MEMORY 1; echo "slp-gc kill-memory enabled: $GC_CONF"; fi
+  # The effective value of a flag, read as slp-gc's read_config does: the last KEY=VALUE line wins,
+  # \r and one pair of quotes are stripped, and the flag is on only when the value is exactly 1.
+  gc_flag() {
+    local line k v on=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%$'\r'}"
+      case "$line" in ''|'#'*) continue ;; esac
+      k="${line%%=*}"; v="${line#*=}"
+      [ "$k" != "$line" ] && [ "$k" = "$1" ] || continue
+      v="${v#\"}"; v="${v%\"}"; v="${v#\'}"; v="${v%\'}"
+      if [ "$v" = 1 ]; then on=1; else on=0; fi
+    done < "$GC_CONF"
+    [ "$on" = 1 ]
+  }
+  GC_OPTINS=()
+  gc_flag SLP_GC_APPLY && GC_OPTINS+=("apply (delete completed schedules and long-archived agents)")
+  gc_flag SLP_GC_KILL_STALE && GC_OPTINS+=("kill-stale (SIGTERM proven orphaned processes)")
+  gc_flag SLP_GC_KILL_MEMORY && GC_OPTINS+=("kill-memory (SIGTERM agent descendants over the memory limit)")
 
   # --- launchd agent
+  GC_LOADED=0
+  GC_LAUNCHD_NOTE="not installed (--no-gc-launchd)"
   if [ "$GC_LAUNCHD" = 1 ]; then
     xml() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
     GC_EXTRA=""
@@ -710,33 +731,74 @@ CONF
              l = sub_all(l, "@@LOG@@", ENVIRON["P_LOG"]);       l = sub_all(l, "@@EXTRA_ENV@@", ENVIRON["P_EXTRA_ENV"])
              print l }' "$SRC/paseo/launchd/slp-gc.plist.in")"
     mkdir -p "$HOME/Library/LaunchAgents"
-    printf '%s\n' "$GC_TPL" > "$GC_PLIST"
-    chmod 644 "$GC_PLIST"
-    # launchd never rotates the agent's log; tick's own logs are bounded, so keep this one small.
+    GC_TMP="$(mktemp "$HOME/Library/LaunchAgents/.$GC_LABEL.XXXXXX")"
+    printf '%s\n' "$GC_TPL" > "$GC_TMP"
+    chmod 644 "$GC_TMP"
+    mv -f "$GC_TMP" "$GC_PLIST"
+    # launchd never rotates the agent's log; tick keeps its own logs bounded, so keep this one small.
     if [ -f "$GC_LOG" ] && [ "$(wc -c < "$GC_LOG")" -gt 1048576 ]; then : > "$GC_LOG"; fi
     echo "Wrote launchd agent: $GC_PLIST"
 
-    LAUNCHCTL="${SLP_LAUNCHCTL:-launchctl}"
-    # A HOME that is not the user's own (a test sandbox) must never reach the real launchd:
-    # it would replace the real agent with one pointing at that HOME. SLP_LAUNCHCTL opts back in.
-    LOGIN_HOME="$(eval "printf '%s' ~$(id -un)" 2>/dev/null || true)"
-    if [ -z "${SLP_LAUNCHCTL:-}" ] && [ -n "$LOGIN_HOME" ] && [ "$HOME" != "$LOGIN_HOME" ]; then
-      echo "NOTE: HOME ($HOME) is not $LOGIN_HOME; the agent is written but not loaded into launchd." >&2
-    elif ! command -v "$LAUNCHCTL" >/dev/null 2>&1; then
-      echo "NOTE: launchctl not found (not macOS?); the agent is written but not loaded." >&2
+    # Whether launchd may be touched. Fail closed. SLP_LAUNCHCTL (tests) must be an absolute path to
+    # an executable and is the only launchctl then used. A HOME that is not the login user's own home
+    # (a test sandbox) never reaches launchd, even so: loading would replace the real agent with one
+    # pointing at that HOME. An unresolvable login home loads only with SLP_LAUNCHCTL set.
+    LAUNCHCTL=launchctl; GC_SKIP=""
+    if [ -n "${SLP_LAUNCHCTL:-}" ]; then
+      case "$SLP_LAUNCHCTL" in
+        /*) if [ -f "$SLP_LAUNCHCTL" ] && [ -x "$SLP_LAUNCHCTL" ]; then LAUNCHCTL="$SLP_LAUNCHCTL"
+            else GC_SKIP="SLP_LAUNCHCTL ($SLP_LAUNCHCTL) is not an existing executable"; fi ;;
+        *) GC_SKIP="SLP_LAUNCHCTL ($SLP_LAUNCHCTL) is not an absolute path" ;;
+      esac
+    fi
+    if [ -z "$GC_SKIP" ]; then
+      GC_USER="$(id -un 2>/dev/null || true)"
+      LOGIN_HOME=""
+      if [ -n "$GC_USER" ]; then
+        LOGIN_HOME="$(dscl . -read "/Users/$GC_USER" NFSHomeDirectory 2>/dev/null </dev/null | sed -n 's/^NFSHomeDirectory: //p' | head -1 || true)"
+        [ -n "$LOGIN_HOME" ] || LOGIN_HOME="$(getent passwd "$GC_USER" 2>/dev/null </dev/null | cut -d: -f6 || true)"
+      fi
+      if [ -n "$LOGIN_HOME" ] && [ -d "$LOGIN_HOME" ]; then
+        if [ "$(cd -P "$LOGIN_HOME" && pwd -P)" != "$(cd -P "$HOME" && pwd -P)" ]; then
+          GC_SKIP="HOME ($HOME) is not the login home ($LOGIN_HOME)"
+        fi
+      elif [ -z "${SLP_LAUNCHCTL:-}" ]; then
+        GC_SKIP="the login home could not be resolved (dscl/getent)"
+      fi
+      if [ -z "$GC_SKIP" ] && ! command -v "$LAUNCHCTL" >/dev/null 2>&1; then
+        GC_SKIP="launchctl not found (not macOS?)"
+      fi
+    fi
+    if [ -n "$GC_SKIP" ]; then
+      echo "WARNING: the launchd agent was written but NOT loaded: $GC_SKIP." >&2
+      echo "  slp-gc is not running every 60 s. Load it from your own login: launchctl bootstrap gui/\$(id -u) $GC_PLIST" >&2
+      GC_LAUNCHD_NOTE="NOT loaded ($GC_SKIP)"
     else
       GC_DOMAIN="gui/$(id -u)"
       "$LAUNCHCTL" bootout "$GC_DOMAIN/$GC_LABEL" </dev/null >/dev/null 2>&1 || true
       if "$LAUNCHCTL" bootstrap "$GC_DOMAIN" "$GC_PLIST" </dev/null; then
+        GC_LOADED=1; GC_LAUNCHD_NOTE="loaded ($GC_LABEL, 'slp-gc tick' every 60 s)"
         echo "Loaded launchd agent $GC_LABEL (runs 'slp-gc tick' every 60 s)"
       else
         echo "WARNING: could not load the agent; run: launchctl bootstrap $GC_DOMAIN $GC_PLIST" >&2
+        GC_LAUNCHD_NOTE="NOT loaded (launchctl bootstrap failed)"
       fi
     fi
   fi
 
-  if [ -n "$GC_MODE" ]; then echo "slp-gc: opt-ins ON: $GC_MODE"
-  else echo "slp-gc: report-only (nothing is deleted or killed)"; fi
+  if [ "${#GC_OPTINS[@]}" -gt 0 ]; then
+    if [ "$GC_LOADED" = 1 ]; then
+      echo "!! slp-gc is RUNNING WITH OPT-INS every 60 s; it will act on your machine:"
+    else
+      echo "!! slp-gc opt-ins are set in the config (they act only while a tick runs):"
+    fi
+    for o in "${GC_OPTINS[@]}"; do echo "!!   - $o"; done
+    echo "!! Back to report-only: install.sh --gc-report-only"
+  else
+    echo "slp-gc: report-only (nothing is deleted or killed)"
+  fi
+  if [ "$GC_LOADED" = 1 ]; then echo "  launchd agent: $GC_LAUNCHD_NOTE"
+  else echo "  launchd agent $GC_LAUNCHD_NOTE"; fi
   echo "  config: $GC_CONF   output: $GC_STATE"
   echo "  by hand: $GC_BIN report    (also: record, tick)"
 fi
