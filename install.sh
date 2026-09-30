@@ -710,16 +710,23 @@ gc_resolve_launchctl() {
   fi
   GC_DOMAIN="gui/$("$GC_ID" -u 2>/dev/null || id -u)"
 }
-# With --no-gc / --no-gc-launchd an agent from an earlier install is left alone: say so.
+# With --no-gc / --no-gc-launchd an agent from an earlier install is left alone: say what is true of
+# it. "Active" only after a successful launchctl print through the override; a plist alone is just
+# an installed definition, and "unknown" is said when launchd cannot be queried safely.
 gc_existing_agent_note() {
-  local present=0
-  [ -e "$GC_PLIST" ] || [ -L "$GC_PLIST" ] && present=1
-  if [ "$present" = 0 ]; then
-    gc_resolve_launchctl
-    if [ -z "$GC_SKIP" ] && "$LAUNCHCTL" print "$GC_DOMAIN/$GC_LABEL" </dev/null >/dev/null 2>&1; then present=1; fi
+  local plist=0 state=unknown rm_cmd
+  if [ -e "$GC_PLIST" ] || [ -L "$GC_PLIST" ]; then plist=1; fi
+  gc_resolve_launchctl
+  if [ -z "$GC_SKIP" ]; then
+    if "$LAUNCHCTL" print "$GC_DOMAIN/$GC_LABEL" </dev/null >/dev/null 2>&1; then state=loaded; else state=notloaded; fi
   fi
-  if [ "$present" = 1 ]; then
-    echo "slp-gc: existing agent remains active: $GC_LABEL (not touched); to remove: launchctl bootout gui/\$(id -u)/$GC_LABEL && rm $GC_PLIST"
+  rm_cmd="launchctl bootout gui/\$(id -u)/$GC_LABEL; rm $GC_PLIST"
+  if [ "$state" = loaded ]; then
+    echo "slp-gc: existing agent remains active: $GC_LABEL (not touched); to remove: $rm_cmd"
+  elif [ "$plist" = 1 ] && [ "$state" = notloaded ]; then
+    echo "slp-gc: existing definition remains installed (not loaded): $GC_PLIST (not touched); to remove: rm $GC_PLIST"
+  elif [ "$plist" = 1 ]; then
+    echo "slp-gc: an existing definition is installed at $GC_PLIST; whether it is loaded is unknown (launchd cannot be queried safely here: $GC_SKIP); not touched; to remove: $rm_cmd"
   fi
 }
 
