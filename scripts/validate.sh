@@ -661,7 +661,8 @@ fi
 # Static: the rules exist, and the old instructions are gone.
 RULE_PHRASES=(
   'SKILL.md|⏳ Working:'
-  'SKILL.md||_ <Peer title> (running|permission pending)'
+  'SKILL.md|├─ <Peer title> (running|permission pending)'
+  'SKILL.md|└─ <Peer title> ('
   'SKILL.md|✅ Done:'
   'SKILL.md|❓ Waiting on you:'
   'SKILL.md|`supervisor: room`'
