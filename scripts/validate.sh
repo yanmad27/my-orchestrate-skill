@@ -675,7 +675,7 @@ RULE_PHRASES=(
   'SKILL.md|🤖 <Lead workstream> · <what the Lead is doing now'
   'SKILL.md|🦾 <short Peer name> · <what the Peer is doing now>'
   'SKILL.md|(permission pending)'
-  'SKILL.md|it must be U+2003 EM SPACE'
+  'SKILL.md|Indent Peers with the literal text'
   'SKILL.md|no blank lines anywhere in the block'
   'SKILL.md|`🕒` is printed right before'
   'PROTOCOL.md|`🤖 <Lead workstream> · <what it is'
@@ -739,13 +739,13 @@ for f in SKILL.md PROTOCOL.md; do
   if python3 - "$ROOM_DIR/$f" <<'PY'
 import re, sys
 t = open(sys.argv[1], encoding="utf-8").read()
-ok = re.search(r"^🕒 Working\n\u2003{2}🤖 \S.* · .*\n\u2003{4}🦾 \S.* · ", t, re.M)
-sys.exit(0 if ok else 1)
+ok = re.search(r"^🕒 Working\n-{3,}\n🤖 \S.* · .*\n(?:&\w+;)+🦾 \S.* · ", t, re.M)
+sys.exit(0 if ok and "\u2003" not in t else 1)
 PY
   then
-    ok "$ROOM_DIR/$f shows the U+2003-indented 🤖/🦾 room-state tree"
+    ok "$ROOM_DIR/$f shows the entity-indented 🤖/🦾 room-state tree and carries no raw U+2003"
   else
-    fail "$ROOM_DIR/$f must show the U+2003-indented 🤖 Lead row with a 🦾 Peer row nested under it"
+    fail "$ROOM_DIR/$f must show the entity-indented 🤖 Lead row with a 🦾 Peer row nested under it, and no raw U+2003"
   fi
 done
 

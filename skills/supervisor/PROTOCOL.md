@@ -183,10 +183,10 @@ the Supervisor sends a `DONE` with a Peer still running back for correction.
 
 The Supervisor ends every turn — heartbeat wakes and precondition stops
 included — with exactly one room-state block, its last row the turn's last line: `✅ Done`
-or `❓ Waiting on you` (one row each), or `🕒 Working` (a header row, then one `🤖 <Lead workstream> · <what it is
+or `❓ Waiting on you` (one row each), or `🕒 Working` (a header row, a `-------------` line, then one `🤖 <Lead workstream> · <what it is
 doing or its state>` row per Lead with one `🦾 <short Peer name> · <what it is
 doing>` row per running or permission-pending Peer nested under it, indented
-with U+2003 EM SPACE, no blank lines) only after
+with the literal ASCII text `&emsp;&ensp;` before each 🦾 row (🤖 rows have no indent), no blank lines, never in a code fence) only after
 answering the person mid-run or when `slp-wait` failed; `🕒 Working` otherwise precedes each
 `slp-wait` and never ends a turn (see its role). The
 person always sees the state, and no turn ends on a bare acknowledgement.
@@ -194,11 +194,12 @@ For example:
 
 ```text
 🕒 Working
-  🤖 auth refactor · reviewing the token store diff
-    🦾 token store · reading the store
-    🦾 token store diff · checking the diff
-  🤖 billing export · STATUS: waiting on CI
-    🦾 csv writer · writing rows (permission pending)
+-------------
+🤖 auth refactor · reviewing the token store diff
+&emsp;&ensp;🦾 token store · reading the store
+&emsp;&ensp;🦾 token store diff · checking the diff
+🤖 billing export · STATUS: waiting on CI
+&emsp;&ensp;🦾 csv writer · writing rows (permission pending)
 ```
 
 ## Independent judgment and debate

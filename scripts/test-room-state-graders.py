@@ -25,14 +25,17 @@ def load(key):
     return re.compile(m.group(1))
 
 
-E = "\u2003"
-L2, P4 = E * 2, E * 4
-CARD_A = L2 + "🤖 auth refactor · reviewing token store diff\n" + P4 + "🦾 token store · reading the store\n" + P4 + "🦾 token store diff · checking the diff"
-CARD_B = L2 + "🤖 billing export · STATUS: waiting on CI\n" + P4 + "🦾 csv writer · writing rows (permission pending)"
-CARD_C = L2 + "🤖 search index · resuming"
-CARD_D = L2 + "🤖 docs · idle"
-CARD_E = L2 + "🤖 docs · running the changelog pass · then publish"
-HDR = "🕒 Working\n"
+SEPARATOR = "\n-------------\n"
+PEER_INDENT = "&emsp;&ensp;"
+LEAD = ""
+RAW = "\u2003\u2002"  # negative fixtures only: raw Unicode spaces are not the taught form
+TITLE = "🕒 Working"
+HDR = TITLE + SEPARATOR
+CARD_A = LEAD + "🤖 auth refactor · reviewing token store diff\n" + PEER_INDENT + "🦾 token store · reading the store (permission pending)\n" + PEER_INDENT + "🦾 token store diff · checking the diff"
+CARD_B = LEAD + "🤖 billing export · STATUS: waiting on CI\n" + PEER_INDENT + "🦾 csv writer · writing rows (permission pending)"
+CARD_C = LEAD + "🤖 search index · resuming"
+CARD_D = LEAD + "🤖 docs · idle"
+CARD_E = LEAD + "🤖 docs · running the changelog pass · then publish"
 BLOCKS_OK = [
     HDR + CARD_A,
     HDR + CARD_A + "\n" + CARD_B + "\n" + CARD_C,
@@ -42,36 +45,60 @@ BLOCKS_OK = [
     HDR + CARD_A + "  \n" + CARD_D + "\n\n",
 ]
 OLD_CARDS = "⏳ Working:\n◉ auth refactor · running\n  Now: reviewing diff · Peers: token store\n\n◉ billing export · STATUS: waiting on CI\n  Peers: csv writer (permission pending)"
+WRONG_PEER_INDENTS = [
+    w for w in (
+        "&emsp;&emsp;", "&ensp;&emsp;", "&emsp;", "&ensp;", "&emsp;" * 4, "&emsp;&emsp;&ensp;",
+        PEER_INDENT + "&ensp;", PEER_INDENT + PEER_INDENT, "&amp;" + PEER_INDENT[1:],
+        "&emsp; &ensp;", "&nbsp;&nbsp;", RAW, "  ", "    ", "\t", "\u00a0\u00a0",
+    ) if w != PEER_INDENT
+]
+ROW = "🦾 readme · editing"
 BLOCKS_BAD = [
     OLD_CARDS,
     "⏳ Working:\n" + CARD_A,
+    TITLE + "\n" + CARD_A,
+    TITLE + ":" + SEPARATOR + CARD_A,
+    TITLE + "\n---\n" + CARD_A,
+    TITLE + "\n" + "-" * 14 + "\n" + CARD_A,
+    TITLE + "\n" + "-" * 12 + "\n" + CARD_A,
+    TITLE + "\n=============\n" + CARD_A,
+    TITLE + "\n\n-------------\n" + CARD_A,
+    TITLE + "\n-------------\n\n" + CARD_A,
+    TITLE + "\n ------------\n" + CARD_A,
+    HDR + "  🤖 docs · running",
+    HDR + "&emsp;🤖 docs · running",
+    HDR + PEER_INDENT + "🤖 docs · running",
+    HDR + PEER_INDENT + "🤖 docs · running\n" + PEER_INDENT + ROW,
+    HDR + RAW + "🤖 docs · running",
+    HDR + "\u00a0\u00a0🤖 docs · running",
+    HDR + "\t🤖 docs · running",
+    HDR + "🤖 docs · running\n" + ROW,
+    HDR + "🤖 docs · running\n🦾 readme",
+    HDR + "🤖 docs · running\n" + LEAD + ROW + "\n" + PEER_INDENT + ROW,
     HDR + "◉ docs · running\n  Now: x",
     HDR + "[Lead] auth refactor (running)\n↳ [Peer] token store (running)",
     HDR + "[Lead] docs (running)\n├─ [Peer] readme (running)",
-    "🕒 Working:\n" + CARD_A,
+    "🕒 Working:" + SEPARATOR + CARD_A,
     HDR + CARD_A + "\n\n" + CARD_D,
     HDR + "\n" + CARD_D,
-    HDR + "  🤖 docs · running",
-    HDR + "🤖 docs · running",
-    HDR + "\u00a0\u00a0🤖 docs · running",
-    HDR + L2 + "🤖 docs · running\n    🦾 readme · editing",
-    HDR + L2 + "🤖 docs · running\n" + E * 3 + "🦾 readme · editing",
-    HDR + L2 + "🤖 docs · running\n" + E * 5 + "🦾 readme · editing",
-    HDR + L2 + "🤖 docs · running\n" + P4 + "🦾 readme",
-    HDR + L2 + "🤖 docs running",
-    HDR + L2 + "🤖  · running",
-    HDR + L2 + "🤖 docs · ",
-    HDR + P4 + "🦾 readme · editing\n" + CARD_D,
-    HDR + L2 + "🤖 docs · running\n" + L2 + "🦾 readme · editing",
-    HDR + L2 + "🤖 docs · running\n" + P4 + "🤖 docs · running",
-    HDR + L2 + "🤖 docs · running\n" + P4 + "Peers: readme",
-    HDR + L2 + "🤖 docs · running\n  Now: checking",
-    HDR + CARD_A + "\n" + P4 + "◉ card",
+    HDR + "🤖 docs running",
+    HDR + "🤖  · running",
+    HDR + "🤖 docs · ",
+    HDR + PEER_INDENT + ROW + "\n" + CARD_D,
+    HDR + "🤖 docs · running\n" + PEER_INDENT + "🤖 docs · running",
+    HDR + "🤖 docs · running\n" + PEER_INDENT + "Peers: readme",
+    HDR + "🤖 docs · running\n  Now: checking",
+    HDR + CARD_A + "\n" + PEER_INDENT + "◉ card",
     "prefix " + HDR + CARD_A,
     "**" + HDR + CARD_A,
     "```text\n" + HDR + CARD_A,
     "```\n" + HDR + CARD_A,
+    "```text\n" + HDR + CARD_A + "\n```",
+    "```\n" + HDR + CARD_A + "\n```",
 ]
+for w in WRONG_PEER_INDENTS:
+    BLOCKS_BAD.append(HDR + "🤖 docs · running\n" + w + ROW)
+    BLOCKS_BAD.append(HDR + CARD_A + "\n" + CARD_B.replace(PEER_INDENT, w))
 TRAIL = "\n\nThat is the current state."
 BLANK_OK = HDR + CARD_A + "\n\n  \n\t\n"
 
@@ -103,7 +130,7 @@ for key in ("heartbeat", "handoff"):
         check(key, not match(key, PRE + b + TRAIL), f"negative trailing prose {i}")
         check(key, not match(key, PRE + b + "\nTRAIL"), f"negative trailing prose, no blank {i}")
 check("heartbeat", not match("heartbeat", PRE + HDR + CARD_A + "\n❓ Waiting on you: x"), "negative ❓")
-check("heartbeat", not match("heartbeat", PRE + HDR + CARD_A + "\n" + L2 + "🤖 half"), "negative malformed trailing Lead row")
+check("heartbeat", not match("heartbeat", PRE + HDR + CARD_A + "\n" + LEAD + "🤖 half"), "negative malformed trailing Lead row")
 
 key = "interruption"
 for i, b in enumerate(BLOCKS_OK):
@@ -133,10 +160,10 @@ check(key, match(key, ANS + BLANK_OK), "positive trailing blank lines")
 
 SEP = "x · " * 10000
 BIGS = {
-    "Lead separators, bad Peer row": HDR + L2 + "🤖 " + SEP + "\n" + P4 + "🦾 a",
-    "Lead description separators, trailing prose": HDR + L2 + "🤖 docs · " + SEP + "\nprose",
-    "Peer name separators, trailing prose": HDR + CARD_D + "\n" + P4 + "🦾 " + SEP + "\nprose",
-    "Peer description separators, trailing prose": HDR + CARD_D + "\n" + P4 + "🦾 a · " + SEP + "\nprose",
+    "Lead separators, bad Peer row": HDR + LEAD + "🤖 " + SEP + "\n" + PEER_INDENT + "🦾 a",
+    "Lead description separators, trailing prose": HDR + LEAD + "🤖 docs · " + SEP + "\nprose",
+    "Peer name separators, trailing prose": HDR + CARD_D + "\n" + PEER_INDENT + "🦾 " + SEP + "\nprose",
+    "Peer description separators, trailing prose": HDR + CARD_D + "\n" + PEER_INDENT + "🦾 a · " + SEP + "\nprose",
 }
 for k in ("heartbeat", "handoff", "interruption", "midrun"):
     pre = ANS if k == "midrun" else PRE
@@ -150,6 +177,56 @@ key = "norearm"
 check(key, match(key, ANS + HDR + CARD_A), "positive no re-arm")
 check(key, not match(key, ANS + HDR + CARD_A + "\nre-arm slp-wait"), "negative re-arm text")
 check(key, not match(key, ANS + HDR + CARD_A + "\nslp-wait 110"), "negative slp-wait call")
+
+
+
+
+# Consistency: every file that teaches, exemplifies or grades the block must use
+# SEPARATOR and PEER_INDENT as defined above, and no indent for 🤖 rows.
+DOCS = [
+    "skills/supervisor/PROTOCOL.md",
+    "skills/supervisor/SKILL.md",
+    "README.md",
+    "CONTRIBUTING.md",
+    "evals/README.md",
+]
+ENTITY = r"&[A-Za-z0-9#]+;"
+ALLOWED = set(re.findall(ENTITY, PEER_INDENT))
+EXPECT = {"🤖": LEAD, "🦾": PEER_INDENT}
+RAW_SPACES = re.compile("[\\u2002\\u2003]")
+
+
+def check_file(rel, text):
+    check("consistency", not RAW_SPACES.search(text), f"{rel} has no raw U+2002/U+2003")
+    bad = sorted(set(re.findall(ENTITY, text)) - ALLOWED)
+    check("consistency", not bad, f"{rel} uses only the entities of PEER_INDENT (others: {bad})")
+
+
+for rel in DOCS:
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    check_file(rel, text)
+    check("consistency", PEER_INDENT in text, f"{rel} mentions PEER_INDENT {PEER_INDENT}")
+    rows = re.findall(r"^((?:&[A-Za-z0-9#]+;)*)([🤖🦾]) ", text, re.M)
+    wrong = [(p, m) for p, m in rows if p != EXPECT[m]]
+    check("consistency", not wrong, f"{rel} tree rows use the constants (wrong: {wrong[:2]})")
+    stray = re.findall(r"^[ \t ]+[🤖🦾] ", text, re.M)
+    check("consistency", not stray, f"{rel} has no space-indented tree rows")
+    if rel.endswith(("PROTOCOL.md", "SKILL.md")):
+        check("consistency", {m for _, m in rows} == {"🤖", "🦾"}, f"{rel} exemplifies both 🤖 and 🦾 rows")
+        check("consistency", TITLE + SEPARATOR + "🤖" in text, f"{rel} shows the header, SEPARATOR, then a 🤖 row")
+
+SEP_PAT = TITLE + r"[ \t]*" + SEPARATOR.replace("\n", r"\n") + "🤖 "
+for key, rel in G.items():
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    check_file(rel, text)
+    if key == "norearm":
+        continue
+    check("consistency", SEP_PAT in text, f"{rel} requires the SEPARATOR between the header and the first 🤖 row")
+    rows = re.findall(r"\\n((?:&[A-Za-z0-9#]+;)*)([🤖🦾]) \\S", text)
+    total = len(re.findall(r"[🤖🦾] \\S", text))
+    good = [m for p, m in rows if p == EXPECT[m]]
+    check("consistency", len(rows) == total and len(good) == total and {"🤖", "🦾"} <= set(good),
+          f"{rel} indents its 🤖/🦾 rows by the constants ({len(good)}/{total})")
 
 print("FAILED" if fails else "ALL PASS", fails)
 sys.exit(1 if fails else 0)

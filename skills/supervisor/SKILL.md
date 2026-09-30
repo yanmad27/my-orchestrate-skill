@@ -174,20 +174,23 @@ precondition/error stops included, ends with exactly one room-state block,
 and its last row is the turn's last line: `✅` or `❓`; `🕒` only after
 answering the person mid-run, or when `slp-wait` failed (said explicitly).
 `✅` and `❓` are one row; `🕒` is a header row plus one row per Lead and one
-row per running Peer, as an indented tree. In these forms (keep the `🤖 ` and
-`🦾 ` markers and the indentation):
+row per running Peer, as a tree. In these forms (keep the `🤖 ` and
+`🦾 ` markers, the dash line and the indentation):
 
 ```text
 🕒 Working
-  🤖 <Lead workstream> · <what the Lead is doing now, or its state or last report signal with its gist>
-    🦾 <short Peer name> · <what the Peer is doing now>
-    🦾 <short Peer name> · <what the Peer is doing now> (permission pending)
-  🤖 <Lead workstream> · <...>
+-------------
+🤖 <Lead workstream> · <what the Lead is doing now, or its state or last report signal with its gist>
+&emsp;&ensp;🦾 <short Peer name> · <what the Peer is doing now>
+&emsp;&ensp;🦾 <short Peer name> · <what the Peer is doing now> (permission pending)
+🤖 <Lead workstream> · <...>
 ✅ Done: <outcome in one line>
 ❓ Waiting on you: <decision>
 ```
 
-`🕒 Working` (no colon) is its own header row at column 0. Each Lead gets one
+`🕒 Working` (no colon) is its own header row at column 0, followed directly
+by the line `-------------` (13 dashes, no blank line before or after it; it
+turns the header into a heading), then the rows. Each Lead gets one
 `🤖` row: the workstream is the Lead's title without its `[Lead]` prefix, then
 ` · `, then a short phrase for what it is doing when it is doing something,
 otherwise its lifecycle state (`running`, `resuming`, `permission pending`,
@@ -201,24 +204,27 @@ without such Peers has just its `🤖` row. There are no detail lines, no
 separate Peer list, and no blank lines anywhere in the block: the last row is the
 turn's last line.
 
-**The indentation is real characters, and it must be U+2003 EM SPACE.** A `🤖`
-row starts with exactly two U+2003 characters, a `🦾` row with exactly four
-(the header has none). Never use ASCII spaces or tabs for it: the chat renders
-markdown, which strips leading ASCII spaces from every line, and the tree
-flattens. U+2003 is not stripped, and each row stays on its own line. Copy the
-example below character for character. `🕒` is printed right before
+**Indent Peers with the literal text `&emsp;&ensp;`.** A `🤖` row starts at
+column 0 with no indent. A `🦾` row starts with `&emsp;&ensp;`: type those 12
+ASCII characters as they are; Paseo renders them as an em space and an en
+space. Never indent with ASCII spaces, tabs, or raw Unicode spaces (the chat
+strips them), and never put the block in a code fence (it would show the
+entities literally). Keep every row consecutive. Copy the example below
+character for character (the fence below is only for this document).
+`🕒` is printed right before
 each `slp-wait`, so the latest visible text plus the spinner shows the state.
 A turn that ends stops spinning, so it ends on `🕒` only in the two cases above.
 Rendered:
 
 ```text
 🕒 Working
-  🤖 auth refactor · reviewing the token store diff
-    🦾 token store · reading the store
-    🦾 token store diff · checking the diff
-  🤖 billing export · STATUS: waiting on CI
-    🦾 csv writer · writing rows (permission pending)
-  🤖 search index · resuming
+-------------
+🤖 auth refactor · reviewing the token store diff
+&emsp;&ensp;🦾 token store · reading the store
+&emsp;&ensp;🦾 token store diff · checking the diff
+🤖 billing export · STATUS: waiting on CI
+&emsp;&ensp;🦾 csv writer · writing rows (permission pending)
+🤖 search index · resuming
 ✅ Done: auth refactor committed on feat/auth, 14 tests pass, nothing pushed
 ❓ Waiting on you: push feat/auth to origin, or leave it local?
 ```
