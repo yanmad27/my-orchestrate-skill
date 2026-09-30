@@ -1,8 +1,9 @@
 #!/bin/bash
 # slp-gc — garbage collector and diagnostic tool for a Paseo home.
-#   slp-gc [report|record|tick] [--apply] [--kill-stale-processes] [--kill-over-memory]
+#   slp-gc [report|record|tick|test-alert] [--apply [--only <token>,...]] [--kill-stale-processes] [--kill-over-memory]
 #          [--home <PASEO_HOME>] [--json] [--help]
-# report and record are read-only and make no paseo CLI call. Reclamation (--apply) goes only
+# report is read-only and makes no paseo CLI call; record makes none either, except the one bounded
+# `agent send` that delivers a real alert to the most recently used open Supervisor. Reclamation (--apply) goes only
 # through Paseo's own CLI; the only signals are single-pid SIGTERMs behind the kill flags.
 # bash 3.2 compatible (stock macOS), jq required, no python/node.
 
@@ -107,7 +108,7 @@ norm_thresholds() {
 
 usage() {
   cat <<'EOF'
-usage: slp-gc [report|record|tick] [options]
+usage: slp-gc [report|record|tick|test-alert] [options]
 
   report   (default) read-only: Paseo processes + memory, recurring machinery, agents,
            garbage candidates with the rule that matched or failed, retention data.
@@ -115,7 +116,12 @@ usage: slp-gc [report|record|tick] [options]
   record   append one JSONL memory sample (per Paseo process, tree totals, orphans, system totals)
            to <state>/memory.jsonl; refresh <state>/lineage.tsv (the lineage ledger); alerts.log +
            a notification when a process >= SLP_GC_MEM_WARN_MB, the Paseo tree >= SLP_GC_TREE_WARN_MB
-           or a proven orphan > 1024 MB. Makes no paseo CLI call.
+           or a proven orphan > 1024 MB. The only paseo CLI call it can make is the one delivery of a real alert
+           (inside that same rate limit) to the most recently used open Supervisor: `agent send`, once, 10 s timeout,
+           never retried, never affects the exit status. SLP_GC_ALERT_SUPERVISOR=0 turns delivery off.
+  test-alert  deliver one clearly marked TEST message to that Supervisor (nothing else: no alerts.log, no rate-limit stamp,
+           no notification, no cleanup). Prints the Supervisor id. Exit 0 delivered, 3 no open Supervisor (or a pending
+           permission), 1 send failed.
   tick     what launchd runs every 60 s: record, periodic report, and apply/kill phases
            ONLY if the config file sets SLP_GC_APPLY=1 (and SLP_GC_KILL_STALE / _MEMORY=1).
 
@@ -130,11 +136,14 @@ options:
                            an agent child, a proven orphan, or a renderer/GPU/utility helper of the app
                            (never the daemon, the Supervisor, the app main or an agent child itself)
   --home <dir>             PASEO_HOME (default $PASEO_HOME, else ~/.paseo)
+  --only <token>[,<token>...]  with report --apply: act ONLY on the named candidates (tokens from `report --json`
+                           .candidates). Every token is preflighted first; any token that is not currently an eligible
+                           candidate (or a kill token without its flag) => exit 2, nothing done. Unnamed candidates are never touched.
   --json                   machine-readable output
   -h, --help               this text
 
 env: SLP_GC_STATE_DIR (default ~/Library/Logs/slp-gc), SLP_GC_CONFIG (tick only, KEY=VALUE, last
-  value wins, flags are on only when exactly 1: SLP_GC_APPLY SLP_GC_KILL_STALE SLP_GC_KILL_MEMORY
+  value wins, flags are on only when exactly 1: SLP_GC_APPLY SLP_GC_KILL_STALE SLP_GC_KILL_MEMORY SLP_GC_ALERT_SUPERVISOR[1; 0 = never deliver alerts to a Supervisor]
   SLP_GC_MEM_WARN_MB[3072] SLP_GC_MEM_KILL_MB[4096, floor 1024, >= warn] SLP_GC_TREE_WARN_MB[50% of RAM]
   SLP_GC_KILL_COMMS[alias SLP_GC_ORPHAN_COMMS; node bun deno npm npx pnpm yarn esbuild tsc vitest jest python python3 uv pytest ruby java
   gradle go cargo] SLP_GC_ORPHAN_MIN_AGE_MIN[10] SLP_GC_TEST_CONCURRENCY_WARN[3]
@@ -149,14 +158,16 @@ EOF
 }
 
 # --- arguments ------------------------------------------------------------------------------------
-CMD=""; APPLY=0; KILL_STALE=0; KILL_MEM=0; HOME_ARG=""; JSON=0
+CMD=""; APPLY=0; KILL_STALE=0; KILL_MEM=0; HOME_ARG=""; JSON=0; ONLY_ARG=""; ONLY_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    report|record|tick) [ -z "$CMD" ] || die "more than one subcommand"; CMD="$1" ;;
+    report|record|tick|test-alert) [ -z "$CMD" ] || die "more than one subcommand"; CMD="$1" ;;
     --apply) APPLY=1 ;;
     --kill-stale-processes) KILL_STALE=1 ;;
     --kill-over-memory) KILL_MEM=1 ;;
     --json) JSON=1 ;;
+    --only) [ $# -ge 2 ] || die "--only needs a token list"; ONLY_ARG="$2"; ONLY_SET=1; shift ;;
+    --only=*) ONLY_ARG="${1#--only=}"; ONLY_SET=1 ;;
     --home) [ $# -ge 2 ] || die "--home needs a directory"; HOME_ARG="$2"; shift ;;
     --home=*) HOME_ARG="${1#--home=}" ;;
     -h|--help) usage; exit 0 ;;
@@ -170,6 +181,13 @@ if [ "$CMD" != tick ]; then
     [ "$APPLY" = 1 ] || die "--kill-stale-processes / --kill-over-memory require --apply"
   fi
   if [ "$APPLY" = 1 ] && [ "$CMD" != report ]; then die "--apply only applies to the report subcommand"; fi
+  if [ "$CMD" = test-alert ]; then
+    [ "$JSON" = 0 ] || die "test-alert takes only --home"
+  fi
+fi
+if [ "$ONLY_SET" = 1 ]; then
+  { [ "$CMD" = report ] && [ "$APPLY" = 1 ]; } || die "--only needs report --apply"
+  [ -n "$ONLY_ARG" ] || die "--only needs a token list"
 fi
 # launchd's PATH is minimal: make jq/paseo findable before anything needs them
 PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"; export PATH
@@ -217,7 +235,8 @@ def mb1: (. * 10 | round) / 10;
 AGENT_LIGHT_JQ='{path: input_filename} + (
   if type != "object" then {ok: false, reason: "not a JSON object"}
   elif (.id | type) != "string" or (.id | length) == 0 then {ok: false, reason: "missing id"}
-  else {ok: true, id: .id, archivedAt: (.archivedAt // null)} end)'
+  else {ok: true, id: .id, archivedAt: (.archivedAt // null), provider: (.provider // null),
+        lastUserMessageAt: (.lastUserMessageAt // null), lastActivityAt: (.lastActivityAt // null), attentionReason: (.attentionReason // null)} end)'
 AGENT_JQ="$JQ_COMMON"'
 {path: input_filename} + (
   if type != "object" then {ok: false, reason: "not a JSON object"}
@@ -909,6 +928,15 @@ ASSEMBLE_JQ='
 | ($sg | map({key: .path, value: .sig}) | from_entries) as $sigBy
 | {version: 1, generated: $generated, home: $home, procs: $pr[0], agents: $ev[0].agents, schedules: $ev[0].schedules, index: $ev[0].index,
    garbage: ($ev[0].garbage | map(. + {sig: $sigBy[.path]})),
+   candidates: (
+     def mbs: if . == null then null else (. * 100 | round) / 100 end;
+     def gc($cat; $re): [$ev[0].garbage[] | select(.category == $cat and (.id | type) == "string" and (.id | test($re)))] | sort_by(.id);
+     def ks($k; $flag): [($pr[0].procs + $pr[0].orphans)[] | select((.class | IN("app-main", "supervisor", "daemon") | not) and .pid > 1 and .[$k].eligible)] | sort_by(.pid)
+       | map({token: ("kill-" + (if $k == "stale" then "stale" else "memory" end) + ":\(.pid)@\(.lstart)"), action: ("kill-" + (if $k == "stale" then "stale" else "memory" end)),
+              kind: .class, reason: .[$k].why, sizeMB: (.footprint_mb | mbs), requiresFlag: $flag});
+     (gc("schedule"; "\\A[0-9a-f]{8}\\z") | map({token: ("schedule-delete:" + .id), action: "schedule-delete", kind: "schedule", reason: .reason, sizeMB: (if .size == null then null else (.size / 1048576 | mbs) end), requiresFlag: null}))
+     + (gc("agent"; "\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z") | map({token: ("agent-delete:" + .id), action: "agent-delete", kind: "agent", reason: .reason, sizeMB: null, requiresFlag: null}))
+     + ks("stale"; "--kill-stale-processes") + ks("overmem"; "--kill-over-memory")),
    transcripts: ($tr | map(. + {agent: $bySess[.sessionId]})), daemonMetrics: $met, retention: $ret}'
 evaluate() {
   local mode="${1:-full}" f
@@ -1050,7 +1078,7 @@ resolve_cli() {  # test override (SLP_GC_PASEO only), else PASEO_CLI, PATH, the 
 CLI_DEAD=0
 run_cli() {  # rc 0 ok, 1 failed, 2 timed out (the daemon is hung: stop acting). Output in $T0/cli.out
   local rc
-  PASEO_HOME="$PHOME" run_to "$CLI_TIMEOUT" "$CLI" "$@" > "$T0/cli.out" 2> "$T0/cli.err" < /dev/null; rc=$?
+  PASEO_HOME="$PHOME" run_to "${CLI_TO:-$CLI_TIMEOUT}" "$CLI" "$@" > "$T0/cli.out" 2> "$T0/cli.err" < /dev/null; rc=$?
   CLI_OUT="$(cat "$T0/cli.out" "$T0/cli.err" | head -c 300 | tr '\n' ' ')"
   [ "$rc" = 0 ] && return 0
   [ "$rc" = 142 ] && { CLI_DEAD=1; return 2; }
@@ -1090,7 +1118,7 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
   fi
   if ! have_perl; then act refuse - refused "no perl: cannot enforce a timeout on the paseo CLI"; APPLY_RC=3; return 3; fi
   CLI="$(resolve_cli)" || CLI=""
-  local ngar; ngar="$(jq '.garbage | length' "$T/report.json")"
+  local ngar; ngar="$(jq --argjson only "${ONLY_JSON:-null}" '[.garbage[] | select($only == null or (((.category + "-delete:" + .id) as $t | $only | index($t)) != null))] | length' "$T/report.json")"
   [ "${KILLS_ONLY:-0}" != 1 ] || ngar=0   # the reserved kill window (below) never deletes
   if [ -z "$CLI" ] && [ "$ngar" -gt 0 ]; then act refuse - refused "paseo CLI not found (PATH / Paseo.app)"; fail=1; ngar=0; fi
   # test hook: something changes between the evaluation and the actions
@@ -1125,7 +1153,7 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
       n=$((n + 1))
       if run_cli "$cat" delete --home "$PHOME" -- "$id"; then act "$cat delete" "$id" ok "paseo $cat delete --home $PHOME -- $id"
       else act "$cat delete" "$id" failed "rc!=0: $CLI_OUT"; fail=1; fi
-    done < <(jq -j --arg c "$cat" '.garbage[] | select(.category == $c) | [.id, .path, (.updatedAt // ""), (.archivedAt // ""), (.sig // "")] | join("\u001f"), "\u0000"' "$T/report.json")
+    done < <(jq -j --arg c "$cat" --argjson only "${ONLY_JSON:-null}" '.garbage[] | select(.category == $c) | select($only == null or (((.category + "-delete:" + .id) as $t | $only | index($t)) != null)) | [.id, .path, (.updatedAt // ""), (.archivedAt // ""), (.sig // "")] | join("\u001f"), "\u0000"' "$T/report.json")
   done
   [ "$CLI_DEAD" = 0 ] || { act abort - failed "paseo CLI timed out: daemon hung, remaining items not touched"; fail=1; }
 
@@ -1196,7 +1224,8 @@ do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/repo
       fi
       nk=$((nk + 1))
       if "$KILL" -TERM "$pid" 2>/dev/null; then act kill "$pid" ok "SIGTERM $class ($kind): $why"; else act kill "$pid" failed "kill returned non-zero"; fail=1; fi
-    done < <(jq -j --arg kind "$kind" '.procs | (.procs + .orphans)[] | select(if $kind == "stale" then .stale.eligible else .overmem.eligible end)
+    done < <(jq -j --arg kind "$kind" --argjson only "${ONLY_JSON:-null}" '.procs | (.procs + .orphans)[] | select(if $kind == "stale" then .stale.eligible else .overmem.eligible end)
+        | select($only == null or (("kill-" + (if $kind == "stale" then "stale" else "memory" end) + ":\(.pid)@\(.lstart)") as $t | $only | index($t)) != null)
         | [.pid, .ppid, .lstart, .class, (if $kind == "stale" then .stale.why else .overmem.why end), .cmd] | map(tostring) | join("\u001f"), "\u0000"' "$T/report.json")
   done
   APPLY_RC=$fail
@@ -1206,6 +1235,112 @@ render_actions() {
   if [ ! -s "$ACTF" ]; then echo "apply: nothing to do"; return; fi
   echo "== apply results"
   jq -r '"  \(.kind): \(.target) -> \(.result) (\(.detail))"' "$ACTF"
+}
+
+# ====================================================================================================
+# alert delivery to the most recently used open Supervisor
+# ====================================================================================================
+ALERT_SUPERVISOR="${SLP_GC_ALERT_SUPERVISOR:-1}"; [ "$ALERT_SUPERVISOR" = 0 ] || ALERT_SUPERVISOR=1
+SEND_TIMEOUT="$(ovr "${SLP_GC_SEND_TIMEOUT:-}")"; is_uint "$SEND_TIMEOUT" && [ "$(dec "$SEND_TIMEOUT")" -ge 1 ] && SEND_TIMEOUT="$(dec "$SEND_TIMEOUT")" || SEND_TIMEOUT=10
+MSG_MAX=2048; LEDGER_LINES=200
+# Human recency of an open Supervisor = its lastUserMessageAt, EXCEPT that Paseo's own `agent send` sets it to the send time:
+# when it lies within [sentAt-5s, sentAt+30s] of that id's most recent delivery in deliveries.jsonl it is slp-gc's echo and the
+# recorded prior value (itself human recency) counts instead. A person's later message lies outside the window and counts.
+# Output: one line {id, pending, prior} for the winner (highest human recency, then lastActivityAt, then id), or nothing.
+PICK_JQ='
+def ms: if type == "string" and test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z\\z")
+  then ((sub("\\.[0-9]+"; "") | fromdateiso8601) * 1000) + ((([match("\\.([0-9]+)").captures[0].string] | first // "0") + "000")[:3] | tonumber) else null end;
+($led[0] | map(select(type == "object" and (.id | type) == "string" and (.sentAt | ms) != null)) | group_by(.id)
+   | map(max_by(.sentAt | ms)) | map({key: .id, value: .}) | from_entries) as $L
+| [ .[] | select(.ok == true and .provider == "claude-supervisor" and .archivedAt == null
+                 and ((.id | test("\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z"))
+                 and ((.path | split("/") | last | sub("\\.json\\z"; "")) == .id)))
+    | . as $r | ($r.lastUserMessageAt | ms) as $u | $L[$r.id] as $e
+    | (if $u != null and $e != null and $u >= (($e.sentAt | ms) - 5000) and $u <= (($e.sentAt | ms) + 30000)
+       then {ms: ($e.priorLastUserMessageAt | ms), s: (if ($e.priorLastUserMessageAt | ms) == null then null else $e.priorLastUserMessageAt end)}
+       else {ms: $u, s: (if $u == null then null else $r.lastUserMessageAt end)} end) as $eff
+    | {id: $r.id, pending: ($r.attentionReason == "permission"), prior: $eff.s, key: [($eff.ms // -1), (($r.lastActivityAt | ms) // -1), $r.id]} ]
+| if length == 0 then empty else (max_by(.key) | {id, pending, prior}) end'
+self_abs() {  # absolute path of the running slp-gc (a symlink is kept as invoked)
+  local d p
+  case "$0" in
+    */*) d="$(cd -P "$(dirname -- "$0")" 2>/dev/null && pwd -P)" && p="$d/${0##*/}" ;;
+    *) p="$(command -v -- "$0" 2>/dev/null)" ;;
+  esac
+  case "$p" in /*) ;; *) p="$PWD/$0" ;; esac
+  printf '%s' "$p"
+}
+shq() {  # quote for a shell command line only when needed
+  case "$1" in
+    ''|*[!A-Za-z0-9_./:@%+=,-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+nctl() { printf '%s' "$1" | tr -d '\000-\037\177'; }
+# build_alert_msg <test 0/1> <alerts.log line>: the prompt text on stdout, at most MSG_MAX bytes. Sets MSG_ALERT_ID.
+build_alert_msg() {
+  local hdr pre post line abs budget cut
+  MSG_ALERT_ID="$(ts_now)"
+  hdr="SLP-GC ALERT $MSG_ALERT_ID"; [ "$1" != 1 ] || hdr="SLP-GC ALERT (TEST) $MSG_ALERT_ID"
+  abs="$(nctl "$(self_abs)")"
+  pre="$hdr"$'\n'"From: slp-gc (automated message, not the person)"$'\n'"Alert: "
+  post=$'\n'"Home: $(nctl "$PHOME")"$'\n'"slp-gc: $abs"$'\n'"List candidates (read-only): $(shq "$abs") report --home $(shq "$(nctl "$PHOME")") --json"
+  post="$post"$'\n'"Cleanup needs the person's explicit yes for this alert and the exact candidate set."
+  [ "$1" != 1 ] || post="$post"$'\n'"TEST ONLY — no cleanup, no action needed."
+  line="$(nctl "$2")"
+  budget=$(( MSG_MAX - $(printf '%s' "$pre$post" | wc -c | tr -d ' ') - 1 ))
+  [ "$budget" -ge 8 ] || budget=8
+  cut="$(printf '%s' "$line" | head -c "$budget")"
+  [ "$cut" = "$line" ] || cut="$(printf '%s' "$line" | head -c $((budget - 3)))..."
+  printf '%s%s%s\n' "$pre" "$cut" "$post" | head -c "$MSG_MAX"
+}
+# deliver_alert <test 0/1> <alerts.log line> — exactly one `agent send` attempt, never retried.
+# rc 0 delivered; 3 nothing delivered on purpose (delivery off, no open Supervisor, pending permission);
+# 1 send failed (no CLI / no perl / non-zero / timeout). DELIVER_ID = the selected Supervisor, DELIVER_WHY = one log line.
+deliver_alert() {
+  local pick id pend prior pf rc sent
+  DELIVER_ID=""; DELIVER_WHY=""
+  extract_agents light >/dev/null 2>&1 || true
+  if [ -f "$STATE/deliveries.jsonl" ] && [ ! -L "$STATE/deliveries.jsonl" ]; then
+    jq -R 'fromjson? | select(type == "object")' "$STATE/deliveries.jsonl" 2>/dev/null | jq -s '.' > "$T/led.json" 2>/dev/null || echo '[]' > "$T/led.json"
+  else echo '[]' > "$T/led.json"; fi
+  pick="$(jq -c --slurpfile led "$T/led.json" "$PICK_JQ" "$T/agents.json" 2>/dev/null | head -n 1)"
+  [ -n "$pick" ] || { DELIVER_WHY="no open Supervisor, alert not delivered"; return 3; }
+  id="$(printf '%s' "$pick" | jq -r '.id')"; pend="$(printf '%s' "$pick" | jq -r '.pending')"; prior="$(printf '%s' "$pick" | jq -c '.prior')"
+  DELIVER_ID="$id"
+  [ "$pend" != true ] || { DELIVER_WHY="Supervisor $id has a pending permission, not delivered"; return 3; }
+  CLI="$(resolve_cli)" || CLI=""
+  [ -n "$CLI" ] || { DELIVER_WHY="paseo CLI not found, alert not delivered to Supervisor $id"; return 1; }
+  have_perl || { DELIVER_WHY="no perl: cannot enforce the ${SEND_TIMEOUT}s send timeout, alert not delivered to Supervisor $id"; return 1; }
+  pf="$(mktemp "$T0/prompt.XXXXXX")" || { DELIVER_WHY="cannot create the prompt file"; return 1; }
+  chmod 600 "$pf"
+  build_alert_msg "$1" "$2" > "$pf"
+  sent="$NOW"; [ -n "$(ovr "${SLP_GC_NOW:-}")" ] || sent="$(date +%s)"
+  mkdir -p "$STATE" 2>/dev/null
+  if [ ! -L "$STATE/deliveries.jsonl" ]; then
+    jq -nc --arg id "$id" --arg sentAt "$(date -u -r "$sent" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$sent" +%Y-%m-%dT%H:%M:%SZ)" --argjson prior "$prior" \
+      --arg alertId "$MSG_ALERT_ID" --argjson test "$([ "$1" = 1 ] && echo true || echo false)" \
+      '{id: $id, sentAt: $sentAt, priorLastUserMessageAt: $prior, alertId: $alertId, test: $test}' >> "$STATE/deliveries.jsonl" 2>/dev/null
+    if [ "$(wc -l < "$STATE/deliveries.jsonl" 2>/dev/null | tr -d ' ')" -gt "$LEDGER_LINES" ] 2>/dev/null; then
+      tail -n "$LEDGER_LINES" "$STATE/deliveries.jsonl" > "$STATE/deliveries.jsonl.tmp" 2>/dev/null && mv -f "$STATE/deliveries.jsonl.tmp" "$STATE/deliveries.jsonl"
+    fi
+  fi
+  CLI_TO="$SEND_TIMEOUT" run_cli agent send --home "$PHOME" --no-wait --prompt-file "$pf" -- "$id"; rc=$?
+  rm -f "$T0"/prompt.*
+  if [ "$rc" = 0 ]; then DELIVER_WHY="alert $MSG_ALERT_ID delivered to Supervisor $id"; return 0; fi
+  if [ "$rc" = 2 ]; then DELIVER_WHY="alert $MSG_ALERT_ID NOT delivered to Supervisor $id: paseo agent send timed out after ${SEND_TIMEOUT}s"
+  else DELIVER_WHY="alert $MSG_ALERT_ID NOT delivered to Supervisor $id: paseo agent send failed: $CLI_OUT"; fi
+  return 1
+}
+do_test_alert() {
+  local rc
+  [ -d "$PHOME" ] || die "PASEO_HOME $PHOME is not a directory"
+  mkdir -p "$STATE" || die "cannot create $STATE"
+  case "$(fum "$STATE")" in "$(id -u):700") ;; "$(id -u):"*) chmod 700 "$STATE" 2>/dev/null ;; esac
+  deliver_alert 1 "TEST alert: delivery check from slp-gc test-alert (no real alert was raised)"; rc=$?
+  [ -z "$DELIVER_ID" ] || printf '%s\n' "$DELIVER_ID"
+  note "test-alert: $DELIVER_WHY"
+  exit "$rc"
 }
 
 # ====================================================================================================
@@ -1263,6 +1398,11 @@ do_record() {
       printf '%s\n' "$msg" >> "$STATE/alerts.log"
       printf '%s\n' "$msg"   # stdout only on alerts and errors (launchd.log)
       run_to 10 "$OSASCRIPT" -e "display notification \"Paseo memory alert (see alerts.log)\" with title \"slp-gc\"" >/dev/null 2>&1 || true
+      if [ "$ALERT_SUPERVISOR" = 1 ]; then   # last, so a slow or failed delivery can never delay the log line or the notification
+        deliver_alert 0 "$msg" || true
+        rotate "$STATE/tick.log" 1048576 4096
+        printf '%s slp-gc alert: %s\n' "$(iso_now)" "$DELIVER_WHY" >> "$STATE/tick.log"
+      fi
     fi
   fi
 }
@@ -1295,6 +1435,7 @@ read_config() {
       SLP_GC_ORPHAN_MIN_AGE_MIN) ORPHAN_MIN_AGE_MIN="$v" ;;
       SLP_GC_TEST_CONCURRENCY_WARN) TEST_CONC_WARN="$v" ;;
       SLP_GC_REPORT_INTERVAL_MIN) CFG_REPORT_MIN="$v" ;;
+      SLP_GC_ALERT_SUPERVISOR) if [ "$v" = 0 ]; then ALERT_SUPERVISOR=0; elif [ "$v" = 1 ]; then ALERT_SUPERVISOR=1; fi ;;
     esac
   done < "$file"
   norm_thresholds
@@ -1371,14 +1512,31 @@ do_tick() {
 }
 
 # ====================================================================================================
+only_preflight() {   # every named token must be a current candidate whose gate flag is on, else exit 2 with nothing done
+  local bad
+  ONLY_JSON="$(jq -nc --arg s "$ONLY_ARG" '$s | split(",")')" || die "--only: cannot parse the token list"
+  bad="$(jq -r --argjson only "$ONLY_JSON" --argjson ks "$KILL_STALE" --argjson km "$KILL_MEM" '
+    . as $r | $only[] | . as $t | ($r.candidates | map(select(.token == $t))) as $m
+    | if ($m | length) == 0 then "\($t | tojson): not a current candidate (unknown, wrong action, changed, or no longer eligible)"
+      elif $m[0].requiresFlag == "--kill-stale-processes" and $ks != 1 then "\($t): needs --kill-stale-processes"
+      elif $m[0].requiresFlag == "--kill-over-memory" and $km != 1 then "\($t): needs --kill-over-memory"
+      else empty end' "$T/report.json")" || die "--only: preflight failed"
+  if [ -n "$bad" ]; then
+    printf 'slp-gc: --only refused, nothing was done:\n%s\n' "$bad" >&2
+    exit 2
+  fi
+}
+
 main() {
   case "$CMD" in
     record) do_record ;;
     tick) do_tick ;;
+    test-alert) do_test_alert ;;
     report)
       [ -d "$PHOME" ] || die "PASEO_HOME $PHOME is not a directory"
       APPLY_RC=0
       evaluate full || exit 1
+      if [ "$ONLY_SET" = 1 ]; then only_preflight; fi
       if [ "$APPLY" = 1 ]; then do_apply "$KILL_STALE" "$KILL_MEM"; fi
       if [ "$JSON" = 1 ]; then
         if [ "$APPLY" = 1 ]; then jq -c --slurpfile a "$ACTF" 'del(.procs.procs[].cmd, .procs.orphans[].cmd) + {actions: $a}' "$T/report.json"; else jq -c 'del(.procs.procs[].cmd, .procs.orphans[].cmd)' "$T/report.json"; fi

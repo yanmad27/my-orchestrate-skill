@@ -526,8 +526,170 @@ check "slp-gc has no SIGKILL, no process-group signal, no eval/source of the con
   ! grep -nE 'kill +-(9|KILL|SIGKILL)|-KILL|kill +-[0-9]+ +-|kill +.*-- *-' '$GC' | grep -v '^[0-9]*: *#' | grep -q . &&
   ! grep -nE '(^|[^a-z_])(source|\\.) +\"?\\\$\\{?(file|SLP_GC_CONFIG)' '$GC' | grep -q . &&
   ! grep -nE '(^|[^a-z])rm +-' '$GC' | grep -vE '\\\$T|LOCKDIR|STATE/reports|stale\\.' | grep -q ."
-check "every paseo CLI call passes --home explicitly and -- before ids (static)" bash -c "grep -c 'run_cli .*--home \"\$PHOME\"' '$GC' | grep -q 2 && grep -q -- '-- \"\$id\"' '$GC'"
+check "every paseo CLI call passes --home explicitly and -- before ids (static)" bash -c "grep -c 'run_cli .*--home \"\$PHOME\"' '$GC' | grep -q 3 && grep -q -- '-- \"\$id\"' '$GC'"
 fresh; fx_gc --help >/dev/null 2>&1; rc1=$?; fx_gc --bogus >/dev/null 2>&1; rc2=$?
 check "--help exits 0; an unknown flag exits 2" test "$rc1" = 0 -a "$rc2" = 2
 
 [ "$FAILED" = 0 ] || exit 1
+
+# ====================================================================================================
+# T2b: alert delivery to the most recently used open Supervisor, candidate-bounded cleanup, test-alert
+# ====================================================================================================
+S_OLD=bbbbbbbb-0000-4000-8000-000000000001; S_NEW=bbbbbbbb-0000-4000-8000-000000000002; S_NULL=bbbbbbbb-0000-4000-8000-000000000003
+S_ARCH=bbbbbbbb-0000-4000-8000-000000000004; S_LEAD=bbbbbbbb-0000-4000-8000-000000000005
+nsend() { local n; n="$(grep -c '^SEND$' "$FX_LOGS/send-argv.log" 2>/dev/null)"; echo "${n:-0}"; }
+send_to() { awk '/^ARG:--$/ {getline; sub(/^ARG:/, ""); print}' "$FX_LOGS/send-argv.log" 2>/dev/null | tr '\n' ' '; }
+first_msg() { awk '/^=== to /{n++} n==1 && !/^=== to /' "$FX_LOGS/send-msgs.log" 2>/dev/null; }
+sups() {  # the standard cast: an archived Supervisor and a Lead that are newer than everything, two open Supervisors, one never used
+  fx_sup "$S_ARCH" claude-supervisor "$(fx_iso 50)" "$(fx_iso 20)" "$(fx_iso 20)"
+  fx_sup "$S_LEAD" claude-lead null "$(fx_iso 10)" "$(fx_iso 10)"
+  fx_sup "$S_OLD" claude-supervisor null "$(fx_iso 5000)" "$(fx_iso 60)"
+  fx_sup "$S_NEW" claude-supervisor null "$(fx_iso 1000)" "$(fx_iso 900)"
+  fx_sup "$S_NULL" claude-supervisor null null "$(fx_iso 5)"
+}
+GCABS="$(cd "$(dirname "$GC")" && pwd -P)/$(basename "$GC")"
+
+fresh; sups; SEND_BEFORE_ID="$(agent_file "$S_NEW")"
+fx_gc record > "$WORK/d1.out" 2>&1; rc=$?
+first_msg > "$WORK/d1.msg"; keep "$WORK/d1.msg" t2b-sample-message.txt; keep "$FX_STATE/deliveries.jsonl" t2b-deliveries.jsonl
+check "delivery: a real alert sends exactly once, to the newest open Supervisor (not the archived one, not the Lead, not the never-used one); record exits 0" bash -c "test '$rc' = 0 && test '$(nsend)' = 1 && test '$(send_to)' = '$S_NEW ' && test \$(grep -c 'agent send' '$FX_LOGS/paseo.log') = 1"
+check "delivery: exact argv: agent send --home <home> --no-wait --prompt-file <file> -- <id> (one arg per line, spaces in the home survive)" bash -c "sed -n '/^SEND/,/^END/p' '$FX_LOGS/send-argv.log' | tr '\n' '|' | grep -qF 'SEND|ARG:agent|ARG:send|ARG:--home|ARG:$RP|ARG:--no-wait|ARG:--prompt-file|ARG:' && case '$RP' in *' '*) true ;; *) false ;; esac"
+check "delivery: the alert still lands in alerts.log and the notification still fires (one each)" bash -c "test \$(wc -l < '$FX_STATE/alerts.log') = 1 && test \$(wc -l < '$FX_LOGS/osascript.log') = 1"
+check "C3: line 1 is 'SLP-GC ALERT <UTC compact id>'" bash -c "head -n 1 '$WORK/d1.msg' | grep -qE '^SLP-GC ALERT [0-9]{8}T[0-9]{6}Z\$'"
+c3_ok() {   # c3_ok <message file> <slp-gc path> <alert line>
+  local f="$1" gc="$2" q
+  case "$gc" in *' '*) q="'$gc'" ;; *) q="$gc" ;; esac
+  sed -n 2p "$f" | grep -qx 'From: slp-gc (automated message, not the person)' && grep -qxF -- "Alert: $3" "$f" && grep -qxF -- "Home: $RP" "$f" &&
+    grep -qxF -- "slp-gc: $gc" "$f" && grep -qxF -- "List candidates (read-only): $q report --home '$RP' --json" "$f" &&
+    grep -qxF "Cleanup needs the person's explicit yes for this alert and the exact candidate set." "$f" && ! grep -q 'TEST' "$f"
+}
+check "C3: line 2 is the From line; then the Alert (the alerts.log line), Home, slp-gc path, the read-only list command, the explicit-yes rule" c3_ok "$WORK/d1.msg" "$GCABS" "$(cat "$FX_STATE/alerts.log")"
+check "C3: the message holds no other process's command line or environment (no FAKE-/stream-json/mcp-config tokens)" bash -c "! grep -qE 'FAKE-|stream-json|mcp-config|output-format' '$WORK/d1.msg'"
+check "C2: the prompt file is 0600 while it exists and is gone after the run" bash -c "test \"\$(cut -d' ' -f1 '$FX_LOGS/send-file.log')\" = 600 && ! test -e \"\$(cut -d' ' -f2- '$FX_LOGS/send-file.log')\""
+check "the tick log records the delivery" grep -q "delivered to Supervisor $S_NEW" "$FX_STATE/tick.log"
+check "C7: the ledger holds one entry {id, sentAt, priorLastUserMessageAt (the recipient's lastUserMessageAt), alertId, test:false}, mode 0600" bash -c "test \$(wc -l < '$FX_STATE/deliveries.jsonl') = 1 && jq -e --arg id '$S_NEW' --arg p \"\$(jq -r .lastUserMessageAt '$SEND_BEFORE_ID')\" '.id == \$id and .priorLastUserMessageAt == \$p and .test == false and (.sentAt | test(\"Z\$\")) and (.alertId | test(\"^[0-9]{8}T[0-9]{6}Z\$\"))' '$FX_STATE/deliveries.jsonl' >/dev/null && test \"\$(stat -f %Lp '$FX_STATE/deliveries.jsonl' 2>/dev/null || stat -c %a '$FX_STATE/deliveries.jsonl')\" = 600"
+fx_gc record >/dev/null 2>&1
+check "rate limit: a second record within 15 min sends nothing more (still one send, one alert, one notification)" bash -c "test '$(nsend)' = 1 && test \$(wc -l < '$FX_STATE/alerts.log') = 1 && test \$(wc -l < '$FX_LOGS/osascript.log') = 1"
+
+fresh; sups; FX_EXTRA_ENV="SLP_GC_ALERT_SUPERVISOR=0" fx_gc record >/dev/null 2>&1
+check "SLP_GC_ALERT_SUPERVISOR=0 (env): the alert is logged and notified, nothing is sent, no ledger entry" bash -c "test '$(nsend)' = 0 && test \$(wc -l < '$FX_STATE/alerts.log') = 1 && test ! -e '$FX_STATE/deliveries.jsonl' && test '$(logn paseo.log)' = 0"
+fresh; sups; printf 'SLP_GC_ALERT_SUPERVISOR=1\nSLP_GC_ALERT_SUPERVISOR=0\n' > "$FX_SB/slp-gc.conf"; fx_gc tick >/dev/null 2>&1
+check "SLP_GC_ALERT_SUPERVISOR=0 (config file, last value wins): tick alerts but sends nothing" bash -c "test '$(nsend)' = 0 && test \$(wc -l < '$FX_STATE/alerts.log') = 1"
+fresh; sups; printf 'SLP_GC_ALERT_SUPERVISOR=banana\n' > "$FX_SB/slp-gc.conf"; fx_gc tick >/dev/null 2>&1
+check "SLP_GC_ALERT_SUPERVISOR: an invalid value keeps the default (on): tick delivers once to the newest Supervisor" bash -c "test '$(nsend)' = 1 && test '$(send_to)' = '$S_NEW '"
+
+fresh; fx_sup "$S_ARCH" claude-supervisor "$(fx_iso 50)" "$(fx_iso 20)" "$(fx_iso 20)"; fx_sup "$S_LEAD" claude-lead null "$(fx_iso 10)" "$(fx_iso 10)"
+fx_gc record >/dev/null 2>&1; rc=$?
+check "no open Supervisor (only an archived one and a Lead): no send, no paseo call, record exits 0, alerts.log + notification still happen, one tick-log line says so" bash -c "test '$rc' = 0 && test '$(nsend)' = 0 && test '$(logn paseo.log)' = 0 && test \$(wc -l < '$FX_STATE/alerts.log') = 1 && test \$(wc -l < '$FX_LOGS/osascript.log') = 1 && test \$(grep -c 'no open Supervisor' '$FX_STATE/tick.log') = 1"
+
+fresh; sups; FX_EXTRA_ENV="SLPGC_SEND_FAIL=1" fx_gc record >/dev/null 2>&1; rc=$?
+check "send failure: exactly one attempt (no retry), record exits 0, alerts.log and the notification still happen, the failure is one tick-log line" bash -c "test '$rc' = 0 && test '$(nsend)' = 1 && test \$(wc -l < '$FX_STATE/alerts.log') = 1 && test \$(wc -l < '$FX_LOGS/osascript.log') = 1 && grep -q 'NOT delivered to Supervisor $S_NEW: paseo agent send failed' '$FX_STATE/tick.log'"
+fresh; sups; t0=$(date +%s); FX_EXTRA_ENV="SLPGC_SEND_HANG=1 SLP_GC_SEND_TIMEOUT=1" fx_gc record >/dev/null 2>&1; rc=$?; t1=$(date +%s)
+check "send timeout: a hanging paseo is cut off at the send timeout, one attempt, record exits 0, alerts.log + notification unaffected" bash -c "test '$rc' = 0 && test $((t1 - t0)) -lt 25 && test '$(nsend)' = 1 && test \$(wc -l < '$FX_STATE/alerts.log') = 1 && test \$(wc -l < '$FX_LOGS/osascript.log') = 1 && grep -q 'timed out after 1s' '$FX_STATE/tick.log' && ! ls '$FX_TMP'/slp-gc.*/prompt.* >/dev/null 2>&1"
+
+fresh; sups; fx_sup "$S_NEW" claude-supervisor null "$(fx_iso 1000)" "$(fx_iso 900)" permission
+fx_gc record >/dev/null 2>&1; rc=$?
+check "pending permission: the selected Supervisor is not sent to and there is no fallback to another Supervisor; the tick log says so; record exits 0" bash -c "test '$rc' = 0 && test '$(nsend)' = 0 && grep -q 'has a pending permission, not delivered' '$FX_STATE/tick.log' && test \$(wc -l < '$FX_STATE/alerts.log') = 1"
+
+# a deliberately long alert (many over-threshold processes) still yields a prompt <= 2048 bytes
+fresh; sups; for i in $(seq 1 150); do fx_psrow $((6000 + i)) 100 05:00:00 4000000 "Wed Sep 30 08:00:00 2026" "/Applications/Paseo.app/Contents/Frameworks/Paseo Helper.app/Contents/MacOS/Paseo Helper --type=utility"; done >> "$FX_FIX/ps.txt"
+fx_gc record >/dev/null 2>&1; first_msg > "$WORK/d-long.msg"
+check "a long alert line is truncated: the alerts.log line is > 2048 bytes but the prompt is <= 2048 bytes, keeps its first lines and the Cleanup rule, ends with '...' in the Alert line" bash -c "test \$(wc -c < '$FX_STATE/alerts.log') -gt 2048 && test \$(wc -c < '$WORK/d-long.msg') -le 2048 && test \$(wc -c < '$WORK/d-long.msg') -gt 1500 && head -n 1 '$WORK/d-long.msg' | grep -q '^SLP-GC ALERT ' && sed -n 3p '$WORK/d-long.msg' | grep -q '\.\.\.\$' && grep -q '^Cleanup needs the person' '$WORK/d-long.msg' && grep -q '^Home: ' '$WORK/d-long.msg'"
+
+# PASEO_HOME and slp-gc path with spaces
+fresh; sups; mkdir -p "$WORK/gc dir"; cp "$GC" "$WORK/gc dir/slp-gc"; chmod +x "$WORK/gc dir/slp-gc"; FX_GC_SAVE="$FX_GC"; FX_GC="$WORK/gc dir/slp-gc"
+fx_gc record >/dev/null 2>&1; first_msg > "$WORK/d-sp.msg"; FX_GC="$FX_GC_SAVE"; SPGC="$(cd "$WORK/gc dir" && pwd -P)/slp-gc"
+check "paths with spaces survive: the home is one argv element, and the command line in the message quotes the slp-gc path and the home" bash -c "grep -qxF 'ARG:$RP' '$FX_LOGS/send-argv.log' && grep -qxF \"List candidates (read-only): '$SPGC' report --home '$RP' --json\" '$WORK/d-sp.msg' && grep -qxF 'slp-gc: $SPGC' '$WORK/d-sp.msg'"
+
+# C7: the recipient's lastUserMessageAt is bumped by Paseo's own send; the ledger tells that echo from a person
+fresh; fx_sup "$S_ARCH" claude-supervisor "$(fx_iso 50)" "$(fx_iso 900)" "$(fx_iso 20)"      # B: newer genuine time, but archived right now
+fx_sup "$S_OLD" claude-supervisor null "$(fx_iso 3000)" "$(fx_iso 60)"                          # A: open, older genuine time
+fx_gc record >/dev/null 2>&1; s1="$(send_to)"
+PA="$(agent_file "$S_OLD")"; PB="$(agent_file "$S_ARCH")"
+jq --arg t "$(fx_iso -1)" '.lastUserMessageAt = $t' "$PA" > "$PA.n" && mv "$PA.n" "$PA"          # Paseo's `agent send` bumped A's lastUserMessageAt to the send time
+jq '.archivedAt = null' "$PB" > "$PB.n" && mv "$PB.n" "$PB"                                       # B is open again
+rm -f "$FX_STATE/.alert-stamp"; : > "$FX_LOGS/send-argv.log"; fx_gc record >/dev/null 2>&1; s2="$(send_to)"
+check "C7: the first alert goes to the only open Supervisor (A); after A's lastUserMessageAt is bumped by the delivery, the next alert goes to B, whose genuine time is newer than A's real one" test "$s1" = "$S_OLD " -a "$s2" = "$S_ARCH "
+rm -f "$FX_STATE/deliveries.jsonl" "$FX_STATE/.alert-stamp"; : > "$FX_LOGS/send-argv.log"; fx_gc record >/dev/null 2>&1
+check "C7 control: without the ledger the bumped A looks most recent and wins (the correction is what routes to B)" test "$(send_to)" = "$S_OLD "
+# a later genuine message (outside [sentAt-5s, sentAt+30s]) counts again
+fresh; fx_sup "$S_ARCH" claude-supervisor null "$(fx_iso 900)" "$(fx_iso 20)"; fx_sup "$S_OLD" claude-supervisor null "$(fx_iso 3000)" "$(fx_iso 60)"
+mkdir -p "$FX_STATE"; printf '{"id":"%s","sentAt":"%s","priorLastUserMessageAt":"%s","alertId":"x","test":false}\n' "$S_OLD" "$(fx_iso 0)" "$(fx_iso 3000)" > "$FX_STATE/deliveries.jsonl"
+PA="$(agent_file "$S_OLD")"; jq --arg t "$(fx_iso -120)" '.lastUserMessageAt = $t' "$PA" > "$PA.n" && mv "$PA.n" "$PA"   # 120 s after the delivery: a person
+fx_gc record >/dev/null 2>&1
+check "C7: a genuine message 120 s after the delivery (outside the window) counts: A wins" test "$(send_to)" = "$S_OLD "
+fresh; fx_sup "$S_ARCH" claude-supervisor null "$(fx_iso 900)" "$(fx_iso 20)"; fx_sup "$S_OLD" claude-supervisor null "$(fx_iso 3000)" "$(fx_iso 60)"
+printf '{"id":"%s","sentAt":"%s","priorLastUserMessageAt":"%s","alertId":"x","test":false}\n' "$S_OLD" "$(fx_iso 0)" "$(fx_iso 3000)" > "$FX_STATE/deliveries.jsonl" 2>/dev/null || { mkdir -p "$FX_STATE"; printf '{"id":"%s","sentAt":"%s","priorLastUserMessageAt":"%s","alertId":"x","test":false}\n' "$S_OLD" "$(fx_iso 0)" "$(fx_iso 3000)" > "$FX_STATE/deliveries.jsonl"; }
+PA="$(agent_file "$S_OLD")"; jq --arg t "$(fx_iso -20)" '.lastUserMessageAt = $t' "$PA" > "$PA.n" && mv "$PA.n" "$PA"    # 20 s after: still the echo window
+fx_gc record >/dev/null 2>&1
+check "C7: 20 s after the delivery is still inside the window: the echo is corrected to the prior value and the newer genuine B wins" test "$(send_to)" = "$S_ARCH "
+fresh; sups; mkdir -p "$FX_STATE"; for i in $(seq 1 250); do printf '{"id":"%s","sentAt":"%s","priorLastUserMessageAt":null,"alertId":"old%s","test":false}\n' "$S_OLD" "$(fx_iso $((100000 + i)))" "$i"; done > "$FX_STATE/deliveries.jsonl"
+fx_gc record >/dev/null 2>&1
+check "C7: the ledger stays bounded (250 lines + 1 new => the last 200) and keeps the newest entry" bash -c "test \$(wc -l < '$FX_STATE/deliveries.jsonl') = 200 && tail -n 1 '$FX_STATE/deliveries.jsonl' | jq -e --arg id '$S_NEW' '.id == \$id' >/dev/null"
+
+# C5: test-alert
+fresh; sups; mkdir -p "$FX_STATE"; echo 12345 > "$FX_STATE/.alert-stamp"; touch -t 202001010000 "$FX_STATE/.alert-stamp"; STAMP_BEFORE="$(cat "$FX_STATE/.alert-stamp") $(stat -f %m "$FX_STATE/.alert-stamp" 2>/dev/null || stat -c %Y "$FX_STATE/.alert-stamp")"
+fx_gc test-alert > "$WORK/ta.out" 2> "$WORK/ta.err"; rc=$?; first_msg > "$WORK/ta.msg"; keep "$WORK/ta.msg" t2b-sample-test-message.txt
+check "C5 test-alert: exit 0, prints the selected Supervisor id, exactly one send to it" bash -c "test '$rc' = 0 && test \"\$(cat '$WORK/ta.out')\" = '$S_NEW' && test '$(nsend)' = 1 && test '$(send_to)' = '$S_NEW '"
+check "C5 test-alert: first line 'SLP-GC ALERT (TEST) <id>', the From line, and the TEST ONLY line" bash -c "head -n 1 '$WORK/ta.msg' | grep -qE '^SLP-GC ALERT \(TEST\) [0-9]{8}T[0-9]{6}Z\$' && sed -n 2p '$WORK/ta.msg' | grep -qx 'From: slp-gc (automated message, not the person)' && grep -qF 'TEST ONLY' '$WORK/ta.msg' && test \$(wc -c < '$WORK/ta.msg') -le 2048"
+check "C5 test-alert: writes no alerts.log line, leaves .alert-stamp untouched, no notification, no kill" bash -c "test ! -e '$FX_STATE/alerts.log' && test \"\$(cat '$FX_STATE/.alert-stamp') \$(stat -f %m '$FX_STATE/.alert-stamp' 2>/dev/null || stat -c %Y '$FX_STATE/.alert-stamp')\" = '$STAMP_BEFORE' && test '$(logn osascript.log)' = 0 && test '$(logn kill.log)' = 0"
+check "C5/C7 test-alert: writes a ledger entry with test:true" bash -c "test \$(wc -l < '$FX_STATE/deliveries.jsonl') = 1 && jq -e --arg id '$S_NEW' '.id == \$id and .test == true' '$FX_STATE/deliveries.jsonl' >/dev/null"
+fresh; fx_gc test-alert > "$WORK/ta2.out" 2>&1; rc=$?
+check "C5 test-alert: no open Supervisor => exit 3, nothing sent" test "$rc" = 3 -a "$(nsend)" = 0 -a "$(logn paseo.log)" = 0
+fresh; sups; FX_EXTRA_ENV="SLPGC_SEND_FAIL=1" fx_gc test-alert > "$WORK/ta3.out" 2>&1; rc=$?
+check "C5 test-alert: send failed => exit 1 (the id is still printed), one attempt" test "$rc" = 1 -a "$(nsend)" = 1 -a "$(head -n 1 "$WORK/ta3.out")" = "$S_NEW"
+fresh; sups; fx_sup "$S_NEW" claude-supervisor null "$(fx_iso 1000)" "$(fx_iso 900)" permission; fx_gc test-alert > "$WORK/ta4.out" 2>&1; rc=$?
+check "C5 test-alert: the selected Supervisor has a pending permission => exit 3, nothing sent" test "$rc" = 3 -a "$(nsend)" = 0
+fresh; sups; fx_gc test-alert --apply >/dev/null 2>&1; rc1=$?; fx_gc test-alert --json >/dev/null 2>&1; rc2=$?
+check "C5 test-alert takes only --home: --apply / --json are refused (exit 2) without sending" test "$rc1" = 2 -a "$rc2" = 2 -a "$(nsend)" = 0
+
+# C6 canary with a Supervisor present: the delivery must not reach the PATH paseo
+fresh; sups; : > "$FX_LOGS/osascript.log"
+fx_gc_canary record > "$WORK/c6g.txt" 2>&1; fx_gc_canary test-alert >> "$WORK/c6g.txt" 2>&1
+check "C6 canary: with an open Supervisor, an alerting record and a test-alert (overrides unset, logging paseo/osascript on PATH) run neither the PATH paseo nor osascript" bash -c "test -s '$FX_STATE/alerts.log' && test '$(logn paseo.log)' = 0 && test '$(logn osascript.log)' = 0 && test '$(nsend)' = 0"
+
+# C4: candidates and --only
+LS9="Wed Sep 30 09:00:00 2026"
+fresh; fx_gc report --json > "$WORK/c4.json" 2>/dev/null; fx_gc report --json > "$WORK/c4b.json" 2>/dev/null
+check "C4: report --json has a top-level .candidates array; each element has token/action/kind/reason/sizeMB/requiresFlag; tokens are unique and action-scoped" jq -e '.candidates | type == "array" and length > 0 and (map(.token) | (unique | length) == length) and all(has("token","action","kind","reason","sizeMB","requiresFlag")) and all(.token | test("^(agent-delete:[0-9a-f-]{36}|schedule-delete:[0-9a-f]{8}|kill-stale:[0-9]+@.+|kill-memory:[0-9]+@.+)$"))' "$WORK/c4.json"
+check "C4: it lists the garbage schedules and agents, the stale kills (gated by --kill-stale-processes) and the memory kill of the gpu helper (gated by --kill-over-memory)" jq -e --arg a1 "$A_GC1" --arg l "$LS9" '(.candidates | map(.token)) as $t | ($t | index("agent-delete:" + $a1)) != null and ($t | index("schedule-delete:0000000a")) != null and ($t | index("kill-stale:122@" + $l)) != null and ($t | index("kill-memory:102@Wed Sep 30 08:00:00 2026")) != null and (.candidates | map(select(.action == "kill-stale") | .requiresFlag) | unique) == ["--kill-stale-processes"] and (.candidates | map(select(.action == "kill-memory") | .requiresFlag) | unique) == ["--kill-over-memory"] and (.candidates | map(select(.action | endswith("-delete")) | .requiresFlag) | unique) == [null]' "$WORK/c4.json"
+check "C4: the candidate order is deterministic (two runs identical)" bash -c "test \"\$(jq -c .candidates '$WORK/c4.json')\" = \"\$(jq -c .candidates '$WORK/c4b.json')\""
+check "C4: candidates never include the app main, the Supervisor or the daemon" jq -e '.candidates | all(.kind | IN("app-main", "supervisor", "daemon") | not)' "$WORK/c4.json"
+fresh; nogc; sed -E -i.b '/^ *(122|125|130|190) /d' "$FX_FIX/ps.txt" "$FX_FIX/ps.recheck"; rm -f "$FX_FIX"/ps.*.b
+FX_EXTRA_ENV="SLP_GC_MEM_KILL_MB=999999" fx_gc report --json 2>/dev/null > "$WORK/c4z.json"
+check "C4: zero candidates => .candidates == []" jq -e '.candidates == []' "$WORK/c4z.json"
+
+only_run() { fx_gc report --apply "$@" > "$WORK/only.out" 2> "$WORK/only.err"; }
+paseo_dels() { grep -c ' delete ' "$FX_LOGS/paseo.log" 2>/dev/null || true; }
+fresh; only_run --only "agent-delete:$A_GC1"; rc=$?
+check "--only <agent token>: exactly that agent is deleted via the CLI; the other eligible agent, the eligible schedules and every kill candidate are untouched (exit 0)" bash -c "test '$rc' = 0 && test \"\$(cat '$FX_LOGS/paseo.log' | grep -c 'delete')\" = 1 && grep -qx 'agent delete --home $RP -- $A_GC1' '$FX_LOGS/paseo.log' && test '$(agent_count "$A_GC1")' = 0 && test '$(agent_count "$A_GC2")' = 1 && test -f '$FX_PHOME/schedules/0000000a.json' && test -f '$FX_PHOME/schedules/0000000b.json' && test '$(logn kill.log)' = 0"
+fresh; only_run --only "schedule-delete:0000000a,agent-delete:$A_GC2"; rc=$?
+check "--only with two tokens (schedule + agent): both deleted, nothing else" bash -c "test '$rc' = 0 && test \"\$(grep -c 'delete' '$FX_LOGS/paseo.log')\" = 2 && test ! -e '$FX_PHOME/schedules/0000000a.json' && test -f '$FX_PHOME/schedules/0000000b.json' && test '$(agent_count "$A_GC2")' = 0 && test '$(agent_count "$A_GC1")' = 1"
+fresh; only_run --only "agent-delete:$A_GC1,agent-delete:$A_MISSING"; rc=$?
+check "--only preflight: a mixed valid + invalid list is refused with exit 2 and ZERO actions (no CLI call, nothing deleted, no actions.log)" bash -c "test '$rc' = 2 && test '$(logn paseo.log)' = 0 && test '$(agent_count "$A_GC1")' = 1 && test ! -e '$FX_STATE/actions.log' && test '$(logn kill.log)' = 0 && grep -q 'nothing was done' '$WORK/only.err'"
+fresh; only_run --only "schedule-delete:$A_GC1"; rc1=$?; only_run --only "agent-delete:0000000a"; rc2=$?; only_run --only "agent-delete:$A_LIVE"; rc3=$?
+check "--only preflight: a wrong-action token, a wrong-shape id and a token for a non-garbage agent are all refused (exit 2, zero CLI calls)" test "$rc1" = 2 -a "$rc2" = 2 -a "$rc3" = 2 -a "$(logn paseo.log)" = 0
+fresh; nogc; only_run --only "kill-stale:122@$LS9" --kill-stale-processes; rc=$?
+check "--only <kill-stale token> + its flag: only that pid is signalled (SIGTERM 122); the other stale candidates (130, 190) and the memory candidate are not" test "$rc" = 0 -a "$(kills)" = "-TERM 122 "
+fresh; nogc; only_run --only "kill-stale:122@$LS9" --kill-stale-processes --kill-over-memory; rc=$?
+check "--only with both kill flags on still signals only the named token" test "$rc" = 0 -a "$(kills)" = "-TERM 122 "
+fresh; nogc; only_run --only "kill-stale:122@$LS9"; rc=$?
+check "--only kill token without its flag: refused (exit 2), no signal" test "$rc" = 2 -a "$(logn kill.log)" = 0
+fresh; nogc; only_run --only "kill-stale:122@$LS9" --kill-over-memory; rc=$?
+check "--only kill-stale token with only the other kill flag: refused (exit 2), no signal" test "$rc" = 2 -a "$(logn kill.log)" = 0
+fresh; nogc; only_run --only "kill-stale:122@Wed Sep 30 09:00:01 2026" --kill-stale-processes; rc=$?
+check "--only kill token whose pid start time changed (pid reuse): refused, exit 2, no signal" test "$rc" = 2 -a "$(logn kill.log)" = 0
+fresh; nogc; only_run --only "kill-memory:122@$LS9" --kill-over-memory; rc1=$?; only_run --only "kill-stale:102@Wed Sep 30 08:00:00 2026" --kill-stale-processes; rc2=$?
+check "--only kill token whose action no longer matches (122 is stale not over-memory; 102 is over-memory not stale): refused, exit 2, no signal" test "$rc1" = 2 -a "$rc2" = 2 -a "$(logn kill.log)" = 0
+fresh; nogc; only_run --only "kill-stale:122@$LS9,kill-stale:130@$LS9,agent-delete:$A_MISSING" --kill-stale-processes; rc=$?
+check "--only with valid kill tokens plus one invalid token: refused as a whole, exit 2, zero signals" test "$rc" = 2 -a "$(logn kill.log)" = 0
+fresh; nogc; only_run --only "kill-memory:102@Wed Sep 30 08:00:00 2026" --kill-over-memory; rc=$?
+check "--only <kill-memory token> + its flag: only the named over-memory pid (the gpu helper 102) is signalled, no stale pid" test "$rc" = 0 -a "$(kills)" = "-TERM 102 "
+fresh; only_run --only "agent-delete:$A_GC1" --json; rc=$?
+check "--only --json: prints the report plus the .actions of the named item only" bash -c "test '$rc' = 0 && jq -e '.actions | length == 1 and .[0].target == \"$A_GC1\" and .[0].result == \"ok\"' '$WORK/only.out' >/dev/null"
+fresh; fx_make_hook; only_run --only "agent-delete:$A_GC1"; rc=$?
+check "--only drift after preflight: the per-action re-check still applies (the agent got unarchived between evaluation and action): skipped and reported, nothing deleted" bash -c "test '$(agent_count "$A_GC1")' = 1 && test '$(logn paseo.log)' = 0 && grep -q 'skipped' '$WORK/only.out'"
+fresh; fx_gc report --only "agent-delete:$A_GC1" >/dev/null 2>&1; rc1=$?; fx_gc report --apply --only "" >/dev/null 2>&1; rc2=$?; fx_gc tick --only "agent-delete:$A_GC1" >/dev/null 2>&1; rc3=$?
+check "--only needs report --apply and a non-empty list (exit 2 otherwise, nothing done)" test "$rc1" = 2 -a "$rc2" = 2 -a "$rc3" = 2 -a "$(logn paseo.log)" = 0
+fresh; fx_gc report --apply > "$WORK/noonly.out" 2>&1
+check "without --only the existing behaviour is unchanged: every eligible garbage item is deleted" bash -c "test '$(agent_count "$A_GC1")' = 0 && test '$(agent_count "$A_GC2")' = 0 && test ! -e '$FX_PHOME/schedules/0000000a.json'"

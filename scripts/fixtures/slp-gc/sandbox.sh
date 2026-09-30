@@ -267,6 +267,14 @@ case "$1 $2" in
     [ "$3" = --home ] && [ "$5" = --json ] && [ "$6" = -- ] && [ "$#" = 7 ] || { echo "bad argv: $*" >&2; exit 2; }
     echo "warning: stderr noise that must not reach the JSON parser" >&2
     [ -f "$SLPGC_FIX/inspect-$7.json" ] || exit 1; cat "$SLPGC_FIX/inspect-$7.json"; exit 0 ;;
+  "agent send")   # agent send --home <dir> --no-wait --prompt-file <file> -- <uuid>: logs one arg per line, the prompt file mode and text
+    [ "$3" = --home ] && [ "$5" = --no-wait ] && [ "$6" = --prompt-file ] && [ "$8" = -- ] && [ "$#" = 9 ] || { echo "bad argv: $*" >&2; exit 2; }
+    { echo "SEND"; for a in "$@"; do echo "ARG:$a"; done; echo "END"; } >> "$SLPGC_LOGS/send-argv.log"
+    m="$(stat -f %Lp "$7" 2>/dev/null || stat -c %a "$7" 2>/dev/null)"; echo "$m $7" >> "$SLPGC_LOGS/send-file.log"
+    { echo "=== to $9"; cat "$7"; } >> "$SLPGC_LOGS/send-msgs.log"
+    [ -z "$SLPGC_SEND_HANG" ] || exec sleep 30
+    [ -z "$SLPGC_SEND_FAIL" ] || { echo "send refused" >&2; exit 1; }
+    exit 0 ;;
   "agent delete"|"schedule delete") ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
@@ -282,6 +290,17 @@ S
   export SLPGC_FIX="$F" SLPGC_LOGS="$SB/logs"
 }
 A_INVOKER2=$A_INVOKER
+
+# a Supervisor-ish record for the delivery tests: fx_sup <id> <provider> <archivedAt|null> <lastUserMessageAt|null> <lastActivityAt> [attentionReason]
+fx_sup() {
+  local id="$1" prov="$2" arch="$3" lum="$4" lact="$5" att="${6:-null}"
+  [ "$arch" = null ] || arch="\"$arch\""; [ "$lum" = null ] || lum="\"$lum\""; [ "$att" = null ] || att="\"$att\""
+  mkdir -p "$FX_PHOME/agents/slug-sup"
+  cat > "$FX_PHOME/agents/slug-sup/$id.json" <<J
+{"id":"$id","provider":"$prov","cwd":"/tmp/fx","createdAt":"$(fx_iso 4000000)","updatedAt":"$(fx_iso 100)","lastStatus":"idle","title":"SECRET-PROMPT-TITLE","labels":{},"internal":false,
+ "archivedAt":$arch,"lastUserMessageAt":$lum,"lastActivityAt":"$5","attentionReason":$att,"runtimeInfo":{"sessionId":"sess-$id"}}
+J
+}
 
 # run slp-gc inside the sandbox environment
 fx_gc() {  # fx_gc <args...>
