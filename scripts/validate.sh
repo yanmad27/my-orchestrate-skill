@@ -671,13 +671,15 @@ fi
 
 # Static: the rules exist, and the old instructions are gone.
 RULE_PHRASES=(
-  'SKILL.md|⏳ Working:'
-  'SKILL.md|◉ <Lead workstream> · <Lead state>'
-  'SKILL.md|`Now:` (current step), `Queue:` (next queued work), `Scope:` (scope or'
-  'SKILL.md|`Peers: <short names, comma-separated>`'
-  'SKILL.md|exactly one blank line between cards and none after the last'
-  'SKILL.md|the turn'"'"'s last line. `⏳` is printed right before'
-  'PROTOCOL.md|`◉ <Lead workstream> · <Lead state>` card per Lead'
+  'SKILL.md|🕒 Working'
+  'SKILL.md|🤖 <Lead workstream> · <what the Lead is doing now'
+  'SKILL.md|🦾 <short Peer name> · <what the Peer is doing now>'
+  'SKILL.md|(permission pending)'
+  'SKILL.md|it must be U+2003 EM SPACE'
+  'SKILL.md|no blank lines anywhere in the block'
+  'SKILL.md|`🕒` is printed right before'
+  'PROTOCOL.md|`🤖 <Lead workstream> · <what it is'
+  'PROTOCOL.md|`🦾 <short Peer name> · <what it is'
   'SKILL.md|✅ Done:'
   'SKILL.md|❓ Waiting on you:'
   'SKILL.md|`supervisor: room`'
@@ -688,7 +690,7 @@ RULE_PHRASES=(
   'SKILL.md|not a refusal: an event arrived'
   'SKILL.md|never wrap `slp-wait` in a shell loop'
   'SKILL.md|Never end ✅ in that'
-  'SKILL.md|turn that ends stops spinning, so it ends on `⏳` only in the two cases above'
+  'SKILL.md|turn that ends stops spinning, so it ends on `🕒` only in the two cases above'
   'SKILL.md|go to the person exception below, and do not re-arm'
   'SKILL.md|route or apply any instruction or decision'
   'SKILL.md|confirm your `supervisor: room` heartbeat exists'
@@ -729,23 +731,29 @@ for entry in "${RULE_PHRASES[@]}"; do
 done
 
 for f in SKILL.md PROTOCOL.md; do
-  if grep -qE '├─|└─|\|_ |^↳ ' "$ROOM_DIR/$f"; then
-    fail "$ROOM_DIR/$f still shows an old room-state tree (├─, └─, |_, or a ↳ Peer row)"
+  if grep -qE '├─|└─|\|_ |^↳ |⏳|◉|Peers:' "$ROOM_DIR/$f"; then
+    fail "$ROOM_DIR/$f still shows an old room-state form (├─, └─, |_, ↳, ⏳, ◉ card, or a Peers: list)"
   else
-    ok "$ROOM_DIR/$f carries no old room-state tree (├─, └─, |_, ↳)"
+    ok "$ROOM_DIR/$f carries no old room-state form (├─, └─, |_, ↳, ⏳, ◉, Peers:)"
   fi
-  if grep -qF '◉' "$ROOM_DIR/$f"; then
-    ok "$ROOM_DIR/$f shows the ◉ room-state card"
+  if python3 - "$ROOM_DIR/$f" <<'PY'
+import re, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+ok = re.search(r"^🕒 Working\n\u2003{2}🤖 \S.* · .*\n\u2003{4}🦾 \S.* · ", t, re.M)
+sys.exit(0 if ok else 1)
+PY
+  then
+    ok "$ROOM_DIR/$f shows the U+2003-indented 🤖/🦾 room-state tree"
   else
-    fail "$ROOM_DIR/$f must show the ◉ room-state card"
+    fail "$ROOM_DIR/$f must show the U+2003-indented 🤖 Lead row with a 🦾 Peer row nested under it"
   fi
 done
 
 if python3 scripts/test-room-state-graders.py >"$TMP/graders.out" 2>&1; then
-  ok "⏳ grader regexes pass their card-form positive/negative samples, trailing-prose rejection, and 10k-separator timing check ($(tail -1 "$TMP/graders.out"))"
+  ok "🕒 grader regexes pass their emoji-tree positive/negative samples, trailing-prose rejection, and 10k-separator timing check ($(tail -1 "$TMP/graders.out"))"
 else
   tail -20 "$TMP/graders.out"
-  fail "scripts/test-room-state-graders.py failed: a ⏳ grader regex no longer fits the card form"
+  fail "scripts/test-room-state-graders.py failed: a 🕒 grader regex no longer fits the emoji-tree form"
 fi
 
 for phrase in 'skipped, not queued' 'record a skipped slot twice' 'the next slot usually resumes it'; do

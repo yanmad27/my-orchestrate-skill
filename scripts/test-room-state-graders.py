@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove the ⏳ card-form grader regexes with positive and negative samples.
+"""Prove the 🕒 emoji-tree grader regexes with positive and negative samples.
 
 Reads each grader's `pattern:` (Python `re`, as the eval harness runs it) and
 checks it against samples. Exit 1 on any mismatch.
@@ -25,36 +25,48 @@ def load(key):
     return re.compile(m.group(1))
 
 
-CARD_A = "◉ auth refactor · running\n  Now: reviewing token store diff · Peers: token store, token store diff"
-CARD_B = "◉ billing export · STATUS: waiting on CI\n  Peers: csv writer (permission pending)"
-CARD_C = "◉ search index · resuming\n  Scope: platform"
-CARD_D = "◉ docs · idle"
-CARD_E = "◉ docs · running\n  Queue: changelog pass"
-HDR = "⏳ Working:\n"
+E = "\u2003"
+L2, P4 = E * 2, E * 4
+CARD_A = L2 + "🤖 auth refactor · reviewing token store diff\n" + P4 + "🦾 token store · reading the store\n" + P4 + "🦾 token store diff · checking the diff"
+CARD_B = L2 + "🤖 billing export · STATUS: waiting on CI\n" + P4 + "🦾 csv writer · writing rows (permission pending)"
+CARD_C = L2 + "🤖 search index · resuming"
+CARD_D = L2 + "🤖 docs · idle"
+CARD_E = L2 + "🤖 docs · running the changelog pass · then publish"
+HDR = "🕒 Working\n"
 BLOCKS_OK = [
     HDR + CARD_A,
-    HDR + CARD_A + "\n\n" + CARD_B + "\n\n" + CARD_C,
+    HDR + CARD_A + "\n" + CARD_B + "\n" + CARD_C,
     HDR + CARD_D,
     HDR + CARD_E,
-    HDR + CARD_B + "\n\n" + CARD_D + "\n",
-    HDR + CARD_A + "  \n\n" + CARD_D + "\n\n",
+    HDR + CARD_B + "\n" + CARD_D + "\n",
+    HDR + CARD_A + "  \n" + CARD_D + "\n\n",
 ]
-OLD_TREE = HDR + "[Lead] auth refactor (running)\n↳ [Peer] token store (running)"
+OLD_CARDS = "⏳ Working:\n◉ auth refactor · running\n  Now: reviewing diff · Peers: token store\n\n◉ billing export · STATUS: waiting on CI\n  Peers: csv writer (permission pending)"
 BLOCKS_BAD = [
-    OLD_TREE,
+    OLD_CARDS,
+    "⏳ Working:\n" + CARD_A,
+    HDR + "◉ docs · running\n  Now: x",
+    HDR + "[Lead] auth refactor (running)\n↳ [Peer] token store (running)",
     HDR + "[Lead] docs (running)\n├─ [Peer] readme (running)",
-    HDR + CARD_A + "\n\n\n" + CARD_D,
-    HDR + CARD_A + "\n" + CARD_D,
-    HDR + "◉ docs running",
-    HDR + "◉ docs · running\n    Now: x",
-    HDR + "◉ docs · running\n  Foo: bar",
-    HDR + "◉ docs · running\n  Now: a\n  Peers: b",
-    HDR + CARD_A + "\n↳ [Peer] token store (running)",
-    HDR + "◉  · running",
-    HDR + "◉ docs · running\n  Peers: readme · Now: checking",
-    HDR + "◉ docs · running\n  Now: checking · Queue: publish",
-    HDR + "◉ docs · running\n  Now: a · b",
-    HDR + "◉ docs · running\n  Now: a · Peers: b · c",
+    "🕒 Working:\n" + CARD_A,
+    HDR + CARD_A + "\n\n" + CARD_D,
+    HDR + "\n" + CARD_D,
+    HDR + "  🤖 docs · running",
+    HDR + "🤖 docs · running",
+    HDR + "\u00a0\u00a0🤖 docs · running",
+    HDR + L2 + "🤖 docs · running\n    🦾 readme · editing",
+    HDR + L2 + "🤖 docs · running\n" + E * 3 + "🦾 readme · editing",
+    HDR + L2 + "🤖 docs · running\n" + E * 5 + "🦾 readme · editing",
+    HDR + L2 + "🤖 docs · running\n" + P4 + "🦾 readme",
+    HDR + L2 + "🤖 docs running",
+    HDR + L2 + "🤖  · running",
+    HDR + L2 + "🤖 docs · ",
+    HDR + P4 + "🦾 readme · editing\n" + CARD_D,
+    HDR + L2 + "🤖 docs · running\n" + L2 + "🦾 readme · editing",
+    HDR + L2 + "🤖 docs · running\n" + P4 + "🤖 docs · running",
+    HDR + L2 + "🤖 docs · running\n" + P4 + "Peers: readme",
+    HDR + L2 + "🤖 docs · running\n  Now: checking",
+    HDR + CARD_A + "\n" + P4 + "◉ card",
 ]
 TRAIL = "\n\nThat is the current state."
 BLANK_OK = HDR + CARD_A + "\n\n  \n\t\n"
@@ -87,7 +99,7 @@ for key in ("heartbeat", "handoff"):
         check(key, not match(key, PRE + b + TRAIL), f"negative trailing prose {i}")
         check(key, not match(key, PRE + b + "\nTRAIL"), f"negative trailing prose, no blank {i}")
 check("heartbeat", not match("heartbeat", PRE + HDR + CARD_A + "\n❓ Waiting on you: x"), "negative ❓")
-check("heartbeat", not match("heartbeat", PRE + HDR + CARD_A + "\n\n◉ half"), "negative malformed trailing card")
+check("heartbeat", not match("heartbeat", PRE + HDR + CARD_A + "\n" + L2 + "🤖 half"), "negative malformed trailing Lead row")
 
 key = "interruption"
 for i, b in enumerate(BLOCKS_OK):
@@ -117,10 +129,10 @@ check(key, match(key, ANS + BLANK_OK), "positive trailing blank lines")
 
 SEP = "x · " * 10000
 BIGS = {
-    "line-1 separators, bad line 2": HDR + "◉ " + SEP + "\n  Peers: a · Now: b",
-    "line-2 detail separators": HDR + "◉ docs · running\n  Now: " + SEP,
-    "line-2 peers separators": HDR + "◉ docs · running\n  Now: a · Peers: " + SEP,
-    "line-1 separators, trailing prose": HDR + "◉ " + SEP + "\nprose",
+    "Lead separators, bad Peer row": HDR + L2 + "🤖 " + SEP + "\n" + P4 + "🦾 a",
+    "Lead description separators, trailing prose": HDR + L2 + "🤖 docs · " + SEP + "\nprose",
+    "Peer name separators, trailing prose": HDR + CARD_D + "\n" + P4 + "🦾 " + SEP + "\nprose",
+    "Peer description separators, trailing prose": HDR + CARD_D + "\n" + P4 + "🦾 a · " + SEP + "\nprose",
 }
 for k in ("heartbeat", "handoff", "interruption", "midrun"):
     pre = ANS if k == "midrun" else PRE
