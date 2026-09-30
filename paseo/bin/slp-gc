@@ -1,0 +1,960 @@
+#!/bin/bash
+# slp-gc — garbage collector and diagnostic tool for a Paseo home.
+#   slp-gc [report|record|bundle|tick] [--apply] [--kill-stale-processes] [--kill-over-memory]
+#          [--home <PASEO_HOME>] [--json] [--since <hours>] [--help]
+# report/record/bundle are read-only and make no paseo CLI call. Reclamation (--apply) goes only
+# through Paseo's own CLI; the only signals are single-pid SIGTERMs behind the kill flags.
+# bash 3.2 compatible (stock macOS), jq required, no python/node.
+
+export LC_ALL=C
+export GIT_OPTIONAL_LOCKS=0
+umask 077
+
+
+# --- probes: absolute defaults, all overridable (tests run with fixtures) ------------------------
+probe() {  # probe <ENV value> <absolute default> <name>
+  if [ -n "$1" ]; then printf '%s' "$1"; elif [ -x "$2" ]; then printf '%s' "$2"; else printf '%s' "$3"; fi
+}
+PS="$(probe "${SLP_GC_PS:-}" /bin/ps ps)"
+PSENV="$(probe "${SLP_GC_PSENV:-}" /bin/ps ps)"   # env-bearing ps: output is reduced at once, never stored
+TOP="$(probe "${SLP_GC_TOP:-}" /usr/bin/top top)"
+VMSTAT="$(probe "${SLP_GC_VMSTAT:-}" /usr/bin/vm_stat vm_stat)"
+SYSCTL="$(probe "${SLP_GC_SYSCTL:-}" /usr/sbin/sysctl sysctl)"
+LSOF="$(probe "${SLP_GC_LSOF:-}" /usr/sbin/lsof lsof)"
+LOGCMD="$(probe "${SLP_GC_LOG:-}" /usr/bin/log log)"
+OSASCRIPT="$(probe "${SLP_GC_OSASCRIPT:-}" /usr/bin/osascript osascript)"
+KILL="${SLP_GC_KILL:-kill}"
+PERL="${SLP_GC_PERL:-perl}"
+NOW="${SLP_GC_NOW:-$(date +%s)}"
+CLI_TIMEOUT="${SLP_GC_CLI_TIMEOUT:-30}"
+MAX_ACTIONS="${SLP_GC_MAX_ACTIONS:-100}"
+AGENT_MIN_DAYS="${SLP_GC_AGENT_MIN_DAYS:-14}"
+
+# --- small helpers --------------------------------------------------------------------------------
+die() { printf 'slp-gc: %s\n' "$*" >&2; exit 2; }
+note() { printf 'slp-gc: %s\n' "$*" >&2; }
+need_jq() { command -v jq >/dev/null 2>&1 || die "jq is required (brew install jq)"; }
+have_perl() { command -v "$PERL" >/dev/null 2>&1; }
+is_uint() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; }
+ts_now() { date -u -r "$NOW" +%Y%m%dT%H%M%SZ 2>/dev/null || date -u -d "@$NOW" +%Y%m%dT%H%M%SZ; }
+iso_now() { date -u -r "$NOW" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$NOW" +%Y-%m-%dT%H:%M:%SZ; }
+# stat: size and mtime without following symlinks
+if stat -c %s / >/dev/null 2>&1; then
+  fsize() { stat -c %s -- "$1" 2>/dev/null; }; fmtime() { stat -c %Y -- "$1" 2>/dev/null; }
+else
+  fsize() { stat -f %z "$1" 2>/dev/null; }; fmtime() { stat -f %m "$1" 2>/dev/null; }
+fi
+sha256() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1"; else sha256sum "$1"; fi | awk '{print $1}'; }
+# run_to <secs> cmd... — external timeout (macOS has no timeout(1)); 142 = timed out
+run_to() {
+  local secs="$1"; shift
+  if have_perl; then "$PERL" -e 'alarm shift; exec @ARGV or exit 127' "$secs" "$@"; else "$@"; fi
+}
+# NUL-separated file list -> bash array named $1 (bash 3.2: no mapfile)
+read_nul() {
+  local __n="$1" __f
+  eval "${__n}=()"
+  while IFS= read -r -d '' __f; do eval "${__n}[\${#${__n}[@]}]=\$__f"; done
+}
+
+usage() {
+  cat <<'EOF'
+usage: slp-gc [report|record|bundle|tick] [options]
+
+  report   (default) read-only: Paseo processes + memory, recurring machinery, agents,
+           garbage candidates with the rule that matched or failed, retention data.
+           Makes no paseo CLI call, so it works while the daemon is hung. Exit 0.
+  record   append one JSONL memory sample (per Paseo process + system totals) to
+           <state>/memory.jsonl; alerts.log + a notification at >= SLP_GC_MEM_WARN_MB.
+  bundle   [--since <hours>=72] gather logs/crash reports/memory data into one tar.gz under
+           <state>/bundles/ (secrets excluded; see MANIFEST.txt inside).
+  tick     what launchd runs every 60 s: record, periodic report, and apply/kill phases
+           ONLY if the config file sets SLP_GC_APPLY=1 (and SLP_GC_KILL_STALE / _MEMORY=1).
+
+options:
+  --apply                  reclaim via Paseo's own CLI: `schedule delete <id>` (completed room
+                           schedules) and `agent delete <uuid>` (archived >= 14 d, all checks pass)
+  --kill-stale-processes   with --apply: SIGTERM single orphaned agent-child / wait pids
+  --kill-over-memory       with --apply: SIGTERM one Paseo process above SLP_GC_MEM_KILL_MB
+  --home <dir>             PASEO_HOME (default $PASEO_HOME, else ~/.paseo)
+  --json                   machine-readable output
+  -h, --help               this text
+
+env: SLP_GC_STATE_DIR (default ~/Library/Logs/slp-gc), SLP_GC_CONFIG (tick only, KEY=VALUE:
+  SLP_GC_APPLY SLP_GC_KILL_STALE SLP_GC_KILL_MEMORY SLP_GC_MEM_WARN_MB[4096]
+  SLP_GC_MEM_KILL_MB[16384] SLP_GC_REPORT_INTERVAL_MIN[60]), PASEO_CLI, SLP_GC_PASEO,
+  SLP_GC_PS SLP_GC_PSENV SLP_GC_TOP SLP_GC_VMSTAT SLP_GC_SYSCTL SLP_GC_LSOF SLP_GC_LOG SLP_GC_KILL
+  SLP_GC_NOW SLP_GC_CLI_TIMEOUT SLP_GC_MAX_ACTIONS (probe overrides for tests).
+Memory footprint = top's MEM (physical footprint, what Force Quit shows; CMPRS is its compressed
+part), falling back to ps rss. Kills never touch the app main or the Supervisor.
+EOF
+}
+
+# --- arguments ------------------------------------------------------------------------------------
+CMD=""; APPLY=0; KILL_STALE=0; KILL_MEM=0; HOME_ARG=""; JSON=0; SINCE=72
+while [ $# -gt 0 ]; do
+  case "$1" in
+    report|record|bundle|tick) [ -z "$CMD" ] || die "more than one subcommand"; CMD="$1" ;;
+    --apply) APPLY=1 ;;
+    --kill-stale-processes) KILL_STALE=1 ;;
+    --kill-over-memory) KILL_MEM=1 ;;
+    --json) JSON=1 ;;
+    --home) [ $# -ge 2 ] || die "--home needs a directory"; HOME_ARG="$2"; shift ;;
+    --home=*) HOME_ARG="${1#--home=}" ;;
+    --since) [ $# -ge 2 ] || die "--since needs hours"; SINCE="$2"; shift ;;
+    --since=*) SINCE="${1#--since=}" ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+[ -n "$CMD" ] || CMD=report
+is_uint "$SINCE" && [ "$SINCE" -ge 1 ] && [ "$SINCE" -le 8760 ] || die "--since must be 1..8760 hours"
+if [ "$CMD" != tick ]; then
+  if [ "$KILL_STALE" = 1 ] || [ "$KILL_MEM" = 1 ]; then
+    [ "$APPLY" = 1 ] || die "--kill-stale-processes / --kill-over-memory require --apply"
+  fi
+  if [ "$APPLY" = 1 ] && [ "$CMD" != report ]; then die "--apply only applies to the report subcommand"; fi
+fi
+
+STATE="${SLP_GC_STATE_DIR:-$HOME/Library/Logs/slp-gc}"
+PHOME="${HOME_ARG:-${PASEO_HOME:-$HOME/.paseo}}"
+while [ "${#PHOME}" -gt 1 ] && [ "${PHOME%/}" != "$PHOME" ]; do PHOME="${PHOME%/}"; done
+WARN_MB="${SLP_GC_MEM_WARN_MB:-4096}"; KILL_MB="${SLP_GC_MEM_KILL_MB:-16384}"
+is_uint "$WARN_MB" || die "SLP_GC_MEM_WARN_MB must be a number"
+is_uint "$KILL_MB" || die "SLP_GC_MEM_KILL_MB must be a number"
+need_jq
+
+T="$(mktemp -d "${TMPDIR:-/tmp}/slp-gc.XXXXXX")" || die "cannot create a temp dir"
+cleanup() { rm -rf "$T"; [ -z "${LOCKDIR:-}" ] || [ "${LOCK_HELD:-0}" != 1 ] || rm -rf "$LOCKDIR"; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# ====================================================================================================
+# jq programs
+# ====================================================================================================
+JQ_COMMON='
+def iso_epoch: if type=="string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$")
+  then (sub("\\.[0-9]+";"") | fromdateiso8601) else null end;
+def base: split("/") | last;
+def mb1: (. * 10 | round) / 10;
+'
+
+# one agent record (a file argument) -> a flat object; anything odd is ok:false with a reason
+AGENT_JQ="$JQ_COMMON"'
+{path: input_filename} + (
+  if type != "object" then {ok: false, reason: "not a JSON object"}
+  elif (.id | type) != "string" or (.id | length) == 0 then {ok: false, reason: "missing id"}
+  elif (.provider | type) != "string" then {ok: false, reason: "missing provider"}
+  else {ok: true, id: .id, provider: .provider, status: (.lastStatus // null),
+        archivedAt: (.archivedAt // null), archivedEpoch: (.archivedAt | iso_epoch),
+        internal: (.internal // false), updatedAt: (.updatedAt // null), cwd: (.cwd // null),
+        labels: (if (.labels | type) == "object" then .labels else {} end),
+        parent: (if (.labels | type) == "object" then .labels["paseo.parent-agent-id"] else null end),
+        sessionId: (.runtimeInfo | if type == "object" then .sessionId else null end)} end)'
+
+# one schedule file (stdin) -> flat object
+SCHED_JQ="$JQ_COMMON"'
+def epochs: [.[]? | (.startedAt // .scheduledFor) | iso_epoch | select(. != null)];
+{path: $path, size: $size} + (
+  if type != "object" then {ok: false, reason: "not a JSON object"}
+  elif (.id | type) != "string" then {ok: false, reason: "missing id"}
+  elif (.status | type) != "string" then {ok: false, reason: "missing status"}
+  elif (.target | type) != "object" or (.target.type | type) != "string" then {ok: false, reason: "missing target"}
+  else (.runs | if type == "array" then . else [] end) as $runs
+  | ($runs | epochs) as $ep
+  | {ok: true, id: .id, name: (.name // null), status: .status,
+     targetType: .target.type, targetAgent: (.target.agentId // null),
+     cadence: (.cadence | if type == "object" then (.expression // (.type + ":" + ((.everyMs // .interval // "") | tostring))) else null end),
+     createdAt: (.createdAt // null), updatedAt: (.updatedAt // null),
+     updatedEpoch: (.updatedAt | iso_epoch), lastRunAt: (.lastRunAt // null),
+     lastRunEpoch: (.lastRunAt | iso_epoch), nextRunAt: (.nextRunAt // null),
+     room: (((.name // "") | startswith("supervisor:")) or ((.prompt // "") | startswith("[supervisor-heartbeat]"))),
+     runs: ($runs | length), runsRunning: ([$runs[] | select(.status == "running")] | length),
+     fires1h: ([$ep[] | select(. >= $now - 3600)] | length),
+     fires24h: ([$ep[] | select(. >= $now - 86400)] | length)} end)'
+
+# ps rows + env facts + top rows -> process table with classes, owners, kill eligibility
+PROCS_JQ="$JQ_COMMON"'
+def parse_etime: (split("-")) as $d
+  | (if ($d | length) == 2 then ($d[0] | tonumber) else 0 end) as $days
+  | ($d | last | split(":") | map(tonumber)) as $t
+  | ($days * 86400) + (if ($t | length) == 3 then $t[0] * 3600 + $t[1] * 60 + $t[2]
+                       elif ($t | length) == 2 then $t[0] * 60 + $t[1] else 0 end);
+def has(s): contains(s);
+def classify:
+  if test("^(/[^ ]*)?/Paseo\\.app/Contents/MacOS/Paseo( |$)") then "app-main"
+  elif test("^Paseo Supervisor") then "supervisor"
+  elif test("^Paseo Daemon") then "daemon"
+  elif has("Paseo Helper") and has("terminal/terminal-worker-process.js") then "terminal-worker"
+  elif has("node-entrypoint-runner.js") and test("dist/index\\.js wait ") then "paseo-wait"
+  elif test("^(/[^ ]*/)?paseo( [^ ]+)* wait [0-9a-f-]{36}") then "paseo-wait"
+  elif has("Paseo Helper (Renderer)") or (has("Paseo Helper") and has("--type=renderer")) then "renderer"
+  elif has("Paseo Helper (GPU)") or (has("Paseo Helper") and has("--type=gpu-process")) then "gpu"
+  elif has("Paseo Helper") and has("--type=utility") then "utility"
+  elif has("Paseo Helper") then "helper-other"
+  elif test("^(/bin/|/usr/bin/)?(ba|z)?sh (.*/)?slp-wait [0-9a-f-]{36} [0-9]+$") then "slp-wait"
+  elif test("^([^ ]*/)?claude ") and has("--output-format stream-json") and has("--input-format stream-json") and has("--permission-prompt-tool") then "claude-child"
+  elif test("^([^ ]*/)?codex ") and has("app-server") then "codex-child"
+  else null end;
+def agentish: . == "claude-child" or . == "codex-child";
+
+($agentIdxF[0]) as $agentIdx | ($listenF[0]) as $listen
+| (($pstxt | split("\n") | map(select(length > 0))) ) as $lines
+| ($lines | map(capture("^\\s*(?<pid>[0-9]+)\\s+(?<ppid>[0-9]+)\\s+(?<pgid>[0-9]+)\\s+(?<etime>[0-9:-]+)\\s+(?<rss>[0-9]+)\\s+(?<lstart>[A-Za-z]{3}\\s+[A-Za-z]{3}\\s+[0-9]+\\s+[0-9:]+\\s+[0-9]{4})\\s+(?<cmd>.*)$")? // {bad: .})) as $parsed
+| ($parsed | map(select(.bad))) as $badrows
+| ($parsed | map(select(.pid)) | map(. + {pid: (.pid | tonumber), ppid: (.ppid | tonumber), pgid: (.pgid | tonumber),
+      etime_s: (.etime | parse_etime), rss_mb: ((.rss | tonumber) / 1024 | mb1), lstart: (.lstart | gsub("\\s+"; " "))})) as $rows
+| ($rows | map({key: (.pid | tostring), value: .}) | from_entries) as $byPid
+| ($envtxt | split("\n") | map(select(length > 0) | split("\t")) | map({key: .[0], value: {agent: (if .[1] == "-" then null else .[1] end), home: .[2]}}) | from_entries) as $envBy
+| ($toptxt | split("\n") | map(select(length > 0) | split(" ")) | map({key: .[0], value: {mem: (.[1] | tonumber), cmprs: (.[2] | tonumber)}}) | from_entries) as $topBy
+| ($agentIdx | map(select(.ok)) | map({key: .id, value: (if .archivedAt != null then "archived" else "live" end)}) | from_entries) as $ownerBy
+| ($agentIdx | map(select(.ok | not)) | length) as $nbad
+| ($rows | map(. + {class: (.cmd | classify)})) as $cl
+| ($cl | map({key: (.pid | tostring), value: .}) | from_entries) as $clBy
+| def chainc($p): reduce range(0; 40) as $i ([$p]; .[-1] as $l | ($clBy[($l.ppid | tostring)]) as $par | if $l.ppid > 1 and $par != null and (map(.pid) | index($par.pid)) == null then . + [$par] else . end);
+  ($clBy[($selfPid | tostring)] // null) as $selfRow
+| (if $selfRow then chainc($selfRow) | map(.pid) else [$selfPid] end) as $selfAnc
+| ($cl | map(. as $r | select((chainc($r) | map(.pid) | index($selfPid)) != null) | .pid)) as $selfDesc
+| ($selfAnc + $selfDesc) as $selfTree
+| ($cl | map(select(.class != null or ((chainc(.) | map(.class) | map(select(agentish)) | length) > 0)))) as $ours
+| ($ours | map(. as $r
+    | ($envBy[($r.pid | tostring)] // {agent: null, home: "none"}) as $e
+    | (chainc($r) | map(select(.class | agentish)) | .[0]) as $agentAnc
+    | ($r.class // "agent-descendant") as $class
+    | ($e.agent // (if $agentAnc then ($envBy[($agentAnc.pid | tostring)].agent // null) else null end)) as $owner
+    | ($topBy[($r.pid | tostring)]) as $tp
+    | {pid: $r.pid, ppid: $r.ppid, pgid: $r.pgid, lstart: $r.lstart, etime_s: $r.etime_s,
+       class: $class, exe: ($r.cmd | split(" ") | .[0] | base), owner: $owner,
+       ownerState: (if $owner == null then null elif ($agentIdx | length) == 0 or (($agentIdx | map(select(.ok)) | length) == 0) then "unknown" else ($ownerBy[$owner] // (if $nbad > 0 then "unknown" else "missing" end)) end),
+       home: $e.home, rss_mb: $r.rss_mb, mem_mb: (if $tp then $tp.mem else null end), cmprs_mb: (if $tp then $tp.cmprs else null end),
+       footprint_mb: (if $tp then $tp.mem else $r.rss_mb end), footprintSource: (if $tp then "top" else "rss" end),
+       cmd: $r.cmd,
+       protected: (if ($selfTree | index($r.pid)) != null then "in slp-gc'"'"'s own process tree"
+                   elif $invoker != "" and $owner == $invoker then "belongs to the invoking agent"
+                   else null end)})) as $procs
+# identification of Supervisor + daemon for this home
+| ($pidfile | if type == "object" and (.pid | type) == "number" then . else null end) as $pf
+| ($procs | map(select(.class == "supervisor" and $pf != null and .pid == $pf.pid)) | .[0]) as $sup
+| ($procs | map(select(.class == "app-main")) | map(.pid)) as $apps
+| ($procs | map(select(.class == "daemon" and $sup != null and .ppid == $sup.pid))) as $daemons
+| {pidFile: ($pf != null), supervisor: ($sup != null and (($apps | index($sup.ppid)) != null)),
+   daemon: (($daemons | length) == 1), listener: ($daemons | length == 1 and ($listen | index($daemons[0].pid)) != null),
+   supervisorPid: ($sup.pid? // null), daemonPid: (if ($daemons | length) == 1 then $daemons[0].pid else null end),
+   listen: ($pf.listen? // null)} as $idt0
+| ($idt0 + {ok: ($idt0.pidFile and $idt0.supervisor and $idt0.daemon and $idt0.listener),
+   why: (if ($idt0.pidFile | not) then "paseo.pid missing/unparseable"
+         elif ($idt0.supervisor | not) then "pid in paseo.pid is not a live \"Paseo Supervisor\" child of the app main"
+         elif ($idt0.daemon | not) then "no single \"Paseo Daemon\" child of the Supervisor"
+         elif ($idt0.listener | not) then "the daemon does not own the listener from paseo.pid"
+         else "ok" end)}) as $idt
+| ($procs | map(. as $p
+    | ($p.class | . == "claude-child" or . == "codex-child" or . == "slp-wait" or . == "paseo-wait") as $stalable
+    | (if $p.class == "slp-wait" or $p.class == "paseo-wait" then 130 else 600 end) as $minAge
+    | (if $stalable | not then {eligible: false, why: "not an agent-child/wait class"}
+       elif $p.protected != null then {eligible: false, why: ("protected: " + $p.protected)}
+       elif $p.home != "match" then {eligible: false, why: ("PASEO_HOME in the process env is \"" + $p.home + "\" (need match): cannot prove it belongs to this home")}
+       elif ($p.ppid != 1) and ($p.owner == null) then {eligible: false, why: "no PASEO_AGENT_ID owner and ppid != 1"}
+       elif ($p.ppid != 1) and ($p.ownerState != "archived" and $p.ownerState != "missing") then
+            {eligible: false, why: ("not orphaned: ppid " + ($p.ppid | tostring) + " and owner " + ($p.owner // "?") + " is " + ($p.ownerState // "?"))}
+       elif $p.etime_s < $minAge then {eligible: false, why: ("orphan signature but age " + ($p.etime_s | tostring) + "s < " + ($minAge | tostring) + "s")}
+       else {eligible: true, why: ("orphan: " + (if $p.ppid == 1 then "ppid==1" else "owner " + $p.owner + " is " + $p.ownerState end) + ", PASEO_HOME matches, age " + ($p.etime_s | tostring) + "s >= " + ($minAge | tostring) + "s")} end) as $stale
+    | ($p.class as $c | (["renderer","gpu","utility","daemon","claude-child","codex-child","slp-wait","paseo-wait"] | index($c)) != null) as $memclass
+    | (if $p.footprint_mb <= $killMb then {eligible: false, why: ("footprint " + ($p.footprint_mb | tostring) + " MB <= " + ($killMb | tostring) + " MB")}
+       elif $p.class == "app-main" or $p.class == "supervisor" then {eligible: false, why: "never killed: report only"}
+       elif ($memclass | not) then {eligible: false, why: "class not allowed for a memory kill"}
+       elif $p.protected != null then {eligible: false, why: ("protected: " + $p.protected)}
+       elif $p.class == "daemon" and (($idt.ok | not) or $idt.daemonPid != $p.pid) then {eligible: false, why: "daemon not the identified one"}
+       elif ($p.class == "renderer" or $p.class == "gpu" or $p.class == "utility") and (($apps | index($p.ppid)) == null) then {eligible: false, why: "helper is not a child of the app main"}
+       elif ($p.class | . == "claude-child" or . == "codex-child" or . == "slp-wait" or . == "paseo-wait") and $p.home != "match" then {eligible: false, why: "PASEO_HOME not proven to match"}
+       else {eligible: true, why: ("footprint " + ($p.footprint_mb | tostring) + " MB > " + ($killMb | tostring) + " MB")} end) as $mem
+    | $p + {warn: ($p.footprint_mb >= $warnMb), stale: $stale, overmem: $mem})) as $final
+| {ident: $idt, unreadableRows: ($badrows | length), procs: $final,
+   totals: ($final | group_by(.class) | map({class: .[0].class, n: length, footprint_mb: (map(.footprint_mb) | add | mb1), rss_mb: (map(.rss_mb) | add | mb1), cmprs_mb: (map(.cmprs_mb // 0) | add | mb1)})),
+   overall: {n: ($final | length), footprint_mb: ($final | map(.footprint_mb) | add // 0 | mb1), rss_mb: ($final | map(.rss_mb) | add // 0 | mb1)},
+   warnMb: $warnMb, killMb: $killMb}'
+
+# --- eval: agents + schedules + garbage decisions -----------------------------------------------
+EVAL_JQ="$JQ_COMMON"'
+def days($e): (($now - $e) / 86400 | floor);
+($agentsF[0]) as $agents | ($schF[0]) as $sch | ($procsF[0]) as $procs | ($rawF[0]) as $rawRefs | ($busyF[0]) as $busyRefs
+| ($agents | map(select(.ok))) as $okA
+| ($okA | length > 0) as $trusted
+| ($okA | map({key: .id, value: .}) | from_entries) as $A
+| ($procs.procs | map(.owner) | map(select(. != null)) | unique) as $procOwners
+| ($okA | map(select(.archivedAt == null and .parent != null) | .parent) | unique) as $liveParents
+| ($sch | map(select(.ok and (.status == "active" or .status == "paused") and .targetAgent != null) | .targetAgent) | unique) as $schedTargets
+| def astate($id):
+    if $A[$id] != null then (if $A[$id].archivedAt != null then "archived" else "live" end)
+    elif ($rawRefs | index($id)) != null then "unreadable"
+    elif $trusted then "missing" else "unknown" end;
+  ($agents | map(
+    if .ok | not then {category: "agent", path: .path, id: null, state: "unreadable", garbage: false, reason: ("skipped: unreadable record (" + .reason + ")"), action: "none"}
+    elif ((.path | base | sub("\\.json$"; "")) != .id) then {category: "agent", path: .path, id: .id, state: "unreadable", garbage: false, reason: "skipped: file name uuid != record id", action: "none"}
+    elif (.status as $st | ["idle","running","closed","error","initializing"] | index($st)) == null then {category: "agent", path: .path, id: .id, state: "unreadable", garbage: false, reason: ("skipped: unknown lastStatus " + (.status | tojson)), action: "none"}
+    elif .archivedAt != null and .archivedEpoch == null then {category: "agent", path: .path, id: .id, state: "unreadable", garbage: false, reason: "skipped: archivedAt is not a valid ISO timestamp", action: "none"}
+    elif .archivedAt == null then
+      (if .status == "closed" then {category: "agent", path: .path, id: .id, state: "closed-unarchived", garbage: false, reason: "not garbage: closed but not archived (report-only; the user may still see it)", action: "none"}
+       else {category: "agent", path: .path, id: .id, state: "live", garbage: false, reason: ("not garbage: unarchived agent (lastStatus " + .status + ")"), action: "none"} end)
+    else . as $r
+      | ([ (if $r.internal != false then "internal record" else empty end),
+           (if $r.status != "closed" then "lastStatus is " + $r.status + " (rule needs closed)" else empty end),
+           (if days($r.archivedEpoch) < $minDays then "archived " + (days($r.archivedEpoch) | tostring) + " d ago (< " + ($minDays | tostring) + " d)" else empty end),
+           (if ($procOwners | index($r.id)) != null then "a process with PASEO_AGENT_ID=" + $r.id + " is running" else empty end),
+           (if $invoker != "" and $invoker == $r.id then "it is the invoking agent" else empty end),
+           (if ($liveParents | index($r.id)) != null then "an unarchived agent references it via paseo.parent-agent-id" else empty end),
+           (if ($schedTargets | index($r.id)) != null then "an active/paused schedule targets it" else empty end),
+           (if ($busyRefs | index($r.id)) != null then "an in-flight creation references it" else empty end),
+           (if ($rawRefs | index($r.id)) != null then "an unreadable record/schedule mentions it" else empty end),
+           (if $procs.ident.ok | not then "Paseo identification failed: " + $procs.ident.why else empty end) ]) as $fails
+      | if ($fails | length) == 0 then
+          {category: "agent", path: $r.path, id: $r.id, state: "archived", garbage: true, archivedEpoch: $r.archivedEpoch, archivedAt: $r.archivedAt, updatedAt: $r.updatedAt,
+           reason: ("GARBAGE: archived " + (days($r.archivedEpoch) | tostring) + " d ago, lastStatus=closed, not internal, no live process/child/schedule/creation reference"),
+           action: ("paseo agent delete " + $r.id)}
+        else {category: "agent", path: $r.path, id: $r.id, state: "archived", garbage: false, reason: ("not garbage: " + ($fails | join("; "))), action: "none"} end
+    end)) as $agentRows
+| ($sch | map(
+    if .ok | not then {category: "schedule", path: .path, id: null, garbage: false, reason: ("skipped: unreadable schedule (" + .reason + ")"), action: "none", size: .size}
+    elif ((.path | base | sub("\\.json$"; "")) != .id) or ((.id | test("^[0-9a-f]{8}$")) | not) then {category: "schedule", path: .path, id: .id, garbage: false, reason: "skipped: file name is not <id>.json with an 8-hex id", action: "none", size: .size}
+    elif (.status as $st | ["active","paused","completed"] | index($st)) == null then {category: "schedule", path: .path, id: .id, garbage: false, reason: ("skipped: unknown status " + (.status | tojson)), action: "none", size: .size}
+    else . as $s
+      | (if $s.targetType != "agent" or $s.targetAgent == null then "n/a" else astate($s.targetAgent) end) as $ts
+      | ($s + {targetState: $ts}) as $s2
+      | if $s.status == "completed" then
+          ([ (if $s.nextRunAt != null then "nextRunAt is set" else empty end),
+             (if $s.targetType != "agent" then "target is a new-agent schedule (not room machinery)" else empty end),
+             (if ($ts != "missing" and $ts != "archived" and $s.targetType == "agent") then "target agent is " + $ts else empty end),
+             (if ($s.room | not) then "no room marker (name supervisor: / heartbeat prompt)" else empty end),
+             (if $s.updatedEpoch == null then "updatedAt invalid" elif ($now - $s.updatedEpoch) < 3600 then "updated < 1 h ago" else empty end),
+             (if $s.lastRunEpoch != null and ($now - $s.lastRunEpoch) < 600 then "last run < 10 min ago" else empty end),
+             (if $s.runsRunning > 0 then "a run is still marked running" else empty end),
+             (if $procs.ident.ok | not then "Paseo identification failed: " + $procs.ident.why else empty end) ]) as $fails
+          | if ($fails | length) == 0 then $s2 + {category: "schedule", garbage: true, reason: ("GARBAGE: completed room schedule, target agent " + $ts + ", updated > 1 h ago, no run in 10 min"), action: ("paseo schedule delete " + $s.id)}
+            else $s2 + {category: "schedule", garbage: false, reason: ("not garbage: " + ($fails | join("; "))), action: "none"} end
+        elif $ts == "live" then $s2 + {category: "schedule", garbage: false, reason: "protected: target agent is live/unarchived", action: "none"}
+        elif ($ts == "missing" or $ts == "archived") and $s.status == "active" then
+          $s2 + {category: "schedule", garbage: false, anomaly: true, reason: ("anomaly (report-only): active schedule with " + $ts + " target; the daemon normally completes it"), action: "none (report-only in this version)"}
+        else $s2 + {category: "schedule", garbage: false, reason: ("not garbage: status " + $s.status + ", target " + $ts), action: "none"} end
+    end)) as $schedRows
+| {agents: {total: ($agents | length),
+           live: ($agentRows | map(select(.state == "live")) | length),
+           archived: ($agentRows | map(select(.state == "archived")) | length),
+           closedUnarchived: ($agentRows | map(select(.state == "closed-unarchived")) | length),
+           unreadable: ($agentRows | map(select(.state == "unreadable")) | length),
+           trusted: $trusted, rows: $agentRows},
+   schedules: $schedRows,
+   garbage: (($schedRows + $agentRows) | map(select(.garbage)))}'
+
+
+# ====================================================================================================
+# collection (read-only)
+# ====================================================================================================
+collect_ps() { run_to 20 "$PS" -axww -o pid=,ppid=,pgid=,etime=,rss=,lstart=,command= 2>/dev/null; }
+# env facts only: pid <TAB> PASEO_AGENT_ID|- <TAB> match|other|none. The env text never leaves awk.
+# macOS ps shows the environment only for explicitly listed pids (-p), never with -ax, so the pids of
+# Paseo-looking rows are listed ($1, or every candidate of a fresh ps table).
+collect_env() {
+  local pids="${1:-}"
+  [ -n "$pids" ] || pids="$(collect_ps | awk '/Paseo|claude|codex|slp-wait|paseo/ {printf "%s%s", sep, $1; sep = ","}')"
+  [ -n "$pids" ] || return 0
+  local p
+  for p in ${pids//,/ }; do
+    is_uint "$p" || continue
+    run_to 10 "$PSENV" -eww -o command= -p "$p" 2>/dev/null | tr '\n' ' ' | awk -v pid="$p" -v home="$PHOME" '
+    { agent = "-"; h = "none"; rest = $0; hl = length(home)
+      while ((k = index(rest, " PASEO_AGENT_ID=")) > 0) {
+        s = substr(rest, k + 16, 36); if (s ~ /^[0-9a-f-]+$/ && length(s) == 36) agent = s
+        rest = substr(rest, k + 16) }
+      rest = $0
+      while ((k = index(rest, " PASEO_HOME=")) > 0) {
+        v = substr(rest, k + 12)
+        if (substr(v, 1, hl) == home && (length(v) == hl || substr(v, hl + 1, 1) == " ")) h = "match"; else if (h == "none") h = "other"
+        rest = v }
+      if (agent == "-" && h == "none") next
+      print pid "\t" agent "\t" h }'
+  done
+}
+collect_top() {  # "pid mem_mb cmprs_mb" from `top -l 1 -stats pid,mem,cmprs` (values like 63M, 512K, 2G, 7M+)
+  run_to 30 "$TOP" -l 1 -stats pid,mem,cmprs 2>/dev/null | awk '
+    function mb(v,  u, n) { sub(/[+-]$/, "", v); u = substr(v, length(v))
+      if (u ~ /[KMGB]/) n = substr(v, 1, length(v) - 1); else { n = v; u = "B" }
+      if (u == "K") return n / 1024; if (u == "M") return n + 0; if (u == "G") return n * 1024; return n / 1048576 }
+    $1 ~ /^[0-9]+$/ && NF >= 3 && $2 ~ /^[0-9.]+[KMGB]?[+-]?$/ { printf "%s %.1f %.1f\n", $1, mb($2), mb($3) }'
+}
+collect_listen() {  # pids listening on the port of "host:port"
+  local port="${1##*:}"
+  is_uint "$port" || { echo '[]'; return; }
+  run_to 15 "$LSOF" -nP "-iTCP:$port" -sTCP:LISTEN -Fp 2>/dev/null | sed -n 's/^p\([0-9][0-9]*\)$/\1/p' | jq -Rn '[inputs | tonumber]'
+}
+
+# Files are read in chunks; when jq stops on a bad file the chunk is redone file by file so only
+# the broken files are flagged (a malformed record never hides the others).
+extract_agents() {
+  : > "$T/agents.jsonl"
+  local files=() i=0 chunk f
+  if [ ! -d "$PHOME/agents" ]; then echo '[]' > "$T/agents.json"; return 0; fi
+  find "$PHOME/agents" -mindepth 2 -maxdepth 2 -type f -name '*.json' -print0 2>/dev/null > "$T/agents.list"
+  read_nul files < "$T/agents.list"
+  while [ "$i" -lt "${#files[@]}" ]; do
+    chunk=("${files[@]:$i:200}")
+    if ! jq -c "$AGENT_JQ" "${chunk[@]}" > "$T/chunk.out" 2>/dev/null; then
+      : > "$T/chunk.out"
+      for f in "${chunk[@]}"; do
+        jq -c "$AGENT_JQ" "$f" 2>/dev/null || jq -nc --arg p "$f" '{path: $p, ok: false, reason: "invalid JSON"}'
+      done > "$T/chunk.out"
+    fi
+    cat "$T/chunk.out" >> "$T/agents.jsonl"
+    i=$((i + 200))
+  done
+  find "$PHOME/agents" -maxdepth 2 -type l -print0 2>/dev/null | while IFS= read -r -d '' f; do
+    jq -nc --arg p "$f" '{path: $p, ok: false, reason: "symlink (never followed)"}'
+  done >> "$T/agents.jsonl"
+  jq -s '.' "$T/agents.jsonl" > "$T/agents.json"
+}
+extract_schedules() {
+  : > "$T/sched.jsonl"
+  if [ ! -d "$PHOME/schedules" ]; then echo '[]' > "$T/sched.json"; return 0; fi
+  local f size
+  find "$PHOME/schedules" -mindepth 1 -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null | while IFS= read -r -d '' f; do
+    size="$(fsize "$f")"; is_uint "$size" || size=0
+    jq -c --arg path "$f" --argjson size "$size" --argjson now "$NOW" "$SCHED_JQ" "$f" 2>/dev/null \
+      || jq -nc --arg p "$f" --argjson size "$size" '{path: $p, size: $size, ok: false, reason: "invalid JSON"}'
+  done >> "$T/sched.jsonl"
+  find "$PHOME/schedules" -mindepth 1 -maxdepth 1 -type l -print0 2>/dev/null | while IFS= read -r -d '' f; do
+    jq -nc --arg p "$f" '{path: $p, size: 0, ok: false, reason: "symlink (never followed)"}'
+  done >> "$T/sched.jsonl"
+  jq -s '.' "$T/sched.jsonl" > "$T/sched.json"
+}
+UUID_RE='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+# ids mentioned by files we cannot parse (fail closed) or by creations that are not completed
+collect_refs() {
+  local f
+  : > "$T/rawrefs.txt"; : > "$T/busyrefs.txt"
+  jq -r 'select(.ok | not) | .path' "$T/agents.jsonl" "$T/sched.jsonl" 2>/dev/null | while IFS= read -r f; do
+    if [ -f "$f" ] && [ ! -L "$f" ]; then grep -oE "$UUID_RE" -- "$f" 2>/dev/null; fi
+  done >> "$T/rawrefs.txt"
+  if [ -d "$PHOME/creations" ]; then
+    find "$PHOME/creations" -mindepth 1 -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null | while IFS= read -r -d '' f; do
+      jq -e '(.inFlight == null) and (.snapshot.phase == "completed")' "$f" >/dev/null 2>&1 || grep -oE "$UUID_RE" -- "$f" 2>/dev/null
+    done >> "$T/busyrefs.txt"
+  fi
+  sort -u "$T/rawrefs.txt" | jq -Rn '[inputs]' > "$T/rawrefs.json"
+  sort -u "$T/busyrefs.txt" | jq -Rn '[inputs]' > "$T/busyrefs.json"
+}
+collect_procs() {  # $1 = 1: use the agents index for owner states
+  local pidfile listen
+  collect_ps > "$T/ps.txt" || true
+  collect_env "$(awk '/Paseo|claude|codex|slp-wait|paseo/ {printf "%s%s", sep, $1; sep = ","}' "$T/ps.txt")" > "$T/env.txt" || true
+  collect_top > "$T/top.txt" || true
+  pidfile=null
+  if [ -f "$PHOME/paseo.pid" ] && [ ! -L "$PHOME/paseo.pid" ]; then pidfile="$(jq -c '.' "$PHOME/paseo.pid" 2>/dev/null || echo null)"; fi
+  [ -n "$pidfile" ] || pidfile=null
+  listen="$(printf '%s' "$pidfile" | jq -r 'if type == "object" then (.listen // "") else "" end' 2>/dev/null)"
+  collect_listen "$listen" > "$T/listen.json"
+  if [ "$1" = 1 ]; then cp "$T/agents.json" "$T/agents.idx"; else echo '[]' > "$T/agents.idx"; fi
+  if ! jq -n --rawfile pstxt "$T/ps.txt" --rawfile envtxt "$T/env.txt" --rawfile toptxt "$T/top.txt" \
+      --slurpfile agentIdxF "$T/agents.idx" --slurpfile listenF "$T/listen.json" --argjson pidfile "$pidfile" \
+      --argjson selfPid "$$" --arg invoker "${PASEO_AGENT_ID:-}" --argjson warnMb "$WARN_MB" --argjson killMb "$KILL_MB" \
+      "$PROCS_JQ" > "$T/procs.json" 2> "$T/procs.err"; then
+    note "process table failed: $(head -n 3 "$T/procs.err")"
+    echo '{"ident":{"ok":false,"why":"process table failed"},"procs":[],"totals":[],"overall":{"n":0,"footprint_mb":0,"rss_mb":0},"unreadableRows":0,"warnMb":0,"killMb":0}' > "$T/procs.json"
+  fi
+}
+
+# transcripts (CLAUDE_CONFIG_DIR/projects/*/<sessionId>.jsonl), largest first
+collect_transcripts() {
+  local d f size dirs=() min="${SLP_GC_TRANSCRIPT_MIN_KB:-512}"
+  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || dirs[${#dirs[@]}]="$CLAUDE_CONFIG_DIR"
+  dirs[${#dirs[@]}]="$HOME/.claude"
+  for d in "$HOME"/.config/slp-room/claude-*; do [ -d "$d" ] && dirs[${#dirs[@]}]="$d"; done
+  : > "$T/tr.tsv"
+  for d in "${dirs[@]}"; do
+    [ -d "$d/projects" ] || continue
+    find "$d/projects" -mindepth 2 -maxdepth 2 -type f -name '*.jsonl' -size "+${min}k" -print0 2>/dev/null | while IFS= read -r -d '' f; do
+      size="$(fsize "$f")"; is_uint "$size" && printf '%s\t%s\n' "$size" "${f//$'\n'/ }"
+    done >> "$T/tr.tsv"
+  done
+  sort -rn "$T/tr.tsv" | awk '!seen[$0]++' | head -n 15 \
+    | jq -Rc 'split("\t") | {bytes: (.[0] | tonumber), path: .[1], sessionId: (.[1] | split("/") | last | sub("\\.jsonl$"; ""))}' > "$T/tr.jsonl"
+}
+# the daemon writes ws_runtime_metrics every 30 s: last three samples
+collect_metrics() {
+  : > "$T/metrics.jsonl"
+  [ -f "$PHOME/daemon.log" ] && [ ! -L "$PHOME/daemon.log" ] || return 0
+  tail -c 3000000 "$PHOME/daemon.log" 2>/dev/null \
+    | jq -Rc 'fromjson? | select(.msg == "ws_runtime_metrics") | {time: .time, pid: .pid, rss: .memory.rss, heapUsed: .memory.heapUsed, timelineStats: .agents.timelineStats}' 2>/dev/null \
+    | tail -n 3 > "$T/metrics.jsonl"
+}
+
+# --- retention data (report only) -----------------------------------------------------------------
+du_kb() { run_to 60 du -skP -- "$1" 2>/dev/null | awk '{print $1}'; }
+ret() {  # cat path kb count note
+  jq -nc --arg cat "$1" --arg path "${2//$'\n'/ }" --argjson kb "${3:-0}" --argjson count "${4:-0}" --arg note "$5" \
+    '{cat: $cat, path: $path, kb: $kb, count: $count, note: $note}' >> "$T/ret.jsonl"
+}
+age_days() { local m; m="$(fmtime "$1")"; is_uint "$m" && echo $(( (NOW - m) / 86400 < 0 ? 0 : (NOW - m) / 86400 )) || echo 0; }
+git_state() {  # dirty / unpushed counts; anything unknown is reported as such (protective)
+  local d="$1" out up
+  if [ ! -d "$d" ] || [ -L "$d" ]; then echo "missing"; return; fi
+  out="$(run_to 15 git -C "$d" status --porcelain 2>/dev/null)" || { echo "unknown (git status failed)"; return; }
+  up="$(run_to 15 git -C "$d" rev-list --count '@{u}..HEAD' 2>/dev/null)" || up="no-upstream"
+  printf 'dirty=%s unpushed=%s' "$(printf '%s' "$out" | grep -c .)" "$up"
+}
+collect_retention() {
+  : > "$T/ret.jsonl"
+  local f kb n d ent
+  # where the bytes are: every top-level entry of the home, not following symlinks
+  find "$PHOME" -mindepth 1 -maxdepth 1 -print0 2>/dev/null | while IFS= read -r -d '' ent; do
+    if [ -L "$ent" ]; then kb=0; else kb="$(du_kb "$ent")"; fi
+    is_uint "$kb" || kb=0
+    n=0; [ -d "$ent" ] && [ ! -L "$ent" ] && n="$(find "$ent" -type f 2>/dev/null | wc -l | tr -d ' ')"
+    ret home-entry "$ent" "$kb" "$n" "$( [ -L "$ent" ] && echo 'symlink (not followed)' || echo 'report-only: no Paseo CLI path' )"
+  done
+  for f in "$PHOME"/daemon.log "$PHOME"/daemon.log.* "$PHOME"/*-daemon.log; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    ret log "$f" "$(( $(fsize "$f") / 1024 ))" 1 "age $(age_days "$f") d; report-only (daemon.log is held open by the Supervisor)"
+  done
+  for f in "$PHOME"/config.json.bak*; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    ret config-backup "$f" "$(( $(fsize "$f") / 1024 ))" 1 "age $(age_days "$f") d; may hold a token: never read or bundled; report-only"
+  done
+  for d in agent-requests creations uploads desktop-attachments; do
+    [ -d "$PHOME/$d" ] && [ ! -L "$PHOME/$d" ] || continue
+    ret "$d" "$PHOME/$d" "$(du_kb "$PHOME/$d")" "$(find "$PHOME/$d" -type f 2>/dev/null | wc -l | tr -d ' ')" "daemon-owned; report-only (no CLI path)"
+  done
+  # Paseo worktree dirs: ~/.paseo/worktrees/<hash>/<name>
+  if [ -d "$PHOME/worktrees" ] && [ ! -L "$PHOME/worktrees" ]; then
+    find "$PHOME/worktrees" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | while IFS= read -r -d '' d; do
+      if [ -z "$(ls -A "$d" 2>/dev/null)" ]; then ret paseo-worktree "$d" 0 0 "empty project-hash dir; report-only"; continue; fi
+      find "$d" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | while IFS= read -r -d '' f; do
+        ret paseo-worktree "$f" "$(du_kb "$f")" 1 "$(git_state "$f"); report-only (paseo worktree archive is a follow-up)"
+      done
+    done
+  fi
+  # worktrees of live agents outside the Paseo tree (room / foreign): never garbage
+  jq -r '.[] | select(.ok and .archivedAt == null and .cwd != null) | .cwd' "$T/agents.json" 2>/dev/null | sort -u | head -n 30 | while IFS= read -r d; do
+    case "$d" in "$PHOME"/worktrees/*) continue ;; esac
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    ret other-worktree "$d" 0 1 "live agent cwd: $(git_state "$d"); never garbage"
+  done
+}
+
+# ====================================================================================================
+# evaluate: everything the report / apply / bundle need, into $T/report.json
+# ====================================================================================================
+ASSEMBLE_JQ='
+($ag[0] | map(select(.ok and .sessionId != null)) | map({key: .sessionId, value: {id: .id, state: (if .archivedAt != null then "archived" else "live" end), provider: .provider}}) | from_entries) as $bySess
+| {version: 1, generated: $generated, home: $home, procs: $pr[0], agents: $ev[0].agents, schedules: $ev[0].schedules, garbage: $ev[0].garbage,
+   transcripts: ($tr | map(. + {agent: $bySess[.sessionId]})), daemonMetrics: $met, retention: $ret}'
+evaluate() {
+  extract_agents; extract_schedules; collect_refs; collect_procs 1
+  jq -n --slurpfile agentsF "$T/agents.json" --slurpfile schF "$T/sched.json" --slurpfile procsF "$T/procs.json" \
+    --slurpfile rawF "$T/rawrefs.json" --slurpfile busyF "$T/busyrefs.json" \
+    --argjson now "$NOW" --argjson minDays "$AGENT_MIN_DAYS" --arg invoker "${PASEO_AGENT_ID:-}" \
+    "$EVAL_JQ" > "$T/evalpart.json" 2> "$T/eval.err" || { note "evaluation failed: $(head -n 3 "$T/eval.err")"; return 1; }
+  collect_transcripts; collect_metrics; collect_retention
+  jq -n --arg generated "$(iso_now)" --arg home "$PHOME" --slurpfile ev "$T/evalpart.json" --slurpfile pr "$T/procs.json" \
+    --slurpfile ret "$T/ret.jsonl" --slurpfile tr "$T/tr.jsonl" --slurpfile met "$T/metrics.jsonl" --slurpfile ag "$T/agents.json" \
+    "$ASSEMBLE_JQ" > "$T/report.json" 2> "$T/asm.err" || { note "report assembly failed: $(head -n 3 "$T/asm.err")"; return 1; }
+}
+
+# ====================================================================================================
+# text report
+# ====================================================================================================
+RENDER_JQ='
+def pad($n): tostring as $s | if ($s | length) >= $n then $s[:$n] else $s + ([range(0; $n - ($s | length))] | map(" ") | join("")) end;
+def rpad($n): tostring as $s | if ($s | length) >= $n then $s else ([range(0; $n - ($s | length))] | map(" ") | join("")) + $s end;
+def sh: if . == null then "-" else .[:8] end;
+def age($s): if $s >= 86400 then "\($s / 86400 | floor)d\(($s % 86400) / 3600 | floor)h" elif $s >= 3600 then "\($s / 3600 | floor)h\(($s % 3600) / 60 | floor)m" else "\($s / 60 | floor)m\($s % 60)s" end;
+def kb: if . >= 1048576 then "\((. / 1048576 * 10 | round) / 10) GB" elif . >= 1024 then "\((. / 1024 * 10 | round) / 10) MB" else "\(.) KB" end;
+def bytes: if . < 1024 then "\(.) B" else (. / 1024 | floor) | kb end;
+def cap($n; f): if length > $n then (.[:$n] | map(f)) + ["  ... \(length - $n) more (see --json)"] else map(f) end;
+. as $r
+| ($r.procs) as $P
+| ($r.garbage | length) as $ng
+| [
+  "slp-gc report  \($r.generated)  home \($r.home)",
+  "READ-ONLY: no paseo CLI call, nothing is changed. Use --apply to reclaim (see --help).",
+  "identification: " + (if $P.ident.ok then "ok (Supervisor \($P.ident.supervisorPid), daemon \($P.ident.daemonPid), listener \($P.ident.listen))" else "FAILED: \($P.ident.why) -> --apply would be refused" end),
+  "",
+  "== (a) Paseo processes  (footprint = top MEM, fallback rss; MB; warn >= \($P.warnMb) MB, memory-kill > \($P.killMb) MB)",
+  ("  " + (["PID" | rpad(7)] + ["PPID" | rpad(7)] + ["CLASS" | pad(16)] + ["OWNER" | pad(9)] + ["AGE" | pad(8)] + ["FOOTPRINT" | rpad(10)] + ["CMPRS" | rpad(8)] + ["RSS" | rpad(8)] + ["FLAGS"] | join(" "))),
+  ($P.procs | sort_by(.class, -.footprint_mb) | .[] |
+    ("  " + ([(.pid | rpad(7)), (.ppid | rpad(7)), (.class | pad(16)), (.owner | sh | pad(9)), (age(.etime_s) | pad(8)),
+           ((.footprint_mb | tostring) + (if .footprintSource == "rss" then "*" else "" end) | rpad(10)), ((.cmprs_mb // "-") | rpad(8)), (.rss_mb | rpad(8)),
+           ((if .warn then "!!WARN " else "" end) + (if .protected != null then "protected " else "" end) + (if .home == "other" then "other-home " else "" end))] | join(" "))),
+    (select(.class == "claude-child" or .class == "codex-child" or .class == "slp-wait" or .class == "paseo-wait")
+       | "      orphan rule: \(.stale.why)" + (if .stale.eligible then "  => WOULD SIGTERM pid \(.pid) (with --apply --kill-stale-processes)" else "" end)),
+    (select(.overmem.eligible) | "      memory rule: \(.overmem.why)  => WOULD SIGTERM pid \(.pid) (with --apply --kill-over-memory)"),
+    (select(.warn and (.overmem.eligible | not) and (.class == "app-main" or .class == "supervisor")) | "      memory: above warn; \(.class) is never killed (report only)")),
+  (if ($P.procs | length) == 0 then "  (no Paseo process found)" else empty end),
+  (if $P.unreadableRows > 0 then "  note: \($P.unreadableRows) ps row(s) could not be read and were skipped" else empty end),
+  "  totals per class (n, footprint MB, rss MB):",
+  ($P.totals | sort_by(-.footprint_mb) | .[] | "    \(.class | pad(16)) \(.n | rpad(3))  \(.footprint_mb | rpad(10))  \(.rss_mb | rpad(10))"),
+  "    \("ALL" | pad(16)) \($P.overall.n | rpad(3))  \($P.overall.footprint_mb | rpad(10))  \($P.overall.rss_mb | rpad(10))",
+  ($P.procs | map(select(.class == "claude-child" or .class == "codex-child" or .class == "slp-wait" or .class == "paseo-wait")) | "  env visibility: PASEO_HOME readable for \(map(select(.home != "none")) | length) of \(length) agent-family processes (unreadable => never signalled by --kill-stale-processes; ps eww may be restricted by SIP or a sandbox)"),
+  ($r.daemonMetrics | if length > 0 then "  daemon self-metrics (last ws_runtime_metrics): " + (.[-1] | "\(.time) rss=\(.rss) heapUsed=\(.heapUsed) timelineStats=\(.timelineStats | tojson)") else "  daemon self-metrics: none found in daemon.log" end),
+  "",
+  "== (b) recurring machinery: schedules / heartbeats on disk (\($r.schedules | length))",
+  ($r.schedules | sort_by(.id) | .[] |
+    if .id == null then "  \(.path)  UNREADABLE: \(.reason)  size \(.size) B  -> skipped"
+    else "  \(.id)  \(.status | pad(9))  target \(.targetType):\(.targetAgent | sh) (\(.targetState // "n/a"))  cadence \(.cadence // "-")  runs \(.runs)  size \(.size | bytes)  fires 1h/24h \(.fires1h)/\(.fires24h)  name \(.name // "-")\n      \(.reason)  | action: \(.action)" end),
+  (if ($r.schedules | length) == 0 then "  (none)" else empty end),
+  "",
+  "== (c) agents: \($r.agents.total) records  live \($r.agents.live)  archived \($r.agents.archived)  closed-unarchived \($r.agents.closedUnarchived)  unreadable \($r.agents.unreadable)",
+  "  largest transcripts (CLAUDE_CONFIG_DIR/projects/*/<sessionId>.jsonl):",
+  ($r.transcripts | .[:10] | .[] | "    \(.bytes | rpad(12)) B  \(.agent.id | sh) \(.agent.state // "unknown-agent") \(.agent.provider // "")  \(.path)"),
+  (if ($r.transcripts | length) == 0 then "    (none above the size floor / not locatable)" else empty end),
+  "",
+  "== (d) garbage candidates: \($ng) (rules: memleak-live.md §6)",
+  ($r.garbage | cap(200; "  [\(.category)] \(.id)  \(.path)\n      \(.reason)\n      would: \(.action)") | .[]),
+  (if $ng == 0 then "  (none)" else empty end),
+  "  not garbage, agents grouped by the rule that failed:",
+  ($r.agents.rows | map(select(.garbage | not)) | group_by(.reason | gsub("[0-9]+"; "N")) | map({reason: .[0].reason, n: length, eg: .[0].id}) | sort_by(-.n) | .[:15] | .[] | "    \(.n | rpad(5))x  \(.reason)   (e.g. \(.eg // "-"))"),
+  "  anomalies / unreadable (skipped, never touched):",
+  (($r.schedules + $r.agents.rows) | map(select(.anomaly == true or (.reason | startswith("skipped")))) | cap(40; "    [\(.category)] \(.id // "-") \(.path)\n        \(.reason)") | .[]),
+  "",
+  "== (e) retention data (report only; nothing here has a Paseo CLI reclaim path)",
+  "  top-level entries of the home by size:",
+  ($r.retention | map(select(.cat == "home-entry")) | sort_by(-.kb) | .[:15] | .[] | "    \(.kb | kb | rpad(10))  files \(.count | rpad(6))  \(.path)"),
+  ($r.retention | map(select(.cat != "home-entry")) | group_by(.cat) | .[] | "  \(.[0].cat) (\(length)):", (.[:25] | .[] | "    \(.kb | kb | rpad(10))  \(.path)  -- \(.note)")),
+  "",
+  "summary: \($ng) garbage candidate(s); actions only with --apply. Exit 0."
+] | .[]'
+render_text() { jq -r "$RENDER_JQ" "$T/report.json"; }
+
+# ====================================================================================================
+# apply (reclaim via Paseo's CLI) and kills
+# ====================================================================================================
+ACT_LOG=""
+act() {  # kind target result detail
+  jq -nc --arg ts "$(iso_now)" --arg kind "$1" --arg target "${2//$'\n'/ }" --arg result "$3" --arg detail "$4" \
+    '{ts: $ts, kind: $kind, target: $target, result: $result, detail: $detail}' | tee -a "$T/actions.jsonl" >> "$ACT_LOG"
+}
+resolve_cli() {
+  local c
+  for c in "${SLP_GC_PASEO:-}" "${PASEO_CLI:-}" "$(command -v paseo 2>/dev/null)" \
+           /Applications/Paseo.app/Contents/Resources/bin/paseo "$HOME/Applications/Paseo.app/Contents/Resources/bin/paseo"; do
+    [ -n "$c" ] && [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+CLI_DEAD=0
+run_cli() {  # never raises: rc 0 ok, 1 failed, 2 timed out (the daemon is hung: stop acting)
+  local rc out
+  out="$(PASEO_HOME="$PHOME" run_to "$CLI_TIMEOUT" "$CLI" "$@" 2>&1)"; rc=$?
+  CLI_OUT="$(printf '%s' "$out" | head -c 300 | tr '\n' ' ')"
+  [ "$rc" = 0 ] && return 0
+  [ "$rc" = 142 ] && { CLI_DEAD=1; return 2; }
+  return 1
+}
+uuid_ok() { printf '%s' "$1" | grep -Eqx "$UUID_RE"; }
+reextract_agent() { jq -c "$AGENT_JQ" "$1" 2>/dev/null; }
+
+do_apply() {  # $1 = kill stale (0/1), $2 = kill over memory (0/1); uses $T/report.json
+  local o ks="$1" km="$2" n=0 fail=0 id path upd arch fresh cur other
+  ACT_LOG="$STATE/actions.log"; mkdir -p "$STATE" || return 1
+  : > "$T/actions.jsonl"
+  if [ "$(jq -r '.procs.ident.ok' "$T/report.json")" != true ]; then
+    act refuse - refused "$(jq -r '.procs.ident.why' "$T/report.json")"
+    APPLY_RC=3; return 3
+  fi
+  if ! have_perl; then act refuse - refused "no perl: cannot enforce a timeout on the paseo CLI"; APPLY_RC=3; return 3; fi
+  CLI="$(resolve_cli)" || CLI=""
+  local nsched nagent
+  nsched="$(jq '[.garbage[] | select(.category == "schedule")] | length' "$T/report.json")"
+  nagent="$(jq '[.garbage[] | select(.category == "agent")] | length' "$T/report.json")"
+  if [ -z "$CLI" ] && [ $((nsched + nagent)) -gt 0 ]; then act refuse - refused "paseo CLI not found (PASEO_CLI / PATH / Paseo.app)"; fail=1; nsched=0; nagent=0; fi
+
+  # schedules first (they may still point at agents that are about to go)
+  while IFS=$'\037' read -r -d '' id path upd; do
+    [ "$CLI_DEAD" = 0 ] || break
+    [ "$n" -lt "$MAX_ACTIONS" ] || { act limit - skipped "SLP_GC_MAX_ACTIONS=$MAX_ACTIONS reached"; break; }
+    if [ -L "$path" ] || [ ! -f "$path" ]; then act "schedule delete" "$id" skipped "file gone or symlink"; continue; fi
+    fresh="$(jq -c --arg path "$path" --argjson size 0 --argjson now "$NOW" "$SCHED_JQ" "$path" 2>/dev/null)"
+    if [ "$(printf '%s' "$fresh" | jq -r --arg id "$id" --arg upd "$upd" 'select(.ok and .id == $id and .status == "completed" and .nextRunAt == null and .updatedAt == $upd) | "same"' 2>/dev/null)" != same ]; then
+      act "schedule delete" "$id" skipped "changed since evaluation (re-read)"; continue
+    fi
+    n=$((n + 1))
+    if run_cli schedule delete "$id"; then act "schedule delete" "$id" ok "$CLI schedule delete $id"
+    else act "schedule delete" "$id" failed "rc!=0: $CLI_OUT"; fail=1; fi
+  done < <(jq -j '.garbage[] | select(.category == "schedule") | [.id, .path, .updatedAt] | join("\u001f"), "\u0000"' "$T/report.json")
+
+  while IFS=$'\037' read -r -d '' id path arch upd; do
+    [ "$CLI_DEAD" = 0 ] || break
+    [ "$n" -lt "$MAX_ACTIONS" ] || { act limit - skipped "SLP_GC_MAX_ACTIONS=$MAX_ACTIONS reached"; break; }
+    uuid_ok "$id" || { act "agent delete" "$id" skipped "not a full uuid"; continue; }
+    if [ -L "$path" ] || [ ! -f "$path" ]; then act "agent delete" "$id" skipped "file gone or symlink"; continue; fi
+    fresh="$(reextract_agent "$path")"
+    if [ "$(printf '%s' "$fresh" | jq -r --arg id "$id" --arg a "$arch" --arg u "$upd" 'select(.ok and .id == $id and .archivedAt == $a and (.updatedAt // "") == $u and .status == "closed" and .internal == false) | "same"' 2>/dev/null)" != same ]; then
+      act "agent delete" "$id" skipped "changed since evaluation (re-read)"; continue
+    fi
+    if collect_env | awk -F'\t' -v id="$id" '$2 == id {f = 1} END {exit !f}'; then act "agent delete" "$id" skipped "a process with PASEO_AGENT_ID appeared"; continue; fi
+    cur=0
+    while IFS= read -r -d '' other; do
+      [ "$other" = "$path" ] && continue
+      o="$(reextract_agent "$other")"
+      [ "$(printf '%s' "$o" | jq -r 'select(.ok and .archivedAt != null) | "archived"' 2>/dev/null)" = archived ] || cur=1
+    done < <(grep -rlF --null -- "$id" "$PHOME/agents" 2>/dev/null)
+    [ "$cur" = 0 ] || { act "agent delete" "$id" skipped "another (unarchived/unreadable) record mentions it"; continue; }
+    n=$((n + 1))
+    if run_cli agent delete "$id"; then act "agent delete" "$id" ok "$CLI agent delete $id"
+    else act "agent delete" "$id" failed "rc!=0: $CLI_OUT"; fail=1; fi
+  done < <(jq -j '.garbage[] | select(.category == "agent") | [.id, .path, .archivedAt // "", .updatedAt // ""] | join("\u001f"), "\u0000"' "$T/report.json")
+  [ "$CLI_DEAD" = 0 ] || { act abort - failed "paseo CLI timed out: daemon hung, remaining items not touched"; fail=1; }
+
+  # signals: single pids, SIGTERM only, lstart re-read immediately before
+  local pid ppid lstart cmd class why row_ppid row_lstart row_cmd row seen=" "
+  for kind in stale mem; do
+    if [ "$kind" = stale ]; then [ "$ks" = 1 ] || continue; else [ "$km" = 1 ] || continue; fi
+    while IFS=$'\037' read -r -d '' pid ppid lstart class why cmd; do
+      case "$seen" in *" $pid "*) continue ;; esac
+      seen="$seen$pid "
+      is_uint "$pid" && [ "$pid" -gt 1 ] || { act kill "$pid" skipped "bad pid"; continue; }
+      case "$class" in app-main|supervisor) act kill "$pid" skipped "$class is never signalled"; continue ;; esac
+      if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then act kill "$pid" skipped "slp-gc's own process"; continue; fi
+      row="$(run_to 10 "$PS" -ww -o pid=,ppid=,pgid=,etime=,rss=,lstart=,command= -p "$pid" 2>/dev/null | awk -v p="$pid" '$1 == p' | head -n 1)"
+      if [ -z "$row" ]; then act kill "$pid" skipped "process gone"; continue; fi
+      row_ppid="$(printf '%s' "$row" | awk '{print $2}')"
+      row_lstart="$(printf '%s' "$row" | awk '{print $6, $7, $8, $9, $10}')"
+      row_cmd="$(printf '%s' "$row" | sed -E 's/^ *([^ ]+ +){10}//')"
+      if [ "$row_lstart" != "$lstart" ] || [ "$row_ppid" != "$ppid" ] || [ "$row_cmd" != "$cmd" ]; then
+        act kill "$pid" skipped "lstart/ppid/command changed since evaluation (pid reuse?)"; continue
+      fi
+      if [ "$kind" = stale ] && [ "$class" != daemon ]; then
+        # the owner facts come from the env: re-read them now
+        if ! collect_env "$pid" | awk -F'\t' -v p="$pid" '$1 == p && $3 == "match" {f = 1} END {exit !f}'; then act kill "$pid" skipped "PASEO_HOME no longer provable"; continue; fi
+      fi
+      if [ -n "${PASEO_AGENT_ID:-}" ] && collect_env "$pid" | awk -F'\t' -v p="$pid" -v id="$PASEO_AGENT_ID" '$1 == p && $2 == id {f = 1} END {exit !f}'; then
+        act kill "$pid" skipped "belongs to the invoking agent"; continue
+      fi
+      if "$KILL" -TERM "$pid" 2>/dev/null; then act kill "$pid" ok "SIGTERM $class ($kind): $why"; else act kill "$pid" failed "kill returned non-zero"; fail=1; fi
+    done < <(jq -j --arg kind "$kind" '.procs.procs[] | select(if $kind == "stale" then .stale.eligible else .overmem.eligible end)
+        | [.pid, .ppid, .lstart, .class, (if $kind == "stale" then .stale.why else .overmem.why end), .cmd] | map(tostring) | join("\u001f"), "\u0000"' "$T/report.json")
+  done
+  APPLY_RC=$fail
+  return "$fail"
+}
+render_actions() {
+  if [ ! -s "$T/actions.jsonl" ]; then echo "apply: nothing to do"; return; fi
+  echo "== apply results"
+  jq -r '"  \(.kind): \(.target) -> \(.result) (\(.detail))"' "$T/actions.jsonl"
+}
+
+# ====================================================================================================
+# record
+# ====================================================================================================
+rotate() {  # rotate <file> <max bytes>: keep the file and one predecessor
+  local s; s="$(fsize "$1")"
+  if is_uint "$s" && [ "$s" -gt "$2" ]; then mv -f "$1" "$1.1"; fi
+}
+do_record() {
+  mkdir -p "$STATE" || die "cannot create $STATE"
+  collect_procs 0
+  local vm ps_sz comp occ swapouts pageouts sw swused line over
+  vm="$(run_to 10 "$VMSTAT" 2>/dev/null)"
+  ps_sz="$(printf '%s' "$vm" | sed -n 's/.*page size of \([0-9]*\) bytes.*/\1/p' | head -n 1)"
+  vmval() { printf '%s' "$vm" | awk -F: -v k="$1" 'index($1, k) == 1 {gsub(/[ .]/, "", $2); print $2; exit}'; }
+  comp="$(vmval 'Pages stored in compressor')"; occ="$(vmval 'Pages occupied by compressor')"
+  swapouts="$(vmval 'Swapouts')"; pageouts="$(vmval 'Pageouts')"
+  sw="$(run_to 10 "$SYSCTL" -n vm.swapusage 2>/dev/null)"
+  swused="$(printf '%s' "$sw" | sed -n 's/.*used = \([0-9.]*\)M.*/\1/p')"
+  for line in ps_sz comp occ swapouts pageouts swused; do eval "is_uint \"\${$line%%.*}\" 2>/dev/null || $line=null"; done
+  [ -n "$swused" ] || swused=null
+  line="$(jq -nc --arg ts "$(iso_now)" --argjson epoch "$NOW" --slurpfile p "$T/procs.json" --arg sw "$sw" \
+    --argjson pagesize "${ps_sz:-null}" --argjson comp "${comp:-null}" --argjson occ "${occ:-null}" \
+    --argjson so "${swapouts:-null}" --argjson po "${pageouts:-null}" --argjson swused "${swused:-null}" \
+    '{ts: $ts, epoch: $epoch,
+      procs: ($p[0].procs | map({pid, ppid, class, owner, exe, etime_s, mem_mb, cmprs_mb, rss_mb, footprint_mb})),
+      totals: $p[0].totals, overall: $p[0].overall,
+      system: {vm_page_size: $pagesize, compressor_stored_pages: $comp, compressor_occupied_pages: $occ, swapouts: $so, pageouts: $po, swap_used_mb: $swused, swap_raw: $sw}}')" \
+    || { note "record: could not build the sample"; return 1; }
+  rotate "$STATE/memory.jsonl" 5242880
+  printf '%s\n' "$line" >> "$STATE/memory.jsonl"
+  over="$(jq -r --argjson w "$WARN_MB" '.procs | map(select(.footprint_mb >= $w)) | map("\(.class) pid \(.pid) \(.footprint_mb) MB") | join("; ")' "$T/procs.json")"
+  if [ -n "$over" ]; then
+    local last=0
+    [ -f "$STATE/.alert-stamp" ] && last="$(cat "$STATE/.alert-stamp" 2>/dev/null)"
+    is_uint "$last" || last=0
+    if [ $((NOW - last)) -ge 900 ]; then
+      echo "$NOW" > "$STATE/.alert-stamp"
+      rotate "$STATE/alerts.log" 1048576
+      printf '%s ALERT footprint >= %s MB: %s\n' "$(iso_now)" "$WARN_MB" "$over" >> "$STATE/alerts.log"
+      run_to 10 "$OSASCRIPT" -e "display notification \"Paseo process memory >= $WARN_MB MB (see alerts.log)\" with title \"slp-gc\"" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+# ====================================================================================================
+# bundle
+# ====================================================================================================
+REDACT_PL='
+s/sk-ant-[A-Za-z0-9_\-]{6,}/[REDACTED]/g;
+s/(Bearer\s+)[A-Za-z0-9._~+\/=\-]{8,}/$1\[REDACTED]/gi;
+s/((?:auth[_-]?token|api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|client[_-]?secret|password|passwd|secret|token|authorization|credential)["\x27]?\s*[:=]\s*["\x27]?)[^\s"\x27,}&]{4,}/$1\[REDACTED]/gi;
+s/\b(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|SLP_CLAUDE_[A-Z_]*|[A-Z_]*TOKEN|[A-Z_]*SECRET|[A-Z_]*API_KEY)=\S+/$1=[REDACTED]/g;'
+stage_copy() {  # stage_copy <src> <dest dir>: regular files only, never through a symlink
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  mkdir -p "$2" && cp -p "$1" "$2/" && printf '%s\n' "${1}" >> "$T/bundle.included"
+}
+do_bundle() {
+  mkdir -p "$STATE/bundles" || die "cannot create $STATE/bundles"
+  have_perl || die "bundle needs perl (redaction)"
+  local S="$T/stage" name f d sub mm cnt=0 out
+  name="slp-gc-bundle-$(ts_now)"
+  mkdir -p "$S/$name" && S="$S/$name"
+  : > "$T/bundle.included"
+  evaluate || note "bundle: report evaluation failed (continuing)"
+  [ -s "$T/report.json" ] && { jq 'del(.procs.procs[].cmd)' "$T/report.json" > "$S/report.json"; render_text > "$S/report.txt" 2>/dev/null; }
+  # daemon logs (current + rotated) and the app's own logs
+  for f in "$PHOME"/daemon.log "$PHOME"/daemon.log.* "$PHOME"/*-daemon.log; do stage_copy "$f" "$S/paseo-home-logs"; done
+  for f in "$HOME"/Library/Logs/Paseo/*.log "$HOME"/Library/Logs/Paseo/*.log.*; do stage_copy "$f" "$S/app-logs"; done
+  # crash / hang / jetsam reports within --since
+  mm=$((SINCE * 60))
+  local diagdirs="${SLP_GC_DIAG_DIRS:-$HOME/Library/Logs/DiagnosticReports:/Library/Logs/DiagnosticReports}" oldifs="$IFS"
+  IFS=:; for d in $diagdirs; do IFS="$oldifs"
+    for sub in "" "/Retired"; do
+      [ -d "$d$sub" ] || continue
+      find "$d$sub" -maxdepth 1 -type f \( -name 'JetsamEvent*' -o -name '*.diag' -o -name '*.hang' -o -name '*.spin' -o -name '*.ips' -o -name '*.crash' \) -mmin "-$mm" -print0 2>/dev/null \
+        | while IFS= read -r -d '' f; do
+          case "${f##*/}" in
+            JetsamEvent*) ;;
+            *) case "${f##*/}" in *[Pp]aseo*|*[Ee]lectron*|*claude*|*codex*|*node*) ;;
+                 *) head -c 400000 -- "$f" 2>/dev/null | grep -qiE 'paseo|electron|claude|codex|node' || continue ;; esac ;;
+          esac
+          stage_copy "$f" "$S/diagnostic-reports/$(printf '%s' "$d$sub" | tr '/ ' '__')"
+        done
+    done
+  done
+  # bounded unified-log excerpt
+  run_to 240 "$LOGCMD" show --last "${SINCE}h" --style compact --predicate \
+    '(eventMessage CONTAINS[c] "memorystatus" OR eventMessage CONTAINS[c] "jetsam" OR eventMessage CONTAINS[c] "no_paging_space" OR eventMessage CONTAINS[c] "compressor" OR eventMessage CONTAINS[c] "swap" OR eventMessage CONTAINS[c] "application memory" OR eventMessage CONTAINS[c] "Paseo")' 2>&1 \
+    | head -c 15000000 > "$S/unified-log-excerpt.txt"
+  # our own data
+  stage_copy "$STATE/memory.jsonl" "$S/slp-gc"; stage_copy "$STATE/memory.jsonl.1" "$S/slp-gc"; stage_copy "$STATE/alerts.log" "$S/slp-gc"
+  # process snapshot WITHOUT environment; long argv is cut (it can carry endpoints)
+  [ -s "$T/ps.txt" ] && cut -c1-300 "$T/ps.txt" > "$S/ps-snapshot.txt"
+  { echo "## vm_stat"; run_to 10 "$VMSTAT" 2>&1; echo "## sysctl"; run_to 10 "$SYSCTL" hw.memsize vm.swapusage 2>&1
+    echo "## sw_vers"; sw_vers 2>&1; echo "## uptime"; uptime 2>&1; echo "## last reboot"; last reboot 2>&1 | head -n 10; } > "$S/system.txt"
+  # versions
+  { for f in /Applications/Paseo.app "$HOME/Applications/Paseo.app"; do
+      [ -d "$f" ] && echo "app $f: $(defaults read "$f/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo unknown)"
+    done
+    CLI="$(resolve_cli)" && echo "cli $CLI: $(run_to 10 "$CLI" --version 2>&1 | head -n 1)" || echo "cli: not found"; } > "$S/versions.txt"
+  # schedules verbatim, agents summary (no prompts, no titles)
+  if [ -d "$PHOME/schedules" ]; then for f in "$PHOME"/schedules/*.json; do stage_copy "$f" "$S/schedules"; done; fi
+  jq '[.[] | select(.ok) | {id, status, archivedAt, labels, provider}]' "$T/agents.json" > "$S/agents-summary.json" 2>/dev/null
+  # redaction pass over everything staged, then a verification scan
+  find "$S" -type f -print0 | while IFS= read -r -d '' f; do "$PERL" -pi -e "$REDACT_PL" "$f" 2>/dev/null; done
+  local leaks
+  leaks="$(grep -rIlE 'sk-ant-[A-Za-z0-9_-]{6,}|Bearer +[A-Za-z0-9._~+/=-]{8,}' "$S" 2>/dev/null | wc -l | tr -d ' ')"
+  cnt="$(find "$S" -type f | wc -l | tr -d ' ')"
+  { echo "slp-gc bundle $name  generated $(iso_now)  --since ${SINCE}h  home $PHOME"
+    echo
+    echo "INCLUDED ($cnt files):"
+    (cd "$S" && find . -type f -print | sort | while IFS= read -r f; do printf '  %s  (%s bytes)\n' "$f" "$(fsize "$f")"; done)
+    echo
+    echo "EXCLUDED BY CONSTRUCTION: config.json and config.json.bak*, credentials / keypair / tokens files"
+    echo "  (daemon-keypair.json, hub-credentials.json, local-credential, push-tokens.json ...), the process"
+    echo "  environment of any process (no ps eww output is stored; env is reduced in memory to PASEO_AGENT_ID"
+    echo "  and a PASEO_HOME match flag), agent prompts and titles."
+    echo "REDACTION: every staged file is passed through a pattern redaction (sk-ant-*, Bearer <token>,"
+    echo "  token/api_key/secret/password/authorization = value, *TOKEN/*SECRET/*API_KEY env assignments ->"
+    echo "  [REDACTED]); ps argv is cut at 300 chars. Residual token-shaped strings after redaction: $leaks file(s)."
+    echo "NOT BUNDLED: nothing is read from outside the listed sources; nothing under PASEO_HOME is changed."
+  } > "$S/MANIFEST.txt"
+  out="$STATE/bundles/$name.tar.gz"
+  COPYFILE_DISABLE=1 tar -czf "$out" -C "$T/stage" "$name" || die "tar failed"
+  chmod 600 "$out" 2>/dev/null
+  echo "$out"
+  echo
+  cat "$S/MANIFEST.txt"
+}
+
+# ====================================================================================================
+# tick
+# ====================================================================================================
+read_config() {
+  local file="${SLP_GC_CONFIG:-$HOME/.config/slp-room/slp-gc.conf}" line k v
+  CFG_APPLY=0; CFG_KILL_STALE=0; CFG_KILL_MEM=0; CFG_REPORT_MIN=60
+  [ -f "$file" ] && [ ! -L "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    case "$line" in ''|'#'*|' '*'#'*) continue ;; esac
+    k="${line%%=*}"; v="${line#*=}"
+    [ "$k" != "$line" ] || continue
+    v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+    case "$k" in
+      SLP_GC_APPLY) [ "$v" = 1 ] && CFG_APPLY=1 ;;
+      SLP_GC_KILL_STALE) [ "$v" = 1 ] && CFG_KILL_STALE=1 ;;
+      SLP_GC_KILL_MEMORY) [ "$v" = 1 ] && CFG_KILL_MEM=1 ;;
+      SLP_GC_MEM_WARN_MB) is_uint "$v" && WARN_MB="$v" ;;
+      SLP_GC_MEM_KILL_MB) is_uint "$v" && KILL_MB="$v" ;;
+      SLP_GC_REPORT_INTERVAL_MIN) is_uint "$v" && CFG_REPORT_MIN="$v" ;;
+    esac
+  done < "$file"
+}
+take_lock() {
+  LOCKDIR="$STATE/tick.lock"
+  local pid age
+  if mkdir "$LOCKDIR" 2>/dev/null; then :; else
+    pid="$(cat "$LOCKDIR/pid" 2>/dev/null)"
+    age=$((NOW - $(fmtime "$LOCKDIR" || echo "$NOW")))
+    if { is_uint "$pid" && kill -0 "$pid" 2>/dev/null; } && [ "$age" -lt 1800 ]; then LOCKDIR=""; return 1; fi
+    mv "$LOCKDIR" "$LOCKDIR.stale.$$" 2>/dev/null && rm -rf "$LOCKDIR.stale.$$"
+    mkdir "$LOCKDIR" 2>/dev/null || { LOCKDIR=""; return 1; }
+  fi
+  echo "$$" > "$LOCKDIR/pid"; LOCK_HELD=1
+}
+do_tick() {
+  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"; export PATH
+  mkdir -p "$STATE" || die "cannot create $STATE"
+  read_config
+  take_lock || { echo "slp-gc tick: another tick is running; skipped"; return 0; }
+  rotate "$STATE/tick.log" 1048576
+  local due=0 last=0 want_eval=0 rep
+  do_record || echo "$(iso_now) record failed" >> "$STATE/tick.log"
+  [ -f "$STATE/.last-report" ] && last="$(cat "$STATE/.last-report" 2>/dev/null)"
+  is_uint "$last" || last=0
+  [ $((NOW - last)) -ge $((CFG_REPORT_MIN * 60)) ] && due=1
+  { [ "$due" = 1 ] || [ "$CFG_APPLY" = 1 ]; } && want_eval=1
+  if [ "$want_eval" = 1 ]; then
+    if evaluate; then
+      if [ "$due" = 1 ]; then
+        mkdir -p "$STATE/reports"; rep="$STATE/reports/$(ts_now).txt"
+        render_text > "$rep"; echo "$NOW" > "$STATE/.last-report"
+        ls -1 "$STATE/reports" | sort -r | tail -n +49 | while IFS= read -r f; do rm -f "$STATE/reports/$f"; done
+      fi
+      if [ "$CFG_APPLY" = 1 ]; then
+        do_apply "$([ "$CFG_KILL_STALE" = 1 ] && echo 1 || echo 0)" "$([ "$CFG_KILL_MEM" = 1 ] && echo 1 || echo 0)"
+        render_actions >> "$STATE/tick.log"
+      fi
+    else
+      echo "$(iso_now) evaluation failed" >> "$STATE/tick.log"
+    fi
+  fi
+  echo "slp-gc tick $(iso_now): record ok; report $([ "$due" = 1 ] && echo written || echo 'not due'); apply $([ "$CFG_APPLY" = 1 ] && echo on || echo off)"
+  return 0
+}
+
+# ====================================================================================================
+main() {
+  case "$CMD" in
+    record) do_record ;;
+    bundle) do_bundle ;;
+    tick) do_tick ;;
+    report)
+      [ -d "$PHOME" ] || die "PASEO_HOME $PHOME is not a directory"
+      APPLY_RC=0
+      evaluate || exit 1
+      if [ "$APPLY" = 1 ]; then do_apply "$KILL_STALE" "$KILL_MEM"; fi
+      if [ "$JSON" = 1 ]; then
+        if [ "$APPLY" = 1 ]; then jq -c --slurpfile a "$T/actions.jsonl" 'del(.procs.procs[].cmd) + {actions: $a}' "$T/report.json"; else jq -c 'del(.procs.procs[].cmd)' "$T/report.json"; fi
+      else
+        render_text
+        [ "$APPLY" = 1 ] && { echo; render_actions; }
+      fi
+      exit "${APPLY_RC:-0}" ;;
+  esac
+}
+main

@@ -822,6 +822,38 @@ else
   fail "claude-lead's rendered denies must equal baseline + discovered spawner paths + slp-wait by basename and absolute path"
 fi
 
+# --- slp-gc: garbage collector / diagnostic tool -------------------------------------------------
+# Static checks here; behaviour is exercised in sandboxes (temp PASEO_HOME + HOME, stub ps/top/lsof/
+# paseo/kill/osascript) by scripts/fixtures/slp-gc/run-tests.sh. Nothing touches a real ~/.paseo.
+
+if bash -n paseo/bin/slp-gc && bash -n scripts/fixtures/slp-gc/sandbox.sh && bash -n scripts/fixtures/slp-gc/run-tests.sh; then
+  ok "slp-gc and its test fixtures have valid bash syntax"
+else
+  fail "slp-gc or its test fixtures have a bash syntax error"
+fi
+if command -v shellcheck >/dev/null 2>&1; then
+  if shellcheck -S warning paseo/bin/slp-gc scripts/fixtures/slp-gc/sandbox.sh scripts/fixtures/slp-gc/run-tests.sh; then
+    ok "slp-gc and its test fixtures pass shellcheck -S warning"
+  else
+    fail "slp-gc or its test fixtures have shellcheck warnings"
+  fi
+else
+  ok "shellcheck not installed, skipping slp-gc lint"
+fi
+if [ -x paseo/bin/slp-gc ] && [ "$(stat -c %a paseo/bin/slp-gc 2>/dev/null || stat -f %Lp paseo/bin/slp-gc)" = "755" ]; then
+  ok "paseo/bin/slp-gc is executable (0755)"
+else
+  fail "paseo/bin/slp-gc must be mode 0755"
+fi
+SG_OUT="$TMP/slp-gc-tests.out"; SG_RC=0
+bash scripts/fixtures/slp-gc/run-tests.sh > "$SG_OUT" 2>&1 || SG_RC=$?
+cat "$SG_OUT"
+if [ "$SG_RC" -ne 0 ] || ! grep -q '^ok: ' "$SG_OUT"; then
+  fail "slp-gc sandbox tests failed (see FAIL lines above)"
+else
+  ok "slp-gc sandbox tests passed ($(grep -c '^ok: ' "$SG_OUT") checks)"
+fi
+
 if [ "$FAILED" -ne 0 ]; then
   echo "validate.sh: FAILED"
   exit 1
