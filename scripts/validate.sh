@@ -854,6 +854,21 @@ else
   ok "slp-gc sandbox tests passed ($(grep -c '^ok: ' "$SG_OUT") checks)"
 fi
 
+# --- slp-gc install: plist, config opt-ins, --gc-only (sandbox HOME, stub launchctl) -------------
+if bash -n scripts/fixtures/slp-gc-install/run-tests.sh; then
+  ok "slp-gc install tests have valid bash syntax"
+else
+  fail "slp-gc install tests have a bash syntax error"
+fi
+SGI_OUT="$TMP/slp-gc-install-tests.out"; SGI_RC=0
+bash scripts/fixtures/slp-gc-install/run-tests.sh > "$SGI_OUT" 2>&1 || SGI_RC=$?
+grep '^FAIL' "$SGI_OUT" || true
+if [ "$SGI_RC" -ne 0 ] || ! grep -q '^ok: ' "$SGI_OUT"; then
+  fail "slp-gc install tests failed"
+else
+  ok "slp-gc install tests passed ($(grep -c '^ok: ' "$SGI_OUT") checks)"
+fi
+
 if [ "$FAILED" -ne 0 ]; then
   echo "validate.sh: FAILED"
   exit 1

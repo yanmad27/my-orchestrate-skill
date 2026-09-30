@@ -25,6 +25,7 @@ or writes code.
 - [Paseo configuration](#paseo-configuration)
 - [Restart & verify](#restart--verify)
 - [Upgrade](#upgrade)
+- [slp-gc](#slp-gc)
 - [Troubleshooting](#troubleshooting)
 - [Usage](#usage)
 
@@ -152,6 +153,7 @@ it uses the checkout.
 | `--skill-only` | Only steps 0-1 |
 | `--paseo-only` | Only steps 0 and 2-4 — e.g. when the skill comes from the plugin marketplace |
 | `--no-reload` | Skip `paseo daemon reload` |
+| `--gc-only`, `--no-gc`, `--no-gc-launchd`, `--gc-apply`, `--gc-kill`, `--gc-report-only` | slp-gc install and opt-ins — see [slp-gc](#slp-gc) |
 | `SLP_REF=<branch or tag>` | Install that version instead of `main` (piped runs) |
 | `SLP_ROOM_HOME=<dir>` | Build the runtimes somewhere other than `~/.config/slp-room` |
 | `--token` | Ask for a new Claude token and replace the saved one (e.g. to rotate it) |
@@ -362,6 +364,70 @@ when that Supervisor agent is archived.
 **Check version:** the last line of `install.sh` output, or the header of
 `~/.config/slp-room/lead.md`. Compare with the
 [releases page](https://github.com/yanmad27/paseo-slp/releases).
+
+## slp-gc
+
+`slp-gc` is a standalone garbage collector and memory diagnostic for a Paseo
+home. On a 16 GB Mac, test-runner `node` processes spawned by agents were
+orphaned, showed up as Paseo, and grew to about 4.5 GB each; ten of them
+froze the machine. `slp-gc` reports and alerts on this, and — only when you
+opt in — SIGTERMs proven orphans or over-memory agent descendants and deletes
+completed schedules and long-archived agents through the `paseo` CLI.
+
+**Install.** A normal `install.sh` run also installs it. To install just
+slp-gc — no seats, no Paseo config, no daemon reload — run `./install.sh --gc-only`
+(needs `jq`). It:
+
+- copies `slp-gc` to `~/.config/slp-room/bin/slp-gc`, next to `slp-wait`;
+- writes `~/Library/LaunchAgents/com.paseo-slp.slp-gc.plist` and loads it with
+  `launchctl bootstrap`: `slp-gc tick` every 60 s, at low priority, independent
+  of the Paseo daemon (no `--apply` in its arguments, ever);
+- writes `~/.config/slp-room/slp-gc.conf` only if none exists — a re-run never
+  resets it.
+
+`--no-gc` skips all of this; `--no-gc-launchd` installs the tool and config but
+no agent.
+
+**Default: report-only.** Every tick records a memory sample, writes a report
+hourly, and alerts when memory climbs. Nothing is deleted or killed.
+
+**By hand.**
+
+```bash
+~/.config/slp-room/bin/slp-gc report   # read-only snapshot: processes, agents, garbage candidates
+~/.config/slp-room/bin/slp-gc record   # append one memory sample
+~/.config/slp-room/bin/slp-gc tick     # what launchd runs
+```
+
+`slp-gc --help` lists every option.
+
+**Output** lands in `~/Library/Logs/slp-gc` (`SLP_GC_STATE_DIR` overrides):
+`memory.jsonl` (samples), `alerts.log`, `reports/`, `lineage.tsv`, `tick.log`
+(rotated), and `launchd.log` (one status line per tick; install truncates it
+above 1 MiB).
+
+**When memory climbs,** run `slp-gc report` and look at the orphans and the
+per-agent process trees: an orphan is a test runner whose agent is gone, a big
+tree is an agent still running one. Stop the agent with `paseo agent stop`, or
+opt in below.
+
+**Opt in.** Reclaiming and killing are enabled in `~/.config/slp-room/slp-gc.conf`
+(`KEY=VALUE`, on only when exactly `1`), or with install flags, which edit only
+those keys:
+
+| Flag | Config key | Effect |
+|---|---|---|
+| `--gc-apply` | `SLP_GC_APPLY=1` | Delete completed room schedules and long-archived agents via `paseo` |
+| `--gc-kill` (needs `--gc-apply`) | `SLP_GC_KILL_STALE=1`, `SLP_GC_KILL_MEMORY=1` | SIGTERM proven orphaned processes; SIGTERM an agent descendant above `SLP_GC_MEM_KILL_MB` |
+| `--gc-report-only` | all three `=0` | Back to report-only |
+
+**Uninstall.**
+
+```bash
+launchctl bootout gui/$(id -u)/com.paseo-slp.slp-gc
+rm ~/Library/LaunchAgents/com.paseo-slp.slp-gc.plist
+rm ~/.config/slp-room/bin/slp-gc ~/.config/slp-room/slp-gc.conf   # optional
+```
 
 ## Troubleshooting
 

@@ -7,6 +7,8 @@
 #                                        → ~/.config/slp-room
 #   3. the room's profiles and providers → ~/.paseo/config.json (backup kept alongside)
 #   4. paseo daemon reload
+#   5. slp-gc, the Paseo GC / memory diagnostic → ~/.config/slp-room/bin/slp-gc, run every 60 s
+#      by a launchd agent (report-only unless you opt in), config ~/.config/slp-room/slp-gc.conf
 # From a checkout: ./install.sh   Piped: curl -fsSL <raw>/install.sh | bash
 # (Commands that could read stdin get </dev/null, so they never eat a piped script.)
 # Options: --skill-only, --paseo-only, --no-reload, --token (ask for a new Claude token),
@@ -14,6 +16,9 @@
 # Non-interactive endpoint: SLP_CLAUDE_BASE_URL, SLP_CLAUDE_AUTH_TOKEN, and SLP_CLAUDE_AUTH_HEADER
 # (SLP_CLAUDE_API_KEY is still accepted as an older alias for SLP_CLAUDE_AUTH_TOKEN) (bearer, the default → ANTHROPIC_AUTH_TOKEN; or x-api-key → ANTHROPIC_API_KEY).
 # SLP_REF picks a branch or tag.
+# slp-gc options: --gc-only (just slp-gc: touches no seats, Paseo config, or daemon), --no-gc,
+# --no-gc-launchd (skip the launchd agent), --gc-apply / --gc-kill / --gc-report-only (edit the
+# opt-in keys of slp-gc.conf; --gc-kill needs --gc-apply). SLP_LAUNCHCTL overrides launchctl (tests).
 set -euo pipefail
 
 REPO="yanmad27/paseo-slp"
@@ -25,10 +30,17 @@ DO_PASEO=1
 RELOAD=1
 ASK_TOKEN=0
 ASK_ENDPOINT=0
+GC_ONLY=0; NO_GC=0; GC_LAUNCHD=1; GC_APPLY=0; GC_KILL=0; GC_REPORT_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --skill-only) DO_PASEO=0 ;;
     --paseo-only) DO_SKILL=0 ;;
+    --gc-only) GC_ONLY=1 ;;
+    --no-gc) NO_GC=1 ;;
+    --no-gc-launchd) GC_LAUNCHD=0 ;;
+    --gc-apply) GC_APPLY=1 ;;
+    --gc-kill) GC_KILL=1 ;;
+    --gc-report-only) GC_REPORT_ONLY=1 ;;
     --no-reload) RELOAD=0 ;;
     --token) ASK_TOKEN=1 ;;
     --endpoint) ASK_ENDPOINT=1 ;;
@@ -38,6 +50,24 @@ done
 if [ "$DO_SKILL" = 0 ] && [ "$DO_PASEO" = 0 ]; then
   echo "--skill-only and --paseo-only are mutually exclusive; pass at most one." >&2
   exit 1
+fi
+# slp-gc: installed with the Paseo half by default (not with --skill-only); --gc-only is just slp-gc.
+DO_GC=$DO_PASEO
+if [ "$GC_ONLY" = 1 ]; then
+  if [ "$DO_SKILL" = 0 ] || [ "$DO_PASEO" = 0 ] || [ "$NO_GC" = 1 ]; then
+    echo "--gc-only cannot be combined with --skill-only, --paseo-only or --no-gc." >&2; exit 1
+  fi
+  DO_SKILL=0; DO_PASEO=0; DO_GC=1
+fi
+[ "$NO_GC" = 0 ] || DO_GC=0
+if [ "$GC_KILL" = 1 ] && [ "$GC_APPLY" = 0 ]; then
+  echo "--gc-kill needs --gc-apply: the kill flags only act together with apply." >&2; exit 1
+fi
+if [ "$GC_REPORT_ONLY" = 1 ] && [ "$GC_APPLY" = 1 ]; then
+  echo "--gc-report-only cannot be combined with --gc-apply or --gc-kill." >&2; exit 1
+fi
+if [ "$DO_GC" = 0 ] && [ "$((GC_APPLY + GC_REPORT_ONLY))" -gt 0 ]; then
+  echo "--gc-apply, --gc-kill and --gc-report-only need slp-gc to be installed (drop --no-gc / --skill-only)." >&2; exit 1
 fi
 
 WORK="$(mktemp -d)"
@@ -280,7 +310,9 @@ fi
 
 LEGACY_PLUGIN="orchestrate@my-orchestrate-skill"
 LEGACY_MARKETPLACE="my-orchestrate-skill"
-if command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+if [ "$GC_ONLY" = 1 ]; then
+  :  # --gc-only touches nothing but slp-gc
+elif command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   LEGACY_SCOPES="$(claude plugin list --json </dev/null 2>/dev/null \
     | jq -r --arg id "$LEGACY_PLUGIN" '.[]? | select(.id == $id) | .scope // "user"' 2>/dev/null || true)"
   for scope in $LEGACY_SCOPES; do
@@ -301,10 +333,12 @@ if command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     fi
   fi
 fi
-if command -v pkill >/dev/null 2>&1 && pkill -f 'skills/orchestrate/watchdog.mjs run' 2>/dev/null; then
-  echo "Stopped v1 watchdog pollers"
+if [ "$GC_ONLY" = 0 ]; then
+  if command -v pkill >/dev/null 2>&1 && pkill -f 'skills/orchestrate/watchdog.mjs run' 2>/dev/null; then
+    echo "Stopped v1 watchdog pollers"
+  fi
+  rm -f "${TMPDIR:-/tmp}"/orchestrate-watchdog-* 2>/dev/null || true
 fi
-rm -f "${TMPDIR:-/tmp}"/orchestrate-watchdog-* 2>/dev/null || true
 
 # --- 1. skill -------------------------------------------------------------------
 
@@ -577,6 +611,134 @@ LAUNCHER
   else
     echo "WARNING: could not run 'paseo daemon reload'; run it (or restart Paseo) yourself." >&2
   fi
+fi
+
+# --- 5. slp-gc: Paseo GC + memory diagnostic, run every 60 s by a launchd agent -----------------
+# Independent of the Paseo daemon. Report-only by default: apply / kill are opt-ins in
+# slp-gc.conf (never in the plist's arguments), which a re-run keeps and only --gc-* edits.
+
+if [ "$DO_GC" = 1 ]; then
+  command -v jq >/dev/null 2>&1 || { echo "jq is required (slp-gc needs it). Install jq and re-run." >&2; exit 1; }
+  GC_LABEL="com.paseo-slp.slp-gc"
+  GC_BIN="$ROOM_HOME/bin/slp-gc"
+  GC_CONF="$ROOM_HOME/slp-gc.conf"
+  GC_STATE="${SLP_GC_STATE_DIR:-$HOME/Library/Logs/slp-gc}"
+  GC_LOG="$GC_STATE/launchd.log"
+  GC_PLIST="$HOME/Library/LaunchAgents/$GC_LABEL.plist"
+
+  mkdir -p "$ROOM_HOME/bin" "$GC_STATE"
+  cp "$SRC/paseo/bin/slp-gc" "$GC_BIN"
+  chmod 755 "$GC_BIN"
+  echo "Installed slp-gc: $GC_BIN"
+
+  # --- config: written once, never reset. KEY=VALUE, parsed (not sourced) by `slp-gc tick`.
+  if [ ! -f "$GC_CONF" ]; then
+    (umask 077 && cat > "$GC_CONF" <<'CONF'
+# slp-gc configuration (KEY=VALUE, parsed not sourced; the last value wins). Read by `slp-gc tick`
+# only. A flag is on only when its value is exactly 1. install.sh never resets this file: change
+# it here, or with install.sh --gc-apply / --gc-kill / --gc-report-only.
+#
+# Default: report-only. Every tick records memory and writes hourly reports and alerts; nothing
+# is deleted or killed.
+
+# 1 = delete completed schedules and long-archived agents through the paseo CLI.
+SLP_GC_APPLY=0
+# 1 = also SIGTERM proven orphaned agent processes (needs SLP_GC_APPLY=1 to act).
+SLP_GC_KILL_STALE=0
+# 1 = also SIGTERM agent descendants above SLP_GC_MEM_KILL_MB (needs SLP_GC_APPLY=1 to act).
+SLP_GC_KILL_MEMORY=0
+
+# Tunables (uncomment to change; defaults shown):
+# SLP_GC_MEM_WARN_MB=3072
+# SLP_GC_MEM_KILL_MB=4096
+# SLP_GC_ORPHAN_MIN_AGE_MIN=10
+# SLP_GC_TEST_CONCURRENCY_WARN=3
+# SLP_GC_REPORT_INTERVAL_MIN=60
+CONF
+    )
+    echo "Wrote default config (report-only): $GC_CONF"
+  fi
+  # Sets KEY=VALUE in place, replacing every existing KEY= line (or appending); the rest is kept.
+  gc_conf_set() {
+    local key="$1" val="$2" tmp
+    tmp="$(mktemp "$GC_CONF.XXXXXX")"
+    awk -v k="$key" -v v="$val" 'BEGIN { p = k "=" }
+      index($0, p) == 1 { if (!done) print p v; done = 1; next }
+      { print } END { if (!done) print p v }' "$GC_CONF" > "$tmp"
+    chmod 600 "$tmp"
+    mv "$tmp" "$GC_CONF"
+  }
+  if [ "$GC_REPORT_ONLY" = 1 ]; then
+    gc_conf_set SLP_GC_APPLY 0; gc_conf_set SLP_GC_KILL_STALE 0; gc_conf_set SLP_GC_KILL_MEMORY 0
+    echo "slp-gc opt-ins cleared (report-only): $GC_CONF"
+  fi
+  if [ "$GC_APPLY" = 1 ]; then
+    gc_conf_set SLP_GC_APPLY 1
+    echo "slp-gc apply enabled: $GC_CONF"
+  fi
+  if [ "$GC_KILL" = 1 ]; then
+    gc_conf_set SLP_GC_KILL_STALE 1; gc_conf_set SLP_GC_KILL_MEMORY 1
+    echo "slp-gc kill flags enabled: $GC_CONF"
+  fi
+  # The effective opt-ins: a flag is on only when its last value is exactly 1.
+  gc_flag() { [ "$(awk -F= -v k="$1" '$1 == k { v = substr($0, length(k) + 2) } END { print v }' "$GC_CONF")" = 1 ]; }
+  GC_MODE=""
+  gc_flag SLP_GC_APPLY && GC_MODE="apply"
+  gc_flag SLP_GC_KILL_STALE && GC_MODE="${GC_MODE:+$GC_MODE, }kill stale processes"
+  gc_flag SLP_GC_KILL_MEMORY && GC_MODE="${GC_MODE:+$GC_MODE, }kill over-memory"
+
+  # --- launchd agent
+  if [ "$GC_LAUNCHD" = 1 ]; then
+    xml() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+    GC_EXTRA=""
+    if [ -n "${SLP_GC_STATE_DIR:-}" ]; then
+      GC_EXTRA="
+    <key>SLP_GC_STATE_DIR</key>
+    <string>$(xml "$GC_STATE")</string>"
+    fi
+    # Values go in through the environment, so no character in a path is special to the renderer.
+    GC_TPL="$(P_LABEL="$GC_LABEL" P_SLP_GC="$(xml "$GC_BIN")" P_HOME="$(xml "$HOME")" \
+      P_CONFIG="$(xml "$GC_CONF")" P_LOG="$(xml "$GC_LOG")" P_EXTRA_ENV="$GC_EXTRA" \
+      awk 'function sub_all(line, tok, val,   out, i) {
+             out = ""
+             while ((i = index(line, tok)) > 0) { out = out substr(line, 1, i - 1) val; line = substr(line, i + length(tok)) }
+             return out line
+           }
+           { l = $0
+             l = sub_all(l, "@@LABEL@@", ENVIRON["P_LABEL"]);   l = sub_all(l, "@@SLP_GC@@", ENVIRON["P_SLP_GC"])
+             l = sub_all(l, "@@HOME@@", ENVIRON["P_HOME"]);     l = sub_all(l, "@@CONFIG@@", ENVIRON["P_CONFIG"])
+             l = sub_all(l, "@@LOG@@", ENVIRON["P_LOG"]);       l = sub_all(l, "@@EXTRA_ENV@@", ENVIRON["P_EXTRA_ENV"])
+             print l }' "$SRC/paseo/launchd/slp-gc.plist.in")"
+    mkdir -p "$HOME/Library/LaunchAgents"
+    printf '%s\n' "$GC_TPL" > "$GC_PLIST"
+    chmod 644 "$GC_PLIST"
+    # launchd never rotates the agent's log; tick's own logs are bounded, so keep this one small.
+    if [ -f "$GC_LOG" ] && [ "$(wc -c < "$GC_LOG")" -gt 1048576 ]; then : > "$GC_LOG"; fi
+    echo "Wrote launchd agent: $GC_PLIST"
+
+    LAUNCHCTL="${SLP_LAUNCHCTL:-launchctl}"
+    # A HOME that is not the user's own (a test sandbox) must never reach the real launchd:
+    # it would replace the real agent with one pointing at that HOME. SLP_LAUNCHCTL opts back in.
+    LOGIN_HOME="$(eval "printf '%s' ~$(id -un)" 2>/dev/null || true)"
+    if [ -z "${SLP_LAUNCHCTL:-}" ] && [ -n "$LOGIN_HOME" ] && [ "$HOME" != "$LOGIN_HOME" ]; then
+      echo "NOTE: HOME ($HOME) is not $LOGIN_HOME; the agent is written but not loaded into launchd." >&2
+    elif ! command -v "$LAUNCHCTL" >/dev/null 2>&1; then
+      echo "NOTE: launchctl not found (not macOS?); the agent is written but not loaded." >&2
+    else
+      GC_DOMAIN="gui/$(id -u)"
+      "$LAUNCHCTL" bootout "$GC_DOMAIN/$GC_LABEL" </dev/null >/dev/null 2>&1 || true
+      if "$LAUNCHCTL" bootstrap "$GC_DOMAIN" "$GC_PLIST" </dev/null; then
+        echo "Loaded launchd agent $GC_LABEL (runs 'slp-gc tick' every 60 s)"
+      else
+        echo "WARNING: could not load the agent; run: launchctl bootstrap $GC_DOMAIN $GC_PLIST" >&2
+      fi
+    fi
+  fi
+
+  if [ -n "$GC_MODE" ]; then echo "slp-gc: opt-ins ON: $GC_MODE"
+  else echo "slp-gc: report-only (nothing is deleted or killed)"; fi
+  echo "  config: $GC_CONF   output: $GC_STATE"
+  echo "  by hand: $GC_BIN report    (also: record, tick)"
 fi
 
 echo "paseo-slp $VERSION installed."
