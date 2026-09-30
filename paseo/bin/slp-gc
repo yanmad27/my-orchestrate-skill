@@ -23,10 +23,17 @@ TOP="$(probe "$(ovr "${SLP_GC_TOP:-}")" /usr/bin/top top)"
 VMSTAT="$(probe "$(ovr "${SLP_GC_VMSTAT:-}")" /usr/bin/vm_stat vm_stat)"
 SYSCTL="$(probe "$(ovr "${SLP_GC_SYSCTL:-}")" /usr/sbin/sysctl sysctl)"
 LSOF="$(probe "$(ovr "${SLP_GC_LSOF:-}")" /usr/sbin/lsof lsof)"
-OSASCRIPT="$(probe "$(ovr "${SLP_GC_OSASCRIPT:-}")" /usr/bin/osascript osascript)"
+# Test isolation: under SLP_GC_TEST=1 the notifier, the paseo CLI and kill never resolve to the real
+# thing; an unset override falls back to an inert no-op (never /usr/bin/osascript, PATH, Paseo.app, kill).
+INERT=/usr/bin/true; [ -x "$INERT" ] || INERT=/bin/true
+if [ "${SLP_GC_TEST:-}" = 1 ]; then
+  OSASCRIPT="$(ovr "${SLP_GC_OSASCRIPT:-}")"; [ -n "$OSASCRIPT" ] || OSASCRIPT="$INERT"
+else
+  OSASCRIPT="$(probe "" /usr/bin/osascript osascript)"
+fi
 GIT="$(probe "" /usr/bin/git git)"
 PERL="$(probe "$(ovr "${SLP_GC_PERL:-}")" /usr/bin/perl perl)"
-KILL="$(ovr "${SLP_GC_KILL:-}")"; [ -n "$KILL" ] || KILL="kill"
+KILL="$(ovr "${SLP_GC_KILL:-}")"; [ -n "$KILL" ] || { [ "${SLP_GC_TEST:-}" = 1 ] && KILL="$INERT" || KILL="kill"; }
 NOW="$(ovr "${SLP_GC_NOW:-}")"; [ -n "$NOW" ] || NOW="$(date +%s)"
 MAX_ACTIONS="$(ovr "${SLP_GC_MAX_ACTIONS:-}")"; [ -n "$MAX_ACTIONS" ] || MAX_ACTIONS=100
 AGENT_MIN_DAYS="$(ovr "${SLP_GC_AGENT_MIN_DAYS:-}")"; [ -n "$AGENT_MIN_DAYS" ] || AGENT_MIN_DAYS=14
@@ -328,7 +335,8 @@ def agentfam: . == "claude-child" or . == "codex-child" or . == "slp-wait" or . 
    daemon: (($daemons | length) == 1), listener: ($daemons | length == 1 and ($listen | index($daemons[0].pid)) != null),
    supervisorPid: ($sup.pid? // null), daemonPid: (if ($daemons | length) == 1 then $daemons[0].pid else null end),
    appPid: (if $sup != null then $sup.ppid else null end),
-   supHome: ($sup.home? // "unreadable"),
+   supHome: (($sup.home? // "unreadable") as $h | if $h == "unreadable" and ($supLsof | rtrimstr("\n")) == "match" then "match" else $h end),
+   supHomeSource: (if ($sup.home? // "unreadable") != "unreadable" then "env" elif ($supLsof | rtrimstr("\n")) == "match" then "lsof" else "none" end),
    listen: ($pf.listen? // null)} as $idt0
 | ($idt0 + {homeBound: (($idt0.supHome == "match") or (($idt0.supHome == "none") and $homeDefault))}) as $idt1
 | ($idt1 + {ok: ($dupes == 0 and $idt1.pidFile and $idt1.supervisor and $idt1.daemon and $idt1.listener and $idt1.homeBound),
@@ -337,7 +345,7 @@ def agentfam: . == "claude-child" or . == "codex-child" or . == "slp-wait" or . 
          elif ($idt1.supervisor | not) then "pid in paseo.pid is not a live \"Paseo Supervisor\" child of an app main"
          elif ($idt1.daemon | not) then "no single \"Paseo Daemon\" child of the Supervisor"
          elif ($idt1.listener | not) then "the daemon does not own the listener from paseo.pid"
-         elif ($idt1.homeBound | not) then ("the Supervisor'"'"'s PASEO_HOME is \"" + $idt1.supHome + "\": not proven to serve this home (an unreadable env always refuses; a readable env without PASEO_HOME is accepted only for the default home)")
+         elif ($idt1.homeBound | not) then ("the Supervisor'"'"'s PASEO_HOME is \"" + $idt1.supHome + "\": not proven to serve this home (an unreadable env is accepted only when the Supervisor holds this home'"'"'s daemon.log open for writing and no other home'"'"'s; a readable env without PASEO_HOME is accepted only for the default home)")
          else "ok" end)}) as $idt
 | $orphanComms as $oc
 | ($rows | map({key: ((.pid | tostring) + "|" + .lstart), value: true}) | from_entries) as $liveSet
@@ -565,14 +573,14 @@ collect_ps() { run_to 20 "$PS" -axww -o pid=,ppid=,pgid=,etime=,rss=,lstart=,com
 PSPAT='{ c = $11; for (i = 12; i <= NF; i++) c = c " " $i }
   c ~ /^Paseo Supervisor/ || (c ~ /(^|\/)claude / && c ~ /stream-json/) || (c ~ /(^|\/)codex / && c ~ /app-server/) \
     || c ~ /slp-wait [0-9a-f-]+ [0-9]+$/ || c ~ / wait [0-9a-f-]+/ { printf "%s%s", sep, $1; sep = "," }'
-# env facts only: pid <TAB> PASEO_AGENT_ID|- <TAB> match|other|none <TAB> 1 if the env was readable.
+# env facts only (ps -E: macOS prints the environment after the command; -e would mean "all processes"): pid <TAB> PASEO_AGENT_ID|- <TAB> match|other|none <TAB> 1 if the env was readable.
 # macOS ps shows the environment only for explicitly listed pids (-p), never with -ax, so one pid at
 # a time (the env may hold newlines); the env text never leaves awk.
 # One pid's facts (the ps call runs under its own timeout). Readers run up to 4 at a time (16 only under SLP_GC_TEST=1) and the results are
 # concatenated in pid order, so the output is identical to the sequential loop.
 env_one() {
   local p="$1"
-  run_to 3 "$PSENV" -eww -o command= -p "$p" 2>/dev/null | tr '\n' ' ' | awk -v pid="$p" -v home="$PHOME" -v home2="$PHOME_RAW" '
+  run_to 3 "$PSENV" -E -ww -o command= -p "$p" 2>/dev/null | tr '\n' ' ' | awk -v pid="$p" -v home="$PHOME" -v home2="$PHOME_RAW" '
     { t = $0 }
     END {
       agent = "-"; h = "none"; rest = t
@@ -601,6 +609,22 @@ collect_env() {
   wait
   for p in ${pids//,/ }; do is_uint "$p" && cat "$d/$p"; done
   return 0
+}
+# The Paseo Supervisor rewrites its process title and shows no environment. Its home binding is then
+# proven by the daemon.log it holds open for writing: match = every writable */daemon.log is this home's,
+# other = a writable daemon.log of another home (also when both, ambiguous), none = no entry / unreadable.
+# Only asked when the paseo.pid process exists and its env was not readable.
+sup_lsof_home() {
+  local sp phys r=none
+  sp="$(jq -r 'if type == "object" and (.pid | type) == "number" then .pid else empty end' "$PHOME/paseo.pid" 2>/dev/null)"
+  is_uint "$sp" || { echo none; return 0; }
+  awk -F'\t' -v p="$sp" '$1 == p && $4 == 1 { f = 1 } END { exit !f }' "$T/env.txt" && { echo none; return 0; }
+  phys="$(cd -P "$PHOME" 2>/dev/null && pwd)"
+  r="$(run_to 10 "$LSOF" -w -nP -p "$sp" -F fan 2>/dev/null | awk -v h1="$PHOME/daemon.log" -v h2="${phys:-$PHOME}/daemon.log" '
+    /^a/ { w = ($0 ~ /^a[wu]/) }
+    /^n/ { n = substr($0, 2); if (w && n ~ /\/daemon\.log$/) { if (n == h1 || n == h2) m = 1; else o = 1 } }
+    END { print (o ? "other" : (m ? "match" : "none")) }')"
+  echo "${r:-none}"
 }
 top_parse() {  # top output on stdin -> "pid mem_mb cmprs_mb" (values like 63M, 512K, 2G, 7M+)
   awk '
@@ -770,6 +794,7 @@ collect_procs() {  # $1 = 1: use the agents index for owner states
   [ -z "$p2" ] || pids="${pids:+$pids,}$p2"
   pids="$(printf '%s' "$pids" | tr ',' '\n' | awk 'NF && !seen[$0]++' | paste -sd, -)"
   collect_env "$pids" > "$T/env.txt" || true
+  sup_lsof_home > "$T/suplsof.txt"
   load_ledger
   collect_top > "$T/top.txt" || true
   pidfile=null
@@ -779,7 +804,7 @@ collect_procs() {  # $1 = 1: use the agents index for owner states
   collect_listen "$listen" > "$T/listen.json"
   if [ "$1" = 1 ]; then cp "$T/agents.json" "$T/agents.idx"; else echo '[]' > "$T/agents.idx"; fi
   if ! jq -n --rawfile pstxt "$T/ps.txt" --rawfile envtxt "$T/env.txt" --rawfile toptxt "$T/top.txt" \
-      --slurpfile agentIdxF "$T/agents.idx" --slurpfile listenF "$T/listen.json" --argjson pidfile "$pidfile" \
+      --rawfile supLsof "$T/suplsof.txt" --slurpfile agentIdxF "$T/agents.idx" --slurpfile listenF "$T/listen.json" --argjson pidfile "$pidfile" \
       --argjson selfPid "$$" --arg invoker "${PASEO_AGENT_ID:-}" --argjson warnMb "$WARN_MB" --argjson killMb "$KILL_MB" \
       --argjson homeDefault "$HOME_IS_DEFAULT" --slurpfile ledgerF "$T/ledger.json" \
       --argjson orphanComms "$(printf '%s\n' $KILL_COMMS | jq -Rn '[inputs]')" --argjson orphanMinAge $((ORPHAN_MIN_AGE_MIN * 60)) \
@@ -924,7 +949,7 @@ def cap($n; f): if length > $n then (.[:$n] | map(f)) + ["  ... \(length - $n) m
 | [
   "slp-gc report  \($r.generated)  home \($r.home)",
   "READ-ONLY: no paseo CLI call, nothing is changed. Use --apply to reclaim (see --help).",
-  "identification: " + (if $P.ident.ok then "ok (Supervisor \($P.ident.supervisorPid), daemon \($P.ident.daemonPid), listener \($P.ident.listen))" else "FAILED: \($P.ident.why) -> --apply would be refused" end),
+  "identification: " + (if $P.ident.ok then "ok (Supervisor \($P.ident.supervisorPid), home via \($P.ident.supHomeSource), daemon \($P.ident.daemonPid), listener \($P.ident.listen))" else "FAILED: \($P.ident.why) -> --apply would be refused" end),
   (if $r.index.ok then empty else "index: INCOMPLETE (\($r.index.why | join("; "))) -> nothing is garbage, --apply is refused" end),
   "",
   "== (a) Paseo processes  (footprint = top MEM, fallback rss; MB; warn >= \($P.warnMb) MB, memory-kill > \($P.killMb) MB)",
@@ -1008,6 +1033,12 @@ act() {  # kind target result detail
 budget_expired() { [ -n "$TICK_START" ] && [ $(( $(date +%s) - TICK_START )) -ge "$TICK_BUDGET_S" ]; }
 resolve_cli() {  # test override, else PATH, else the Paseo.app bundle
   local c
+  if [ "${SLP_GC_TEST:-}" = 1 ]; then   # never PATH or the app bundle under test: an unset override is "no CLI"
+    for c in "$(ovr "${SLP_GC_PASEO:-}")" "$(ovr "${PASEO_CLI:-}")"; do
+      [ -n "$c" ] && [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+    done
+    return 1
+  fi
   for c in "$(ovr "${SLP_GC_PASEO:-}")" "$(ovr "${PASEO_CLI:-}")" "$(command -v paseo 2>/dev/null)" \
            /Applications/Paseo.app/Contents/Resources/bin/paseo "$HOME/Applications/Paseo.app/Contents/Resources/bin/paseo"; do
     [ -n "$c" ] && [ -x "$c" ] && { printf '%s' "$c"; return 0; }

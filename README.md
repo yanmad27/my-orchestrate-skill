@@ -411,6 +411,19 @@ hourly, and alerts when memory climbs. Nothing is deleted or killed.
 `SLP_GC_MAX_KILLS` (20 per tick), `SLP_GC_TICK_BUDGET_S` (45),
 `SLP_GC_REPORT_INTERVAL_MIN` (60).
 
+**Identification without an environment.** The Paseo app's own "Paseo Supervisor"
+process rewrites its title, so `ps -E` shows no environment for it. When its
+environment is unreadable, slp-gc accepts its home binding only if it holds
+`<home>/daemon.log` open for writing (`lsof -F fan`) and no other home's
+`daemon.log`; anything else (no entry, another home, both) still refuses
+`--apply`. A readable environment is used as before. The report's
+`identification:` line says which source proved it (`home via env|lsof`).
+
+**Test mode.** With `SLP_GC_TEST=1` (fixtures only) an unset notifier, `paseo`
+CLI or `kill` override falls back to an inert no-op — never `osascript`, `PATH`,
+the Paseo.app bundle or a real signal — and `scripts/validate.sh` fails if a
+fixture runs slp-gc outside the sandboxed wrappers.
+
 **Output** lands in `~/Library/Logs/slp-gc` (`SLP_GC_STATE_DIR` overrides):
 `memory.jsonl` (samples), `alerts.log`, `reports/`, `lineage.tsv` (the lineage
 ledger that proves an orphan), `tick.log` (rotated), and `launchd.log` (only

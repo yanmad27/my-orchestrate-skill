@@ -121,6 +121,36 @@ fresh; del_line 110; ln -s "$FX_PHOME" "$FX_HOME/.paseo"
 fx_gc report --apply > "$WORK/home3.txt" 2>&1; rc=$?
 check "repair 6 / L2: with the Supervisor's env unreadable even the default ~/.paseo (resolved) is REFUSED (exit 3, nothing called) and the refusal is logged" bash -c "test '$rc' = 3 -a '$(logn paseo.log)' = 0 && grep -q 'not proven to serve this home' '$FX_STATE/actions.log' && grep -q 'not proven to serve this home' '$WORK/home3.txt'"
 
+# identification without an env: the Supervisor holds its home's daemon.log open for writing (lsof -F fan)
+sup_files() { printf 'f21\naw\nn%s\n' "$@" > "$FX_FIX/supfiles.110"; }
+fresh; del_line 110; sup_files "$RP/daemon.log"
+fx_gc report > "$WORK/lsof1.txt" 2>&1
+check "ident/lsof: an unreadable Supervisor env is proven by its writable \$PHOME/daemon.log (identification ok, home via lsof)" grep -q 'identification: ok (Supervisor 110, home via lsof' "$WORK/lsof1.txt"
+fresh; del_line 110; sup_files /elsewhere/.paseo/daemon.log
+fx_gc report --apply > "$WORK/lsof2.txt" 2>&1; rc=$?
+check "ident/lsof: only ANOTHER home's daemon.log is held: identification FAILED, --apply refused (exit 3), nothing called" bash -c "test '$rc' = 3 -a '$(logn paseo.log)' = 0 && grep -q 'identification: FAILED' '$WORK/lsof2.txt'"
+fresh; del_line 110; sup_files "$RP/daemon.log" /elsewhere/.paseo/daemon.log
+fx_gc report --apply > "$WORK/lsof3.txt" 2>&1; rc=$?
+check "ident/lsof: the target home's AND another home's writable daemon.log (ambiguous): FAILED, refused (exit 3)" bash -c "test '$rc' = 3 -a '$(logn paseo.log)' = 0 && grep -q 'identification: FAILED' '$WORK/lsof3.txt'"
+fresh; del_line 110; printf 'f21\nar\nn%s\n' "$RP/daemon.log" > "$FX_FIX/supfiles.110"
+fx_gc report > "$WORK/lsof4.txt" 2>&1
+check "ident/lsof: a read-only descriptor for daemon.log is not proof" grep -q 'identification: FAILED' "$WORK/lsof4.txt"
+fresh; del_line 110
+fx_gc report --apply > "$WORK/lsof5.txt" 2>&1; rc=$?
+check "ident/lsof: no lsof entry at all: FAILED, refused (exit 3)" bash -c "test '$rc' = 3 -a '$(logn paseo.log)' = 0 && grep -q 'identification: FAILED' '$WORK/lsof5.txt'"
+fresh; sup_files /elsewhere/.paseo/daemon.log
+fx_gc report > "$WORK/lsof6.txt" 2>&1
+check "ident/lsof: a readable env is authoritative (lsof is not consulted: identification ok via env even with another home's daemon.log listed)" grep -q 'identification: ok (Supervisor 110, home via env' "$WORK/lsof6.txt"
+
+# C6: test isolation. Overrides for notifier/CLI/kill unset + logging osascript/paseo/kill first on PATH: none runs
+fresh; : > "$FX_LOGS/osascript.log"
+fx_gc_canary record > "$WORK/c6a.txt" 2>&1
+fx_gc_canary tick > "$WORK/c6b.txt" 2>&1
+fx_gc_canary report --apply --kill-stale-processes --kill-over-memory > "$WORK/c6c.txt" 2>&1
+check "C6 canary: an alerting record/tick ran (alerts.log written) yet the logging osascript on PATH never ran" bash -c "test -s '$FX_STATE/alerts.log' && test '$(logn osascript.log)' = 0"
+check "C6 canary: an --apply attempt with the kill flags ran the PATH paseo and kill zero times" bash -c "test '$(logn paseo.log)' = 0 && test '$(logn kill.log)' = 0"
+check "C6: under SLP_GC_TEST=1 the notifier, CLI and kill fall back to inert no-ops (static)" bash -c "grep -q 'OSASCRIPT=\"\$INERT\"' '$GC' && grep -q 'KILL=\"\$INERT\"' '$GC' && grep -q 'an unset override is \"no CLI\"' '$GC'"
+
 # --- (iii) kills ---------------------------------------------------------------------------------
 fresh; nogc
 fx_gc report --kill-stale-processes >/dev/null 2>&1; rc=$?
@@ -199,16 +229,12 @@ fresh; mkdir -p "$FX_STATE/tick.lock"; printf '%s\t%s\n' 99999999 "Mon Jan  1 00
 fx_gc tick > /dev/null 2>&1
 check "repair 7: a lock with a dead owner is recovered; the lock is released afterwards and no takeover dir is left" bash -c "test -s '$FX_STATE/memory.jsonl' && test ! -e '$FX_STATE/tick.lock' && test ! -e '$FX_STATE/tick.lock.takeover'"
 check "repair 7: cleanup removes the lock only if the owner file is still ours (static)" grep -q 'cat "$LOCKDIR/owner" 2>/dev/null)" = "$NONCE"' "$GC"
-fresh; env -i PATH=/usr/bin:/bin SLP_GC_TEST=1 HOME="$FX_HOME" TMPDIR="$FX_TMP" SLP_GC_STATE_DIR="$FX_STATE" SLP_GC_CONFIG=/nonexistent PASEO_HOME="$FX_PHOME" \
-  SLP_GC_PS="$FX_BIN/ps" SLP_GC_PSENV="$FX_BIN/psenv" SLP_GC_TOP="$FX_BIN/top" SLP_GC_LSOF="$FX_BIN/lsof" SLP_GC_VMSTAT="$FX_BIN/vm_stat" \
-  SLP_GC_SYSCTL="$FX_BIN/sysctl" SLPGC_FIX="$FX_FIX" "$GC" tick >/dev/null 2>&1
+fresh; fx_gc_min tick >/dev/null 2>&1
 check "tick works under a minimal environment (env -i, PATH=/usr/bin:/bin)" test -s "$FX_STATE/memory.jsonl"
 
 # --- hardening ----------------------------------------------------------------------------------
 fresh
-env -i PATH=/usr/bin:/bin HOME="$FX_HOME" TMPDIR="$FX_TMP" SLP_GC_STATE_DIR="$FX_STATE" PASEO_HOME="$FX_PHOME" \
-  SLP_GC_PS="$FX_BIN/ps" SLP_GC_PSENV="$FX_BIN/psenv" SLP_GC_TOP="$FX_BIN/top" SLP_GC_KILL="$FX_BIN/kill" SLP_GC_PASEO="$FX_BIN/paseo" SLP_GC_NOW=1 \
-  SLPGC_FIX="$FX_FIX" SLPGC_LOGS="$FX_LOGS" "$GC" report --apply > "$WORK/notest.txt" 2>&1
+fx_gc_bare report > "$WORK/notest.txt" 2>&1
 check "L6: without SLP_GC_TEST=1 the probe/clock/CLI overrides are ignored (fixture processes never appear, identification fails, nothing is called)" bash -c "! grep -q 'Supervisor 110' '$WORK/notest.txt' && grep -q 'identification: FAILED' '$WORK/notest.txt' && test '$(logn paseo.log)' = 0 -a '$(logn kill.log)' = 0"
 fresh; printf '%s\n' "$(cat "$FX_FIX/ps.txt")" "$(grep '^   111 ' "$FX_FIX/ps.txt")" > "$FX_FIX/ps.dup"; mv "$FX_FIX/ps.dup" "$FX_FIX/ps.txt"
 fx_gc report --apply > "$WORK/dup.txt" 2>&1; rc=$?
@@ -430,7 +456,8 @@ fresh; fx_gc tick > "$WORK/alert.txt" 2>&1
 check "F7: a tick prints on alerts (the ALERT line) and on errors only" grep -q ' ALERT ' "$WORK/alert.txt"
 fresh; head -c 1100000 /dev/zero | tr '\0' x > "$FX_STATE/launchd.log"; fx_gc tick >/dev/null 2>&1
 check "F7: <state>/launchd.log is rotated at the start of a tick (1 MiB, one predecessor)" bash -c "test -f '$FX_STATE/launchd.log.1' && test \"\$(wc -c < '$FX_STATE/launchd.log.1' | tr -d ' ')\" = 1100000"
-check "F7: --help shows the new defaults (MEM_WARN 3072, MEM_KILL 4096, TREE_WARN 50% of RAM) and the new keys" bash -c "'$GC' --help | grep -q 'SLP_GC_MEM_WARN_MB\[3072\]' && '$GC' --help | grep -q 'SLP_GC_MEM_KILL_MB\[4096' && '$GC' --help | grep -q 'SLP_GC_TREE_WARN_MB\[50% of RAM\]' && '$GC' --help | grep -q 'SLP_GC_MAX_KILLS\[10' && '$GC' --help | grep -q 'SLP_GC_TICK_BUDGET_S\[45\]'"
+fresh; fx_gc --help > "$WORK/help.txt" 2>&1
+check "F7: --help shows the new defaults (MEM_WARN 3072, MEM_KILL 4096, TREE_WARN 50% of RAM) and the new keys" bash -c "cat '$WORK/help.txt' | grep -q 'SLP_GC_MEM_WARN_MB\[3072\]' && cat '$WORK/help.txt' | grep -q 'SLP_GC_MEM_KILL_MB\[4096' && cat '$WORK/help.txt' | grep -q 'SLP_GC_TREE_WARN_MB\[50% of RAM\]' && cat '$WORK/help.txt' | grep -q 'SLP_GC_MAX_KILLS\[10' && cat '$WORK/help.txt' | grep -q 'SLP_GC_TICK_BUDGET_S\[45\]'"
 # L7: actions.log rotation
 fresh; head -c 1048540 /dev/zero | tr '\0' x > "$FX_STATE/actions.log"; fx_gc report --apply >/dev/null 2>&1
 check "L7: actions.log is rotated (1 MiB, one predecessor)" bash -c "test -f '$FX_STATE/actions.log.1' && test \"\$(wc -c < '$FX_STATE/actions.log' | tr -d ' ')\" -lt 100000"
@@ -482,6 +509,7 @@ check "slp-gc has no SIGKILL, no process-group signal, no eval/source of the con
   ! grep -nE '(^|[^a-z_])(source|\\.) +\"?\\\$\\{?(file|SLP_GC_CONFIG)' '$GC' | grep -q . &&
   ! grep -nE '(^|[^a-z])rm +-' '$GC' | grep -vE '\\\$T|LOCKDIR|STATE/reports|stale\\.' | grep -q ."
 check "every paseo CLI call passes --home explicitly and -- before ids (static)" bash -c "grep -c 'run_cli .*--home \"\$PHOME\"' '$GC' | grep -q 2 && grep -q -- '-- \"\$id\"' '$GC'"
-check "--help exits 0; an unknown flag exits 2" bash -c "'$GC' --help >/dev/null && ! '$GC' --bogus >/dev/null 2>&1; test \$? = 0"
+fresh; fx_gc --help >/dev/null 2>&1; rc1=$?; fx_gc --bogus >/dev/null 2>&1; rc2=$?
+check "--help exits 0; an unknown flag exits 2" test "$rc1" = 0 -a "$rc2" = 2
 
 [ "$FAILED" = 0 ] || exit 1

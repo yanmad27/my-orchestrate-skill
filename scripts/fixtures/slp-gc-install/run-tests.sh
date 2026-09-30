@@ -77,6 +77,9 @@ H="$tmp/home"
 CONF="$H/.config/slp-room/slp-gc.conf"
 PLIST="$H/Library/LaunchAgents/$LABEL.plist"
 BIN="$H/.config/slp-room/bin/slp-gc"
+igc_help_ok() { igc --help >/dev/null; }
+# every direct slp-gc call: test mode (inert notifier/CLI/kill), sandbox HOME, PASEO_HOME and state dir
+igc() { env -i PATH=/usr/bin:/bin SLP_GC_TEST=1 HOME="$H" PASEO_HOME="$H/.paseo" SLP_GC_STATE_DIR="$H/Library/Logs/slp-gc" SLP_GC_CONFIG="$CONF" bash "$BIN" "$@"; }   # slpgc-sandboxed
 conf_val() { awk -F= -v k="$1" '$1 == k { v = substr($0, length(k) + 2) } END { print v }' "$CONF"; }
 flags() { printf '%s%s%s' "$(conf_val SLP_GC_APPLY)" "$(conf_val SLP_GC_KILL_STALE)" "$(conf_val SLP_GC_KILL_MEMORY)"; }
 files() { (cd "$H" && find . -type f | sort | tr '\n' ' '); }
@@ -94,7 +97,7 @@ check "--gc-only exits 0" test "$RC" = 0
 check "slp-gc installed executable next to slp-wait's dir" test -x "$BIN"
 check "installed slp-gc is a copy of paseo/bin/slp-gc" cmp -s "$BIN" paseo/bin/slp-gc
 check "slp-gc mode is 0755" test "$(stat -c %a "$BIN" 2>/dev/null || stat -f %Lp "$BIN")" = 755
-check "the installed slp-gc runs (--help)" bash -c 'bash "$0" --help >/dev/null' "$BIN"
+check "the installed slp-gc runs (--help)" igc_help_ok
 check "the plist is in place" test -f "$PLIST"
 check "the plist has no --apply, ever" bash -c '! grep -q -- "--apply" "$0"' "$PLIST"
 check "the plist runs /bin/bash <slp-gc> tick" bash -c 'grep -A3 "<key>ProgramArguments" "$0" | grep -q "/bin/bash" && grep -q "<string>'"$BIN"'</string>" "$0" && grep -q "<string>tick</string>" "$0"' "$PLIST"
@@ -340,7 +343,7 @@ checkp "the same with launchd not queryable (sandbox HOME, no override): 'loaded
 rm -f "$tmp/lc.mode" "$tmp/lc.state"
 
 # --- 4h. every documented key exists in the installed slp-gc ------------------------------------------
-HELP="$(bash "$BIN" --help 2>&1)"
+HELP="$(igc --help 2>&1)"
 missing_help=""; missing_parser=""
 for k in $( { grep -o 'SLP_GC_[A-Z_]*[A-Z]' "$CONF"; grep -o 'SLP_GC_[A-Z_]*[A-Z]' README.md; } | sort -u); do
   case "$k" in SLP_GC_TEST|SLP_GC_STATE_DIR|SLP_GC_CONFIG|SLP_GC_PLIST_BASE_PATH) continue ;; esac
