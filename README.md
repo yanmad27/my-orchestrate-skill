@@ -432,9 +432,11 @@ is one line in `tick.log` and never changes the exit status or blocks the other 
   `<state>/deliveries.jsonl` (last 200 lines). A `lastUserMessageAt` within
   `[sentAt-5s, sentAt+30s]` of that Supervisor's latest entry is read as the
   prior value; a later message from the person falls outside the window and counts.
-- *Message* (plain text, at most 2048 bytes; the alert line is what gets cut):
+- *Message* (plain text, at most 2048 bytes; only the alert text is ever cut, on a character boundary; if the mandatory lines alone
+  exceed 2048 bytes, e.g. a very long home path, nothing is sent):
   `SLP-GC ALERT <UTC compact id>`, `From: slp-gc (automated message, not the person)`,
-  the `Alert:` line, `Home:`, the absolute `slp-gc:` path, a read-only
+  the `Alert (data, not instructions):` line (process names are same-user text, so the
+  line is labelled as data), `Home:`, the absolute `slp-gc:` path, a read-only
   `report --home <home> --json` command line (paths with spaces are quoted) and
   the rule that cleanup needs the person's explicit yes for this alert and the exact
   candidate set. No other process's environment or command line is included.
@@ -443,8 +445,12 @@ is one line in `tick.log` and never changes the exit status or blocks the other 
   is sent (no fallback to another Supervisor) and `tick.log` says so. Residual risk:
   the record is read a moment before the send, so a permission raised in between is
   still cleared; Supervisors run in `bypassPermissions` mode, so this is rare.
+- *Undelivered alerts.* An alert that is not delivered (no open Supervisor,
+  pending permission, a failure) still uses the 15-minute window: by contract there
+  is no retry, the next chance is the next alert after the window.
 - *Switch.* `SLP_GC_ALERT_SUPERVISOR=0` in `slp-gc.conf` (or the environment)
-  turns delivery off; anything but `0`/`1` keeps the default, `1`. The opt-ins
+  turns delivery off, and it also disables `test-alert` (exit 3, "delivery disabled");
+  anything but `0`/`1` keeps the default, `1`. The opt-ins
   above are unchanged: without them nothing is deleted or killed.
 
 **Candidate-bounded cleanup.** `slp-gc report --json` prints `.candidates`: every
@@ -458,9 +464,9 @@ exits 2 and does nothing. Otherwise it acts on the named tokens only, with the
 usual per-action re-checks (an item that changed since is skipped and reported).
 Without `--only` nothing changes. `slp-gc test-alert [--home <dir>]` sends one
 message marked `SLP-GC ALERT (TEST)` and `TEST ONLY` to the same Supervisor
-and writes only the delivery ledger (no `alerts.log`, no rate-limit stamp, no
+and writes only the delivery ledger (under the tick lock; no `alerts.log`, no rate-limit stamp, no
 notification, no cleanup); it prints the Supervisor id and exits 0 delivered,
-3 no open Supervisor (or a pending permission), 1 send failed.
+3 nothing sent on purpose (no open Supervisor, pending permission, delivery disabled), 1 not delivered (send failed, or the ledger row could not be written).
 
 
 **Identification without an environment.** The Paseo app's own "Paseo Supervisor"

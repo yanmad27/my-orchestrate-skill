@@ -294,11 +294,13 @@ A_INVOKER2=$A_INVOKER
 # a Supervisor-ish record for the delivery tests: fx_sup <id> <provider> <archivedAt|null> <lastUserMessageAt|null> <lastActivityAt> [attentionReason]
 fx_sup() {
   local id="$1" prov="$2" arch="$3" lum="$4" lact="$5" att="${6:-null}"
-  [ "$arch" = null ] || arch="\"$arch\""; [ "$lum" = null ] || lum="\"$lum\""; [ "$att" = null ] || att="\"$att\""
+  local archkv;
+  case "$arch" in MISSING) archkv="" ;; false) archkv='"archivedAt":false,' ;; null) archkv='"archivedAt":null,' ;; *) archkv="\"archivedAt\":\"$arch\"," ;; esac
+  [ "$lum" = null ] || lum="\"$lum\""; [ "$att" = null ] || att="\"$att\""
   mkdir -p "$FX_PHOME/agents/slug-sup"
   cat > "$FX_PHOME/agents/slug-sup/$id.json" <<J
 {"id":"$id","provider":"$prov","cwd":"/tmp/fx","createdAt":"$(fx_iso 4000000)","updatedAt":"$(fx_iso 100)","lastStatus":"idle","title":"SECRET-PROMPT-TITLE","labels":{},"internal":false,
- "archivedAt":$arch,"lastUserMessageAt":$lum,"lastActivityAt":"$5","attentionReason":$att,"runtimeInfo":{"sessionId":"sess-$id"}}
+ $archkv"lastUserMessageAt":$lum,"lastActivityAt":"$5","attentionReason":$att,"runtimeInfo":{"sessionId":"sess-$id"}}
 J
 }
 

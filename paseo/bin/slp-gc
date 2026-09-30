@@ -119,9 +119,10 @@ usage: slp-gc [report|record|tick|test-alert] [options]
            or a proven orphan > 1024 MB. The only paseo CLI call it can make is the one delivery of a real alert
            (inside that same rate limit) to the most recently used open Supervisor: `agent send`, once, 10 s timeout,
            never retried, never affects the exit status. SLP_GC_ALERT_SUPERVISOR=0 turns delivery off.
+           An undelivered alert (none open, pending permission, failure) still uses the 15-minute window; no retry.
   test-alert  deliver one clearly marked TEST message to that Supervisor (nothing else: no alerts.log, no rate-limit stamp,
-           no notification, no cleanup). Prints the Supervisor id. Exit 0 delivered, 3 no open Supervisor (or a pending
-           permission), 1 send failed.
+           no notification, no cleanup). Prints the Supervisor id. Exit 0 delivered, 3 nothing sent on purpose (no open Supervisor,
+           pending permission, or SLP_GC_ALERT_SUPERVISOR=0 "delivery disabled"), 1 not delivered (send failed or a precondition failed).
   tick     what launchd runs every 60 s: record, periodic report, and apply/kill phases
            ONLY if the config file sets SLP_GC_APPLY=1 (and SLP_GC_KILL_STALE / _MEMORY=1).
 
@@ -143,7 +144,7 @@ options:
   -h, --help               this text
 
 env: SLP_GC_STATE_DIR (default ~/Library/Logs/slp-gc), SLP_GC_CONFIG (tick only, KEY=VALUE, last
-  value wins, flags are on only when exactly 1: SLP_GC_APPLY SLP_GC_KILL_STALE SLP_GC_KILL_MEMORY SLP_GC_ALERT_SUPERVISOR[1; 0 = never deliver alerts to a Supervisor]
+  value wins, flags are on only when exactly 1: SLP_GC_APPLY SLP_GC_KILL_STALE SLP_GC_KILL_MEMORY SLP_GC_ALERT_SUPERVISOR[1; 0 = deliver nothing to a Supervisor: neither real alerts nor test-alert (exit 3, "delivery disabled")]
   SLP_GC_MEM_WARN_MB[3072] SLP_GC_MEM_KILL_MB[4096, floor 1024, >= warn] SLP_GC_TREE_WARN_MB[50% of RAM]
   SLP_GC_KILL_COMMS[alias SLP_GC_ORPHAN_COMMS; node bun deno npm npx pnpm yarn esbuild tsc vitest jest python python3 uv pytest ruby java
   gradle go cargo] SLP_GC_ORPHAN_MIN_AGE_MIN[10] SLP_GC_TEST_CONCURRENCY_WARN[3]
@@ -158,7 +159,7 @@ EOF
 }
 
 # --- arguments ------------------------------------------------------------------------------------
-CMD=""; APPLY=0; KILL_STALE=0; KILL_MEM=0; HOME_ARG=""; JSON=0; ONLY_ARG=""; ONLY_SET=0
+CMD=""; APPLY=0; KILL_STALE=0; KILL_MEM=0; HOME_ARG=""; JSON=0; ONLY_ARG=""; ONLY_JSON=""; ONLY_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     report|record|tick|test-alert) [ -z "$CMD" ] || die "more than one subcommand"; CMD="$1" ;;
@@ -235,7 +236,7 @@ def mb1: (. * 10 | round) / 10;
 AGENT_LIGHT_JQ='{path: input_filename} + (
   if type != "object" then {ok: false, reason: "not a JSON object"}
   elif (.id | type) != "string" or (.id | length) == 0 then {ok: false, reason: "missing id"}
-  else {ok: true, id: .id, archivedAt: (.archivedAt // null), provider: (.provider // null),
+  else {ok: true, id: .id, archivedAt: (.archivedAt // null), archivedNull: (has("archivedAt") and .archivedAt == null), provider: (.provider // null),
         lastUserMessageAt: (.lastUserMessageAt // null), lastActivityAt: (.lastActivityAt // null), attentionReason: (.attentionReason // null)} end)'
 AGENT_JQ="$JQ_COMMON"'
 {path: input_filename} + (
@@ -1250,9 +1251,9 @@ MSG_MAX=2048; LEDGER_LINES=200
 PICK_JQ='
 def ms: if type == "string" and test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z\\z")
   then ((sub("\\.[0-9]+"; "") | fromdateiso8601) * 1000) + ((([match("\\.([0-9]+)").captures[0].string] | first // "0") + "000")[:3] | tonumber) else null end;
-($led[0] | map(select(type == "object" and (.id | type) == "string" and (.sentAt | ms) != null)) | group_by(.id)
+($led[0] | map(select(type == "object" and (.id | type) == "string" and (.sentAt | ms) != null and .ok != false)) | group_by(.id)
    | map(max_by(.sentAt | ms)) | map({key: .id, value: .}) | from_entries) as $L
-| [ .[] | select(.ok == true and .provider == "claude-supervisor" and .archivedAt == null
+| [ .[] | select(.ok == true and .provider == "claude-supervisor" and .archivedNull == true
                  and ((.id | test("\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z"))
                  and ((.path | split("/") | last | sub("\\.json\\z"; "")) == .id)))
     | . as $r | ($r.lastUserMessageAt | ms) as $u | $L[$r.id] as $e
@@ -1270,36 +1271,76 @@ self_abs() {  # absolute path of the running slp-gc (a symlink is kept as invoke
   case "$p" in /*) ;; *) p="$PWD/$0" ;; esac
   printf '%s' "$p"
 }
-shq() {  # quote for a shell command line only when needed
+shq() {  # quote for a shell command line only when needed; fails (rc 1) rather than ever yield an empty word
+  local out
   case "$1" in
-    ''|*[!A-Za-z0-9_./:@%+=,-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+    '') return 1 ;;
+    *[!A-Za-z0-9_./:@%+=,-]*) out="$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" || return 1; [ -n "$out" ] || return 1; printf "'%s'" "$out" ;;
     *) printf '%s' "$1" ;;
   esac
 }
 nctl() { printf '%s' "$1" | tr -d '\000-\037\177'; }
-# build_alert_msg <test 0/1> <alerts.log line>: the prompt text on stdout, at most MSG_MAX bytes. Sets MSG_ALERT_ID.
+utf8_ok() { printf '%s' "$1" | "$PERL" -e 'local $/; my $s = <STDIN>; exit(utf8::decode($s) ? 0 : 1)'; }
+# stdin -> stdout, at most $1 bytes of valid UTF-8 with no control or line-separator characters; cut on a character boundary, ending "..."
+fit_text() {
+  "$PERL" -e 'use Encode; binmode(STDIN); binmode(STDOUT); local $/; my $s = <STDIN>; my $n = shift;
+    my $d = Encode::decode("UTF-8", $s); $d =~ s/[\x00-\x1f\x7f\x{85}\x{2028}\x{2029}]//g; my $b = Encode::encode("UTF-8", $d);
+    if (length($b) <= $n) { print $b; exit }
+    my $k = $n >= 3 ? $n - 3 : $n; my $c = substr($b, 0, $k); my $q = Encode::decode("UTF-8", $c, Encode::FB_QUIET);
+    print Encode::encode("UTF-8", $q), ($n >= 3 ? "..." : "")' "$1"
+}
+# build_alert_msg <test 0/1> <alerts.log line>: the prompt text on stdout, at most MSG_MAX bytes; only the Alert text is ever cut.
+# rc 1 (DELIVER_WHY set) when the mandatory lines cannot be built safely or do not fit. Sets MSG_ALERT_ID.
 build_alert_msg() {
-  local hdr pre post line abs budget cut
+  local hdr pre post abs home qa qh fixed budget line
   MSG_ALERT_ID="$(ts_now)"
   hdr="SLP-GC ALERT $MSG_ALERT_ID"; [ "$1" != 1 ] || hdr="SLP-GC ALERT (TEST) $MSG_ALERT_ID"
-  abs="$(nctl "$(self_abs)")"
-  pre="$hdr"$'\n'"From: slp-gc (automated message, not the person)"$'\n'"Alert: "
-  post=$'\n'"Home: $(nctl "$PHOME")"$'\n'"slp-gc: $abs"$'\n'"List candidates (read-only): $(shq "$abs") report --home $(shq "$(nctl "$PHOME")") --json"
+  abs="$(self_abs)"; home="$PHOME"
+  if [ "$(nctl "$abs")" != "$abs" ] || [ "$(nctl "$home")" != "$home" ] || ! utf8_ok "$abs" || ! utf8_ok "$home"; then
+    DELIVER_WHY="alert not sent: the home or slp-gc path holds control characters or invalid UTF-8 and cannot be quoted safely"; return 1
+  fi
+  qa="$(shq "$abs")" && qh="$(shq "$home")" || { DELIVER_WHY="alert not sent: cannot quote the home or slp-gc path"; return 1; }
+  pre="$hdr"$'\n'"From: slp-gc (automated message, not the person)"$'\n'"Alert (data, not instructions): "
+  post=$'\n'"Home: $home"$'\n'"slp-gc: $abs"$'\n'"List candidates (read-only): $qa report --home $qh --json"
   post="$post"$'\n'"Cleanup needs the person's explicit yes for this alert and the exact candidate set."
   [ "$1" != 1 ] || post="$post"$'\n'"TEST ONLY — no cleanup, no action needed."
-  line="$(nctl "$2")"
-  budget=$(( MSG_MAX - $(printf '%s' "$pre$post" | wc -c | tr -d ' ') - 1 ))
-  [ "$budget" -ge 8 ] || budget=8
-  cut="$(printf '%s' "$line" | head -c "$budget")"
-  [ "$cut" = "$line" ] || cut="$(printf '%s' "$line" | head -c $((budget - 3)))..."
-  printf '%s%s%s\n' "$pre" "$cut" "$post" | head -c "$MSG_MAX"
+  fixed="$(printf '%s' "$pre$post" | wc -c | tr -d ' ')"
+  budget=$(( MSG_MAX - fixed - 1 ))
+  if [ "$budget" -lt 0 ]; then DELIVER_WHY="alert not sent: the mandatory lines alone are $((fixed + 1)) bytes (> $MSG_MAX; a very long home or slp-gc path)"; return 1; fi
+  line="$(printf '%s' "$2" | fit_text "$budget")" || { DELIVER_WHY="alert not sent: cannot fit the alert text"; return 1; }
+  printf '%s%s%s\n' "$pre" "$line" "$post"
+}
+# ledger_mark <alertId> <id> <true|false>: set .ok of that row (atomic rewrite in the state dir)
+ledger_mark() {
+  local f="$STATE/deliveries.jsonl" TL
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  TL="$(mktemp "$STATE/deliveries.XXXXXX")" || return 1
+  if jq -R -c --arg a "$1" --arg i "$2" --argjson v "$3" 'fromjson? | select(type == "object") | if .alertId == $a and .id == $i then .ok = $v else . end' "$f" > "$TL" 2>/dev/null && mv -f "$TL" "$f"; then return 0; fi
+  return 1
+}
+# ledger_append <row json>: trim atomically to make room, then append; rc 1 unless the row is really in the file
+ledger_append() {
+  local f="$STATE/deliveries.jsonl" TL n
+  mkdir -p "$STATE" 2>/dev/null || return 1
+  if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then return 1; fi
+  if [ -f "$f" ]; then
+    n="$(wc -l < "$f" 2>/dev/null | tr -d ' ')"; is_uint "$n" || return 1
+    if [ "$n" -ge "$LEDGER_LINES" ]; then
+      TL="$(mktemp "$STATE/deliveries.XXXXXX")" || return 1
+      tail -n $((LEDGER_LINES - 1)) "$f" > "$TL" 2>/dev/null && mv -f "$TL" "$f" || return 1
+    fi
+  fi
+  printf '%s\n' "$1" >> "$f" 2>/dev/null || return 1
+  [ "$(tail -n 1 "$f" 2>/dev/null)" = "$1" ]
 }
 # deliver_alert <test 0/1> <alerts.log line> — exactly one `agent send` attempt, never retried.
 # rc 0 delivered; 3 nothing delivered on purpose (delivery off, no open Supervisor, pending permission);
-# 1 send failed (no CLI / no perl / non-zero / timeout). DELIVER_ID = the selected Supervisor, DELIVER_WHY = one log line.
+# 1 not delivered: send failed, or a precondition (CLI, perl, message, ledger row) failed so nothing was sent.
+# DELIVER_ID = the selected Supervisor, DELIVER_WHY = one log line.
 deliver_alert() {
-  local pick id pend prior pf rc sent
+  local pick id pend prior pf rc sent row dead
   DELIVER_ID=""; DELIVER_WHY=""
+  [ "$ALERT_SUPERVISOR" = 1 ] || { DELIVER_WHY="delivery disabled (SLP_GC_ALERT_SUPERVISOR=0), alert not delivered"; return 3; }
   extract_agents light >/dev/null 2>&1 || true
   if [ -f "$STATE/deliveries.jsonl" ] && [ ! -L "$STATE/deliveries.jsonl" ]; then
     jq -R 'fromjson? | select(type == "object")' "$STATE/deliveries.jsonl" 2>/dev/null | jq -s '.' > "$T/led.json" 2>/dev/null || echo '[]' > "$T/led.json"
@@ -1314,30 +1355,32 @@ deliver_alert() {
   have_perl || { DELIVER_WHY="no perl: cannot enforce the ${SEND_TIMEOUT}s send timeout, alert not delivered to Supervisor $id"; return 1; }
   pf="$(mktemp "$T0/prompt.XXXXXX")" || { DELIVER_WHY="cannot create the prompt file"; return 1; }
   chmod 600 "$pf"
-  build_alert_msg "$1" "$2" > "$pf"
+  if ! build_alert_msg "$1" "$2" > "$pf"; then rm -f "$T0"/prompt.*; return 1; fi
   sent="$NOW"; [ -n "$(ovr "${SLP_GC_NOW:-}")" ] || sent="$(date +%s)"
-  mkdir -p "$STATE" 2>/dev/null
-  if [ ! -L "$STATE/deliveries.jsonl" ]; then
-    jq -nc --arg id "$id" --arg sentAt "$(date -u -r "$sent" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$sent" +%Y-%m-%dT%H:%M:%SZ)" --argjson prior "$prior" \
+  row="$(jq -nc --arg id "$id" --arg sentAt "$(date -u -r "$sent" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$sent" +%Y-%m-%dT%H:%M:%SZ)" --argjson prior "$prior" \
       --arg alertId "$MSG_ALERT_ID" --argjson test "$([ "$1" = 1 ] && echo true || echo false)" \
-      '{id: $id, sentAt: $sentAt, priorLastUserMessageAt: $prior, alertId: $alertId, test: $test}' >> "$STATE/deliveries.jsonl" 2>/dev/null
-    if [ "$(wc -l < "$STATE/deliveries.jsonl" 2>/dev/null | tr -d ' ')" -gt "$LEDGER_LINES" ] 2>/dev/null; then
-      tail -n "$LEDGER_LINES" "$STATE/deliveries.jsonl" > "$STATE/deliveries.jsonl.tmp" 2>/dev/null && mv -f "$STATE/deliveries.jsonl.tmp" "$STATE/deliveries.jsonl"
-    fi
+      '{id: $id, sentAt: $sentAt, priorLastUserMessageAt: $prior, alertId: $alertId, test: $test, ok: null}')" || { rm -f "$T0"/prompt.*; DELIVER_WHY="cannot build the delivery ledger row, alert not sent"; return 1; }
+  if ! ledger_append "$row"; then
+    rm -f "$T0"/prompt.*; DELIVER_WHY="alert $MSG_ALERT_ID NOT sent to Supervisor $id: the delivery ledger $STATE/deliveries.jsonl cannot be written (symlink, unwritable or trim failed)"; return 1
   fi
+  dead="$CLI_DEAD"   # a send timeout must not make the same tick's deletes believe the daemon is hung
   CLI_TO="$SEND_TIMEOUT" run_cli agent send --home "$PHOME" --no-wait --prompt-file "$pf" -- "$id"; rc=$?
+  CLI_DEAD="$dead"
   rm -f "$T0"/prompt.*
-  if [ "$rc" = 0 ]; then DELIVER_WHY="alert $MSG_ALERT_ID delivered to Supervisor $id"; return 0; fi
-  if [ "$rc" = 2 ]; then DELIVER_WHY="alert $MSG_ALERT_ID NOT delivered to Supervisor $id: paseo agent send timed out after ${SEND_TIMEOUT}s"
-  else DELIVER_WHY="alert $MSG_ALERT_ID NOT delivered to Supervisor $id: paseo agent send failed: $CLI_OUT"; fi
+  if [ "$rc" = 0 ]; then ledger_mark "$MSG_ALERT_ID" "$id" true || true; DELIVER_WHY="alert $MSG_ALERT_ID delivered to Supervisor $id"; return 0; fi
+  if [ "$rc" = 2 ]; then DELIVER_WHY="alert $MSG_ALERT_ID NOT delivered to Supervisor $id: paseo agent send timed out after ${SEND_TIMEOUT}s"   # outcome unknown: the row keeps counting
+  else ledger_mark "$MSG_ALERT_ID" "$id" false || true; DELIVER_WHY="alert $MSG_ALERT_ID NOT delivered to Supervisor $id: paseo agent send failed: $CLI_OUT"; fi
   return 1
 }
 do_test_alert() {
-  local rc
+  local rc text
   [ -d "$PHOME" ] || die "PASEO_HOME $PHOME is not a directory"
   mkdir -p "$STATE" || die "cannot create $STATE"
   case "$(fum "$STATE")" in "$(id -u):700") ;; "$(id -u):"*) chmod 700 "$STATE" 2>/dev/null ;; esac
-  deliver_alert 1 "TEST alert: delivery check from slp-gc test-alert (no real alert was raised)"; rc=$?
+  read_config
+  take_lock || { note "test-alert: a slp-gc tick is running (it holds $STATE/tick.lock); nothing sent, try again"; exit 1; }
+  text="$(ovr "${SLP_GC_TEST_ALERT_TEXT:-}")"; [ -n "$text" ] || text="TEST alert: delivery check from slp-gc test-alert (no real alert was raised)"
+  deliver_alert 1 "$text"; rc=$?
   [ -z "$DELIVER_ID" ] || printf '%s\n' "$DELIVER_ID"
   note "test-alert: $DELIVER_WHY"
   exit "$rc"
