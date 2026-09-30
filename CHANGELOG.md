@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0](https://github.com/yanmad27/paseo-slp/compare/v2.2.0...v2.3.0) (2026-09-30)
+
+
+### Features
+
+* ↳ connector in the ⏳ room-state tree ([#42](https://github.com/yanmad27/paseo-slp/issues/42)) ([26541bc](https://github.com/yanmad27/paseo-slp/commit/26541bc6137da89267679828bf99d71ca57cbeed))
+* box-drawing connectors (├─/└─) in the ⏳ room-state tree ([#41](https://github.com/yanmad27/paseo-slp/issues/41)) ([a7d82f7](https://github.com/yanmad27/paseo-slp/commit/a7d82f72ab43b975d8aa970f4161848ce658a37d))
+* one compact ◉ card per Lead in the ⏳ room-state block ([#43](https://github.com/yanmad27/paseo-slp/issues/43)) ([278990b](https://github.com/yanmad27/paseo-slp/commit/278990b44cf8b02b12cc138418e10d5c425e0354))
+* render the Supervisor ⏳ Working room state as a Lead/Peer tree ([#40](https://github.com/yanmad27/paseo-slp/issues/40)) ([ad2f3c9](https://github.com/yanmad27/paseo-slp/commit/ad2f3c9797b69930c501bd9b87343edd59f4c365))
+* SLP_CLAUDE_AUTH_TOKEN as the primary custom-endpoint key input (SLP_CLAUDE_API_KEY kept as an alias) ([#38](https://github.com/yanmad27/paseo-slp/issues/38)) ([d734daa](https://github.com/yanmad27/paseo-slp/commit/d734daaa9aa08c2c5136d5d15c4486030a3ab585))
+* slp-gc, a standalone Paseo GC and memory guard with a report-only launchd agent ([#44](https://github.com/yanmad27/paseo-slp/issues/44)) ([fddc7a3](https://github.com/yanmad27/paseo-slp/commit/fddc7a31b63487737e4577baa12abacd02bc05a2))
+
 ## [2.2.0](https://github.com/yanmad27/paseo-slp/compare/v2.1.0...v2.2.0) (2026-09-29)
 
 
