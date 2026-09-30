@@ -661,8 +661,7 @@ fi
 # Static: the rules exist, and the old instructions are gone.
 RULE_PHRASES=(
   'SKILL.md|⏳ Working:'
-  'SKILL.md|├─ <Peer title> (running|permission pending)'
-  'SKILL.md|└─ <Peer title> ('
+  'SKILL.md|↳ <Peer title> (running|permission pending)'
   'SKILL.md|✅ Done:'
   'SKILL.md|❓ Waiting on you:'
   'SKILL.md|`supervisor: room`'
@@ -712,6 +711,12 @@ for entry in "${RULE_PHRASES[@]}"; do
     fail "$file missing room rule '$phrase'"
   fi
 done
+
+if grep -qE '├─|└─|\|_ ' "$ROOM_DIR/SKILL.md"; then
+  fail "$ROOM_DIR/SKILL.md still shows an old room-state connector (├─, └─, or |_)"
+else
+  ok "$ROOM_DIR/SKILL.md carries no old room-state connector (├─, └─, |_)"
+fi
 
 for phrase in 'skipped, not queued' 'record a skipped slot twice' 'the next slot usually resumes it'; do
   if grep -qF -- "$phrase" README.md; then
