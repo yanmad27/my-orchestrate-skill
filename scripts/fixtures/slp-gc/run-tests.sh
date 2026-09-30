@@ -755,7 +755,8 @@ fresh; sups; FX_EXTRA_ENV="SLP_GC_ALERT_SUPERVISOR=0" fx_gc test-alert > "$WORK/
 check "4 SLP_GC_ALERT_SUPERVISOR=0 (env): test-alert sends nothing, exits 3, says 'delivery disabled', writes no ledger" bash -c "test '$rc' = 3 && test '$(nsend)' = 0 && grep -q 'delivery disabled' '$WORK/sw.err' && test ! -e '$FX_STATE/deliveries.jsonl' && test '$(logn paseo.log)' = 0"
 fresh; sups; printf 'SLP_GC_ALERT_SUPERVISOR=0\n' > "$FX_SB/slp-gc.conf"; fx_gc test-alert > "$WORK/sw2.out" 2> "$WORK/sw2.err"; rc=$?
 check "4 SLP_GC_ALERT_SUPERVISOR=0 (config file): test-alert exits 3 with 'delivery disabled', nothing sent" test "$rc" = 3 -a "$(nsend)" = 0 -a "$(grep -c 'delivery disabled' "$WORK/sw2.err")" = 1
-check "4 --help and the README say the switch also disables test-alert" bash -c "'$GC' --help | grep -q 'neither real alerts nor test-alert' && grep -q 'also disables .test-alert' '$HERE/../../../README.md'"
+fx_gc --help > "$WORK/h4.txt" 2>&1
+check "4 --help and the README say the switch also disables test-alert" bash -c "grep -q 'neither real alerts nor test-alert' '$WORK/h4.txt' && grep -q 'also disables .test-alert' '$HERE/../../../README.md'"
 
 # (5) a send timeout must not make the same tick's deletes believe the daemon is hung
 fresh; sups; printf 'SLP_GC_APPLY=1\n' > "$FX_SB/slp-gc.conf"
