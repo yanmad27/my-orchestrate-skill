@@ -174,13 +174,12 @@ precondition/error stops included, ends with exactly one room-state block,
 and its last row is the turn's last line: `✅` or `❓`; `⏳` only after
 answering the person mid-run, or when `slp-wait` failed (said explicitly).
 `✅` and `❓` are one row; `⏳` is a header row plus a Lead/Peer tree. In these
-forms (keep the prefixes and the `├─`/`└─` connectors):
+forms (keep the prefixes and the `↳ ` connector):
 
 ```text
 ⏳ Working:
 <Lead title> (<its state, e.g. running / STATUS: …>)
-├─ <Peer title> (running|permission pending)
-└─ <Peer title> (… the last Peer of that Lead)
+↳ <Peer title> (running|permission pending)
 ✅ Done: <outcome in one line>
 ❓ Waiting on you: <decision>
 ```
@@ -188,20 +187,21 @@ forms (keep the prefixes and the `├─`/`└─` connectors):
 Titles carry their `[Lead]`/`[Peer]`/`[Review]` prefix (Title
 `[Lead] <workstream>`, above), so it is not repeated in the template.
 `⏳ Working:` is its own header row. Each Lead gets one row; beneath it, one
-`├─ ` row per Peer of that Lead that is running or permission-pending, the
-last one `└─ ` (finished or archived Peers are omitted); a Lead with none is
-just its Lead row. With several Leads, the tree lists each. `⏳` is printed right before
-each `slp-wait`, so the latest visible text plus the spinner shows the state.
+`↳ ` row (no indentation) per Peer of that Lead that is running or
+permission-pending (finished or archived Peers are omitted); a Lead with none
+is just its Lead row. With several Leads, the tree lists each. `⏳` is printed
+right before each `slp-wait`, so the latest visible text plus the spinner shows
+the state.
 A turn that ends stops spinning, so it ends on `⏳` only in the two cases above.
 Rendered:
 
 ```text
 ⏳ Working:
 [Lead] auth refactor (running)
-├─ [Peer] token store (running)
-└─ [Review] token store diff (running)
+↳ [Peer] token store (running)
+↳ [Review] token store diff (running)
 [Lead] billing export (STATUS: waiting on CI)
-└─ [Peer] csv writer (permission pending)
+↳ [Peer] csv writer (permission pending)
 ✅ Done: auth refactor committed on feat/auth, 14 tests pass, nothing pushed
 ❓ Waiting on you: push feat/auth to origin, or leave it local?
 ```
