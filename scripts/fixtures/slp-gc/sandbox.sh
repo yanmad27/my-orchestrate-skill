@@ -224,10 +224,13 @@ cat "$SLPGC_FIX/top.txt"
 S
   cat > "$SB/bin/lsof" <<'S'
 #!/bin/sh
-# stub lsof: `-d cwd -p N` prints the fixture cwd.N (if any); the listener query prints the daemon pid
+# stub lsof: `-F fan -p N` prints the fixture supfiles.N (open files in -F format, if any); `-d cwd -p N` prints the fixture cwd.N (if any); the listener query prints the daemon pid
 case "$*" in
   *"-d cwd"*) [ -z "$SLPGC_TRACE" ] || echo "$*" >> "$SLPGC_LOGS/lsof-cwd.log"; p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
               [ -f "$SLPGC_FIX/cwd.$p" ] && { echo "p$p"; echo fcwd; echo "n$(cat "$SLPGC_FIX/cwd.$p")"; }; exit 0 ;;
+  *"-F fan"*) [ ! -x "$SLPGC_FIX/fan-hook.sh" ] || "$SLPGC_FIX/fan-hook.sh"
+              [ -z "$SLPGC_TRACE" ] || echo "$*" >> "$SLPGC_LOGS/lsof-fan.log"; p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
+              [ -f "$SLPGC_FIX/supfiles.$p" ] && { echo "p$p"; cat "$SLPGC_FIX/supfiles.$p"; }; exit 0 ;;
   *"-d txt"*) p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && p="$2"; shift; done
               [ -f "$SLPGC_FIX/txt.$p" ] && { echo "p$p"; echo ftxt; echo "n$(cat "$SLPGC_FIX/txt.$p")"; }; exit 0 ;;
 esac
@@ -264,6 +267,14 @@ case "$1 $2" in
     [ "$3" = --home ] && [ "$5" = --json ] && [ "$6" = -- ] && [ "$#" = 7 ] || { echo "bad argv: $*" >&2; exit 2; }
     echo "warning: stderr noise that must not reach the JSON parser" >&2
     [ -f "$SLPGC_FIX/inspect-$7.json" ] || exit 1; cat "$SLPGC_FIX/inspect-$7.json"; exit 0 ;;
+  "agent send")   # agent send --home <dir> --no-wait --prompt-file <file> -- <uuid>: logs one arg per line, the prompt file mode and text
+    [ "$3" = --home ] && [ "$5" = --no-wait ] && [ "$6" = --prompt-file ] && [ "$8" = -- ] && [ "$#" = 9 ] || { echo "bad argv: $*" >&2; exit 2; }
+    { echo "SEND"; for a in "$@"; do echo "ARG:$a"; done; echo "END"; } >> "$SLPGC_LOGS/send-argv.log"
+    m="$(stat -c %a "$7" 2>/dev/null || stat -f %Lp "$7" 2>/dev/null)"; echo "$m $7" >> "$SLPGC_LOGS/send-file.log"
+    { echo "=== to $9"; cat "$7"; } >> "$SLPGC_LOGS/send-msgs.log"
+    [ -z "$SLPGC_SEND_HANG" ] || exec sleep 30
+    [ -z "$SLPGC_SEND_FAIL" ] || { echo "send refused" >&2; exit 1; }
+    exit 0 ;;
   "agent delete"|"schedule delete") ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
@@ -280,6 +291,19 @@ S
 }
 A_INVOKER2=$A_INVOKER
 
+# a Supervisor-ish record for the delivery tests: fx_sup <id> <provider> <MISSING (no key, the live open shape)|null|false|0|7|ISO> <lastUserMessageAt|null> <lastActivityAt> [attentionReason]
+fx_sup() {
+  local id="$1" prov="$2" arch="$3" lum="$4" att="${6:-null}"
+  local archkv;
+  case "$arch" in MISSING) archkv="" ;; false) archkv='"archivedAt":false,' ;; 0|7) archkv="\"archivedAt\":$arch,";; null) archkv='"archivedAt":null,' ;; *) archkv="\"archivedAt\":\"$arch\"," ;; esac
+  [ "$lum" = null ] || lum="\"$lum\""; [ "$att" = null ] || att="\"$att\""
+  mkdir -p "$FX_PHOME/agents/slug-sup"
+  cat > "$FX_PHOME/agents/slug-sup/$id.json" <<J
+{"id":"$id","provider":"$prov","cwd":"/tmp/fx","createdAt":"$(fx_iso 4000000)","updatedAt":"$(fx_iso 100)","lastStatus":"idle","title":"SECRET-PROMPT-TITLE","labels":{},"internal":false,
+ $archkv"lastUserMessageAt":$lum,"lastActivityAt":"$5","attentionReason":$att,"runtimeInfo":{"sessionId":"sess-$id"}}
+J
+}
+
 # run slp-gc inside the sandbox environment
 fx_gc() {  # fx_gc <args...>
   env -i PATH="/usr/bin:/bin:/usr/local/bin" SLP_GC_TEST=1 SLP_GC_TEST_HOOK="${FX_HOOK:-}" HOME="$FX_HOME" TMPDIR="$FX_TMP" \
@@ -290,7 +314,28 @@ fx_gc() {  # fx_gc <args...>
     SLP_GC_OSASCRIPT="$FX_BIN/osascript" SLP_GC_PASEO="$FX_BIN/paseo" \
     SLPGC_FIX="$FX_FIX" SLPGC_LOGS="$FX_LOGS" SLPGC_PASEO_HANG="${SLPGC_PASEO_HANG:-}" SLPGC_ADD_SELF="${SLPGC_ADD_SELF:-}" SLPGC_MEMSIZE="${SLPGC_MEMSIZE:-}" SLPGC_TRACE="${FX_TRACE:-}" SLP_GC_SKIP_RETENTION="$([ "${FX_RETENTION:-}" = on ] && echo 0 || echo 1)" \
     SLP_GC_CLI_TIMEOUT="${SLP_GC_CLI_TIMEOUT:-5}" ${FX_EXTRA_ENV:-} \
-    "$FX_GC" "$@"
+    "$FX_GC" "$@"   # slpgc-sandboxed
+}
+# minimal-environment tick (env -i, PATH=/usr/bin:/bin): the notifier, CLI and kill overrides are deliberately unset
+fx_gc_min() {
+  env -i PATH=/usr/bin:/bin SLP_GC_TEST=1 HOME="$FX_HOME" TMPDIR="$FX_TMP" SLP_GC_STATE_DIR="$FX_STATE" SLP_GC_CONFIG=/nonexistent PASEO_HOME="$FX_PHOME" \
+    SLP_GC_PS="$FX_BIN/ps" SLP_GC_PSENV="$FX_BIN/psenv" SLP_GC_TOP="$FX_BIN/top" SLP_GC_LSOF="$FX_BIN/lsof" SLP_GC_VMSTAT="$FX_BIN/vm_stat" \
+    SLP_GC_SYSCTL="$FX_BIN/sysctl" SLPGC_FIX="$FX_FIX" "$FX_GC" "$@"   # slpgc-sandboxed
+}
+# C6 canary (FX_CANARY_PASEO_CLI is passed through as the ambient PASEO_CLI): SLP_GC_TEST=1 with the notifier/CLI/kill overrides unset and logging osascript/paseo/kill first on PATH
+fx_gc_canary() {
+  env -i PATH="$FX_BIN:/usr/bin:/bin" SLP_GC_TEST=1 HOME="$FX_HOME" TMPDIR="$FX_TMP" SLP_GC_STATE_DIR="$FX_STATE" SLP_GC_CONFIG="$FX_SB/slp-gc.conf" \
+    PASEO_HOME="$FX_PHOME" PASEO_AGENT_ID="${FX_INVOKER:-$A_INVOKER}" SLP_GC_NOW="$FX_NOW" \
+    SLP_GC_PS="$FX_BIN/ps" SLP_GC_PSENV="$FX_BIN/psenv" SLP_GC_TOP="$FX_BIN/top" SLP_GC_LSOF="$FX_BIN/lsof" SLP_GC_VMSTAT="$FX_BIN/vm_stat" \
+    SLP_GC_SYSCTL="$FX_BIN/sysctl" SLPGC_FIX="$FX_FIX" SLPGC_LOGS="$FX_LOGS" SLP_GC_SKIP_RETENTION=1 ${FX_CANARY_PASEO_CLI:+PASEO_CLI="$FX_CANARY_PASEO_CLI"} "$FX_GC" "$@"   # slpgc-sandboxed
+}
+# no SLP_GC_TEST: proves the test overrides are ignored. Read-only `report` only; anything else is refused here.
+fx_gc_bare() {
+  case " $* " in *" report "*) ;; *) echo "fx_gc_bare: report only" >&2; return 2 ;; esac
+  case " $* " in *" --apply "*) echo "fx_gc_bare: no --apply" >&2; return 2 ;; esac
+  env -i PATH="$FX_BIN:/usr/bin:/bin" HOME="$FX_HOME" TMPDIR="$FX_TMP" SLP_GC_STATE_DIR="$FX_STATE" PASEO_HOME="$FX_PHOME" \
+    SLP_GC_PS="$FX_BIN/ps" SLP_GC_PSENV="$FX_BIN/psenv" SLP_GC_TOP="$FX_BIN/top" SLP_GC_KILL="$FX_BIN/kill" SLP_GC_PASEO="$FX_BIN/paseo" SLP_GC_NOW=1 \
+    SLPGC_FIX="$FX_FIX" SLPGC_LOGS="$FX_LOGS" "$FX_GC" "$@"   # slpgc-sandboxed
 }
 
 # snapshot: path, type, mode, symlink target, sha256, mtime - for every entry under a tree (one perl process)

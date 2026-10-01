@@ -780,6 +780,7 @@ SLP_GC_KILL_MEMORY=0
 # SLP_GC_MAX_KILLS=20             (per tick)
 # SLP_GC_TICK_BUDGET_S=45
 # SLP_GC_REPORT_INTERVAL_MIN=60
+# SLP_GC_ALERT_SUPERVISOR=1         (0 = never deliver a real alert to the most recently used open Supervisor)
 CONF
     )
     echo "Wrote default config (report-only): $GC_CONF"

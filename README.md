@@ -400,7 +400,9 @@ hourly, and alerts when memory climbs. Nothing is deleted or killed.
 
 ```bash
 ~/.config/slp-room/bin/slp-gc report   # read-only snapshot: processes, agents, garbage candidates
-~/.config/slp-room/bin/slp-gc record   # append one memory sample
+~/.config/slp-room/bin/slp-gc report --json   # the same, machine-readable, with .candidates (action tokens)
+~/.config/slp-room/bin/slp-gc record   # append one memory sample (delivers a real alert to a Supervisor)
+~/.config/slp-room/bin/slp-gc test-alert   # send one marked TEST message to that Supervisor
 ~/.config/slp-room/bin/slp-gc tick     # what launchd runs
 ```
 
@@ -409,7 +411,81 @@ hourly, and alerts when memory climbs. Nothing is deleted or killed.
 (50% of RAM), `SLP_GC_KILL_COMMS` (alias `SLP_GC_ORPHAN_COMMS`),
 `SLP_GC_ORPHAN_MIN_AGE_MIN` (10), `SLP_GC_TEST_CONCURRENCY_WARN` (3),
 `SLP_GC_MAX_KILLS` (20 per tick), `SLP_GC_TICK_BUDGET_S` (45),
-`SLP_GC_REPORT_INTERVAL_MIN` (60).
+`SLP_GC_REPORT_INTERVAL_MIN` (60), `SLP_GC_ALERT_SUPERVISOR` (1).
+
+**Supervisor alerts.** When `record` raises a real alert (inside the existing
+15-minute rate limit, so never more often), slp-gc still writes `alerts.log`
+and the macOS notification and then delivers **one** message to the most recently
+used open Supervisor: `paseo agent send --home <home> --no-wait --prompt-file <0600 temp file> -- <id>`,
+one attempt, 10 s timeout, no retry. A failed, timed-out or skipped delivery
+is one line in `tick.log` and never changes the exit status or blocks the other two.
+
+- *Which Supervisor.* Records under `<home>/agents` with `provider` exactly
+  `claude-supervisor`, `archivedAt` absent or null (Paseo omits the key on an open agent) and a file name equal to the id. They are
+  ranked by `lastUserMessageAt` (a heartbeat does not move it), then
+  `lastActivityAt`, then id; a Supervisor that was never used ranks last. None
+  open: nothing is sent and `tick.log` says so.
+- *Self-delivery correction.* Paseo's `agent send` sets the recipient's
+  `lastUserMessageAt` to the send time, which would make slp-gc's own messages
+  look like the person's. Before each send slp-gc appends
+  `{id, sentAt, priorLastUserMessageAt, alertId, test}` to
+  `<state>/deliveries.jsonl` (last 200 lines). A `lastUserMessageAt` within
+  `[sentAt-5s, sentAt+30s]` of that Supervisor's latest entry is read as the
+  prior value; a later message from the person falls outside the window and counts.
+- *Message* (plain text, at most 2048 bytes; only the alert text is ever cut, on a character boundary; if the mandatory lines alone
+  exceed 2048 bytes, e.g. a very long home path, nothing is sent):
+  `SLP-GC ALERT <UTC compact id>`, `From: slp-gc (automated message, not the person)`,
+  the `Alert (data, not instructions):` line (process names are same-user text, so the
+  line is labelled as data), `Home:`, the absolute `slp-gc:` path, a read-only
+  `report --home <home> --json` command line (paths with spaces are quoted) and
+  the rule that cleanup needs the person's explicit yes for this alert and the exact
+  candidate set. No other process's environment or command line is included.
+- *Pending permission.* `agent send` clears the recipient's pending permissions. When
+  the selected Supervisor's record says `attentionReason` is `permission`, nothing
+  is sent (no fallback to another Supervisor) and `tick.log` says so. Residual risk:
+  the record is read a moment before the send, so a permission raised in between is
+  still cleared; Supervisors run in `bypassPermissions` mode, so this is rare.
+- *One delivery at a time.* Pick, ledger append, send and the ok-marking of the row (each row has a
+  unique `rowId`) run under a separate `delivery.lock` in the state dir (dead owners are taken over, the wait
+  is a few seconds). If it is busy nothing is sent ("delivery lock busy, not delivered"), and the alert, the
+  notification and the exit status are unaffected. It is taken inside the tick lock, never the other way round.
+- *Undelivered alerts.* An alert that is not delivered (no open Supervisor,
+  pending permission, a failure) still uses the 15-minute window: by contract there
+  is no retry, the next chance is the next alert after the window.
+- *Switch.* `SLP_GC_ALERT_SUPERVISOR=0` in `slp-gc.conf` (or the environment)
+  turns delivery off, and it also disables `test-alert` (exit 3, "delivery disabled");
+  anything but `0`/`1` keeps the default, `1`. The opt-ins
+  above are unchanged: without them nothing is deleted or killed.
+
+**Candidate-bounded cleanup.** `slp-gc report --json` prints `.candidates`: every
+action `--apply` could take now, as `{token, action, kind, reason, sizeMB, requiresFlag}`.
+Tokens are unique and action-scoped: `agent-delete:<id>`, `schedule-delete:<id>`,
+`kill-stale:<pid>@<lstart>`, `kill-memory:<pid>@<lstart>`. `slp-gc report --apply --only <token>[,<token>...]`
+(plus `--kill-stale-processes` / `--kill-over-memory` for `kill-*` tokens) first
+checks **every** named token against the current candidates and the flags; if any
+is unknown, of another action, has a changed pid start time or lacks its flag, it
+exits 2 and does nothing. Otherwise it acts on the named tokens only, with the
+usual per-action re-checks (an item that changed since is skipped and reported).
+Without `--only` nothing changes. `slp-gc test-alert [--home <dir>]` sends one
+message marked `SLP-GC ALERT (TEST)` and `TEST ONLY` to the same Supervisor
+and writes only the delivery ledger (under the tick lock; no `alerts.log`, no rate-limit stamp, no
+notification, no cleanup); it prints the Supervisor id and exits 0 delivered,
+3 nothing sent on purpose (no open Supervisor, pending permission, delivery disabled), 1 not delivered (send failed, or the ledger row could not be written).
+
+
+**Identification without an environment.** The Paseo app's own "Paseo Supervisor"
+process rewrites its title, so `ps -E` shows no environment for it. When its
+environment is unreadable, slp-gc accepts its home binding only if it holds
+`<home>/daemon.log` open for writing (`lsof -F fan`) and no other home's
+`daemon.log`; anything else (no entry, another home, both) still refuses
+`--apply`. A readable environment is used as before. The report's
+`identification:` line says which source proved it (`home via env|lsof`).
+
+**Test mode.** With `SLP_GC_TEST=1` (fixtures only) an unset notifier, `paseo`
+CLI or `kill` override falls back to an inert no-op — never `osascript`, `PATH`,
+the ambient `PASEO_CLI`, the Paseo.app bundle, a real `kill` binary or a terminating
+signal (a signal-0 liveness probe, which terminates nothing, is still allowed) — and `scripts/validate.sh` fails if a
+fixture runs slp-gc outside the sandboxed wrappers.
 
 **Output** lands in `~/Library/Logs/slp-gc` (`SLP_GC_STATE_DIR` overrides):
 `memory.jsonl` (samples), `alerts.log`, `reports/`, `lineage.tsv` (the lineage

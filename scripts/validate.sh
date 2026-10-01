@@ -92,6 +92,11 @@ ROOM_PHRASES=(
   "SKILL.md|INTENT RECORD"
   "SKILL.md|KEEPING THE ROOM ON COURSE"
   "SKILL.md|Emergency brake"
+  "SKILL.md|SLP-GC ALERT"
+  "SKILL.md|Deliberate, bounded extension of your authority"
+  "SKILL.md|Only an explicit yes"
+  "SKILL.md|--apply --only"
+  "PROTOCOL.md|explicitly approved"
   "roles/lead.md|Your instruction's outcome, non-goals, authority, and acceptance evidence"
   "roles/lead.md|roles/peer.md"
   'roles/lead.md|Never delegate with the built-in `Agent` tool'
@@ -860,6 +865,14 @@ if [ "$SG_RC" -ne 0 ] || ! grep -q '^ok: ' "$SG_OUT"; then
   fail "slp-gc sandbox tests failed (see FAIL lines above)"
 else
   ok "slp-gc sandbox tests passed ($(grep -c '^ok: ' "$SG_OUT") checks)"
+fi
+
+# C6 guard: every execution of the slp-gc binary in the fixtures (whatever the arguments) goes through a
+# wrapper marked "# slpgc-sandboxed" whose env block sets SLP_GC_TEST=1 and a sandbox HOME.
+if SG_GUARD_BAD="$(perl scripts/fixtures/slp-gc/check-sandboxed.pl scripts/fixtures/slp-gc/run-tests.sh scripts/fixtures/slp-gc/sandbox.sh scripts/fixtures/slp-gc-install/run-tests.sh)"; then
+  ok "every slp-gc fixture invocation runs through a sandboxed wrapper with SLP_GC_TEST=1 (C6)"
+else
+  fail "slp-gc fixture invoked outside the sandbox path (C6): $(printf '%s' "$SG_GUARD_BAD" | tr '\n' ' ')"
 fi
 
 # --- slp-gc install: plist, config opt-ins, --gc-only (sandbox HOME, stub launchctl) -------------

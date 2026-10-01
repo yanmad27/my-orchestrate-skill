@@ -52,13 +52,47 @@ chmod +x "$stubs"/*
 
 # What install.sh would write in the real HOME. The seats' Claude runtimes (claude-*/) hold live
 # session transcripts (and codex-peer/ a live Codex state), so only the room's own files are compared.
+# ~/Library/Logs/slp-gc is also written by the live launchd agent and by real deliveries, so it is not compared
+# byte for byte. AGENT_STATE_NAMES lists every name slp-gc itself creates there (a static check below fails when
+# slp-gc writes a $STATE/<name> that is not listed). snap_logs compares the set of any OTHER top-level entry
+# exactly; real_logs_clean proves that no file under it holds this run's fixtures: the sandbox path ($tmp) or the
+# fixture agent ids (aaaaaaaa-0000-4000-8000-* / bbbbbbbb-0000-4000-8000-*, never a real random uuid).
+AGENT_STATE_NAMES=(.alert-stamp .last-report '.lineage.*' actions.log alerts.log 'deliveries.*' 'delivery.lock*'
+                   launchd.log lineage.tsv memory.jsonl reports tick.lock tick.log)
+# shellcheck disable=SC2254  # the AGENT_STATE_NAMES entries are intentional glob patterns
+agent_state_name() { local n; for n in "${AGENT_STATE_NAMES[@]}"; do case "$1" in $n) return 0 ;; esac; done; return 1; }
 snap_real() {
   {
     find "$REAL_HOME/.config/slp-room" -maxdepth 1 -type f -ls
     find "$REAL_HOME/.config/slp-room/bin" "$REAL_HOME/.config/slp-room/room" \
-      "$REAL_HOME/Library/LaunchAgents" "$REAL_HOME/Library/Logs/slp-gc" "$REAL_HOME/.claude/skills/supervisor" -type f -ls
+      "$REAL_HOME/Library/LaunchAgents" "$REAL_HOME/.claude/skills/supervisor" -type f -ls
     find "$REAL_HOME/.paseo" -maxdepth 1 -name 'config.json*' -type f -ls
+    snap_logs
   } 2>/dev/null | sort
+}
+snap_logs() {
+  local d="$REAL_HOME/Library/Logs/slp-gc" e
+  [ -d "$d" ] || return 0
+  find "$d" -mindepth 1 -maxdepth 1 2>/dev/null | while IFS= read -r e; do
+    agent_state_name "${e##*/}" || printf 'logs-extra: %s\n' "${e##*/}"
+  done
+}
+FIXTURE_ID_RE='(aaaaaaaa|bbbbbbbb)-0000-4000-8000-[0-9a-f]{12}'
+real_logs_clean() {
+  local d="$REAL_HOME/Library/Logs/slp-gc" t
+  [ -d "$d" ] || return 0
+  for t in "$tmp" "$(cd -P "$tmp" 2>/dev/null && pwd -P)"; do
+    [ -n "$t" ] || continue
+    ! grep -rqF -- "$t" "$d" 2>/dev/null || { echo "a file in $d mentions the sandbox $t" >&2; return 1; }
+  done
+  ! grep -rqE -- "$FIXTURE_ID_RE" "$d" 2>/dev/null || { echo "a file in $d holds a fixture agent id" >&2; return 1; }
+}
+slpgc_state_names_listed() {   # only reads the script's text (the path is split so check-sandboxed.pl does not take this for an execution)
+  local n bad=0
+  while IFS= read -r n; do
+    agent_state_name "${n//XXXXXX/x}" || { echo "slp-gc writes \$STATE/$n but AGENT_STATE_NAMES does not list it" >&2; bad=1; }
+  done < <(grep -o '\$STATE/[A-Za-z0-9._*-]*' "$REPO/paseo/bin/"slp-gc | sed 's|^\$STATE/||' | sort -u)
+  return "$bad"
 }
 REAL_BEFORE="$(snap_real)"
 
@@ -77,6 +111,9 @@ H="$tmp/home"
 CONF="$H/.config/slp-room/slp-gc.conf"
 PLIST="$H/Library/LaunchAgents/$LABEL.plist"
 BIN="$H/.config/slp-room/bin/slp-gc"
+igc_help_ok() { igc --help >/dev/null; }
+# every direct slp-gc call: test mode (inert notifier/CLI/kill), sandbox HOME, PASEO_HOME and state dir
+igc() { env -i PATH=/usr/bin:/bin SLP_GC_TEST=1 HOME="$H" PASEO_HOME="$H/.paseo" SLP_GC_STATE_DIR="$H/Library/Logs/slp-gc" SLP_GC_CONFIG="$CONF" bash "$BIN" "$@"; }   # slpgc-sandboxed
 conf_val() { awk -F= -v k="$1" '$1 == k { v = substr($0, length(k) + 2) } END { print v }' "$CONF"; }
 flags() { printf '%s%s%s' "$(conf_val SLP_GC_APPLY)" "$(conf_val SLP_GC_KILL_STALE)" "$(conf_val SLP_GC_KILL_MEMORY)"; }
 files() { (cd "$H" && find . -type f | sort | tr '\n' ' '); }
@@ -94,7 +131,7 @@ check "--gc-only exits 0" test "$RC" = 0
 check "slp-gc installed executable next to slp-wait's dir" test -x "$BIN"
 check "installed slp-gc is a copy of paseo/bin/slp-gc" cmp -s "$BIN" paseo/bin/slp-gc
 check "slp-gc mode is 0755" test "$(stat -c %a "$BIN" 2>/dev/null || stat -f %Lp "$BIN")" = 755
-check "the installed slp-gc runs (--help)" bash -c 'bash "$0" --help >/dev/null' "$BIN"
+check "the installed slp-gc runs (--help)" igc_help_ok
 check "the plist is in place" test -f "$PLIST"
 check "the plist has no --apply, ever" bash -c '! grep -q -- "--apply" "$0"' "$PLIST"
 check "the plist runs /bin/bash <slp-gc> tick" bash -c 'grep -A3 "<key>ProgramArguments" "$0" | grep -q "/bin/bash" && grep -q "<string>'"$BIN"'</string>" "$0" && grep -q "<string>tick</string>" "$0"' "$PLIST"
@@ -340,7 +377,7 @@ checkp "the same with launchd not queryable (sandbox HOME, no override): 'loaded
 rm -f "$tmp/lc.mode" "$tmp/lc.state"
 
 # --- 4h. every documented key exists in the installed slp-gc ------------------------------------------
-HELP="$(bash "$BIN" --help 2>&1)"
+HELP="$(igc --help 2>&1)"
 missing_help=""; missing_parser=""
 for k in $( { grep -o 'SLP_GC_[A-Z_]*[A-Z]' "$CONF"; grep -o 'SLP_GC_[A-Z_]*[A-Z]' README.md; } | sort -u); do
   case "$k" in SLP_GC_TEST|SLP_GC_STATE_DIR|SLP_GC_CONFIG|SLP_GC_PLIST_BASE_PATH) continue ;; esac
@@ -360,6 +397,8 @@ check "the stub log holds only bootout/bootstrap/print of the agent" bash -c '! 
 REAL_AFTER="$(snap_real)"
 [ "$REAL_AFTER" = "$REAL_BEFORE" ] || diff <(printf '%s\n' "$REAL_BEFORE") <(printf '%s\n' "$REAL_AFTER") | head -10
 check "the real HOME's slp-room, LaunchAgents, slp-gc logs and Paseo config are unchanged" test "$REAL_AFTER" = "$REAL_BEFORE"
+check "no file in the real slp-gc logs holds this run's fixtures (sandbox path, fixture agent ids)" real_logs_clean
+check "every \$STATE/<name> that slp-gc writes is in the agent-owned list the real-HOME check relies on" slpgc_state_names_listed
 
 if [ "$FAILED" -ne 0 ]; then echo "slp-gc-install tests: FAILED"; exit 1; fi
 echo "slp-gc-install tests: all checks passed"
