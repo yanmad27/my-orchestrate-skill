@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.0](https://github.com/yanmad27/paseo-slp/compare/v2.3.0...v2.4.0) (2026-10-01)
+
+
+### Features
+
+* deliver slp-gc memory alerts to the most recently used Supervisor, with person-approved cleanup ([#48](https://github.com/yanmad27/paseo-slp/issues/48)) ([fcc0040](https://github.com/yanmad27/paseo-slp/commit/fcc0040b9c4f0dd89f47ff8469db0e35d765ba27))
+* render the Supervisor 🕒 Working room state as a 🤖 Lead / 🦾 Peer emoji tree ([#46](https://github.com/yanmad27/paseo-slp/issues/46)) ([c509778](https://github.com/yanmad27/paseo-slp/commit/c509778671c9d453cad6f74a4ccbad192fa96f96))
+
 ## [2.3.0](https://github.com/yanmad27/paseo-slp/compare/v2.2.0...v2.3.0) (2026-09-30)
 
 
