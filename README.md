@@ -482,6 +482,11 @@ is one line in `tick.log` and never changes the exit status or blocks the other 
   nothing. A refusal is not retried, and it never widens beyond `--only`. `--apply` itself
   ignores the conf and follows only its CLI flags, which is why the Supervisor checks
   `.policy` first.
+  `.policy` comes from the conf the installed copy resolves when it runs without
+  `SLP_GC_CONFIG`, i.e. the default room home `~/.config/slp-room/slp-gc.conf`; the launchd
+  tick reads the conf pinned in its plist (`SLP_GC_CONFIG`, set from the room home the
+  install used). With a custom `SLP_ROOM_HOME` the two can differ, so the Supervisor's
+  auto-apply is supported only for the default room home.
 
 **Candidate-bounded cleanup.** `slp-gc report --json` prints `.policy` (`{apply, killStale, killMemory}`, additive) and `.candidates`: every
 action `--apply` could take now, as `{token, action, kind, reason, sizeMB, requiresFlag}`.

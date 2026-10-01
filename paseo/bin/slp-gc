@@ -141,9 +141,11 @@ options:
                            .candidates). Every token is preflighted first; any token that is not currently an eligible
                            candidate (or a kill token without its flag) => exit 2, nothing done. Unnamed candidates are never touched.
   --json                   machine-readable output
+                           report --json adds .policy {apply, killStale, killMemory}: what the config enables (true only for exactly 1;
+                           missing, unreadable, symlinked or special-file config => all false). --apply ignores it.
   -h, --help               this text
 
-env: SLP_GC_STATE_DIR (default ~/Library/Logs/slp-gc), SLP_GC_CONFIG (tick only, KEY=VALUE, last
+env: SLP_GC_STATE_DIR (default ~/Library/Logs/slp-gc), SLP_GC_CONFIG (read by tick and by `report --json` for .policy; KEY=VALUE, last
   value wins, flags are on only when exactly 1: SLP_GC_APPLY SLP_GC_KILL_STALE SLP_GC_KILL_MEMORY SLP_GC_ALERT_SUPERVISOR[1; 0 = deliver nothing to a Supervisor: neither real alerts nor test-alert (exit 3, "delivery disabled")]
   SLP_GC_MEM_WARN_MB[3072] SLP_GC_MEM_KILL_MB[4096, floor 1024, >= warn] SLP_GC_TREE_WARN_MB[50% of RAM]
   SLP_GC_KILL_COMMS[alias SLP_GC_ORPHAN_COMMS; node bun deno npm npx pnpm yarn esbuild tsc vitest jest python python3 uv pytest ruby java
