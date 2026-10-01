@@ -149,7 +149,8 @@ if command -v plutil >/dev/null 2>&1; then
 else
   ok "plutil not available, skipping plist lint"
 fi
-check "default config exists and is report-only" test "$(flags)" = 000
+check "a fresh default config is the safe tier: APPLY=1 KILL_STALE=1 KILL_MEMORY=0" test "$(flags)" = 110
+check "the default config header no longer claims report-only by default" bash -c '! grep -qi "Default: report-only" "$0"' "$CONF"
 check "default config is private (0600)" test "$(stat -c %a "$CONF" 2>/dev/null || stat -f %Lp "$CONF")" = 600
 check "the state dir is private (0700)" test "$(stat -c %a "$H/Library/Logs/slp-gc" 2>/dev/null || stat -f %Lp "$H/Library/Logs/slp-gc")" = 700
 check "no temp file is left behind by the atomic installs" test -z "$(find "$H/.config/slp-room/bin" "$H/Library/LaunchAgents" -name '.*' -type f)"
@@ -159,16 +160,26 @@ check "--gc-only made no Paseo config, seats or skill" test ! -e "$H/.paseo" -a 
 check "launchctl: bootout, bootstrap, then print to verify; only the stub" test "$(cat "$tmp/launchctl.log")" = "bootout gui/$UID_N/$LABEL
 bootstrap gui/$UID_N $PLIST
 print gui/$UID_N/$LABEL"
-check "the summary says report-only, launchd loaded, and how to run slp-gc" bash -c 'grep -q "report-only" "$0" && grep -q "launchd agent: loaded" "$0" && grep -q "bin/slp-gc report" "$0"' "$tmp/gc-only-1.out"
+check "the summary names apply + kill-stale (not kill-memory), launchd loaded, and how to run slp-gc" bash -c 'grep -q "^!!   - apply" "$0" && grep -q "^!!   - kill-stale" "$0" && ! grep -q "^!!   - kill-memory" "$0" && grep -q "launchd agent: loaded" "$0" && grep -q "bin/slp-gc report" "$0" && ! grep -q "your existing config is report-only" "$0"' "$tmp/gc-only-1.out"
 [ -n "${EVIDENCE_DIR:-}" ] && { cp "$tmp/gc-only-1.out" "$EVIDENCE_DIR/install-transcript-gc-only.txt"; cp "$PLIST" "$EVIDENCE_DIR/slp-gc.plist"; cp "$CONF" "$EVIDENCE_DIR/slp-gc.conf.default"; (cd "$H" && find . | sort) > "$EVIDENCE_DIR/home-after-install.txt"; }
 
 # --- 2. opt-ins persist and edit only their keys ---------------------------------------------------
+run gc-optout --gc-only --gc-report-only
+check "--gc-report-only on the safe-tier default clears all three" test "$RC" = 0 -a "$(flags)" = 000
+cp "$CONF" "$tmp/conf.zero"
+run gc-zero-rerun --gc-only
+check "a re-run with no --gc flag over an all-zero config leaves it byte-for-byte unchanged" cmp -s "$CONF" "$tmp/conf.zero"
+check "that re-run prints the one-line report-only notice with the opt-in command" bash -c 'grep -c "your existing config is report-only" "$0" | grep -qx 1 && grep -q "install.sh --gc-apply --gc-kill-stale" "$0"' "$tmp/gc-zero-rerun.out"
+run gc-zero-flag --gc-only --gc-report-only
+check "an explicit --gc flag prints no notice" bash -c '! grep -q "your existing config is report-only" "$0"' "$tmp/gc-zero-flag.out"
 printf 'SLP_GC_MEM_WARN_MB=2048\n' >> "$CONF"
 run gc-apply --gc-only --gc-apply
 check "--gc-apply sets only APPLY=1" test "$RC" = 0 -a "$(flags)" = 100
 check "--gc-apply keeps the other lines" test "$(conf_val SLP_GC_MEM_WARN_MB)" = 2048
 check "--gc-apply is announced in a prominent line naming the opt-in" bash -c 'grep -q "^!! slp-gc is RUNNING WITH OPT-INS" "$0" && grep -q "^!!   - apply" "$0"' "$tmp/gc-apply.out"
+cp "$CONF" "$tmp/conf.on"
 run gc-rerun --gc-only
+check "a re-run over a config with apply on is unchanged and prints no notice" bash -c 'cmp -s "$0" "$1" && ! grep -q "your existing config is report-only" "$2"' "$CONF" "$tmp/conf.on" "$tmp/gc-rerun.out"
 check "a re-run without flags keeps the opt-in" test "$RC" = 0 -a "$(flags)" = 100 -a "$(conf_val SLP_GC_MEM_WARN_MB)" = 2048
 check "the re-run does not duplicate keys" test "$(grep -c '^SLP_GC_APPLY=' "$CONF")" = 1
 for f in --gc-kill --gc-kill-stale --gc-kill-memory; do
@@ -218,6 +229,7 @@ check "the default install exits 0" test "$RC" = 0
 check "the default install puts slp-gc next to slp-wait" test -x "$H/.config/slp-room/bin/slp-gc" -a -x "$H/.config/slp-room/bin/slp-wait"
 check "the default install writes the plist" test -f "$PLIST"
 check "the default install keeps the existing config's report-only flags" test "$(flags)" = 000
+check "the default install over a report-only config prints the notice" grep -q "your existing config is report-only" "$tmp/default.out"
 check "the default install still writes the Paseo config" test -f "$H/.paseo/config.json"
 check "the default install called only the stub launchctl, three times" test "$(wc -l < "$tmp/launchctl.log" | tr -d ' ')" = 3
 check "--no-reload made no paseo call" test ! -s "$tmp/paseo.log"
@@ -227,7 +239,7 @@ run nogc-default --paseo-only --no-reload --no-gc
 checkp "--no-gc skips every slp-gc install step, and says the existing agent remains active" 'test "$RC" = 0 && ! grep -q "Installed slp-gc" "$tmp/nogc-default.out" && grep -q "existing agent remains active: $LABEL" "$tmp/nogc-default.out" && grep -q "to remove: launchctl bootout" "$tmp/nogc-default.out"'
 rm -f "$H/.config/slp-room/slp-gc.conf"
 run fresh-default --paseo-only --no-reload
-check "a missing config is re-created report-only" test "$RC" = 0 -a "$(flags)" = 000
+check "a missing config is re-created as the safe tier" test "$RC" = 0 -a "$(flags)" = 110
 
 # --- 4b. the login-home guard: SLP_LAUNCHCTL stays set to the logging stub throughout -----------------
 cp "$tmp/launchctl.log" "$tmp/launchctl.stubbed.log"
