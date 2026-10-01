@@ -26,8 +26,9 @@ Peer → Lead         signals, mid-work messages       (final message of each Pe
   faithfully routes Human decisions, and performs bounded room recovery.
   It is not another project Lead: it never edits project work, runs
   project validation, accepts a candidate, or directs a Peer. One bounded
-  exception: on an `slp-gc` alert it runs the safe-tier cleanup, and any
-  other `slp-gc` cleanup only with the person's explicit yes.
+  exception: on an `slp-gc` alert it runs the safe-tier cleanup its
+  `slp-gc.conf` enables, and any other `slp-gc` cleanup
+  only with the person's explicit yes.
 - Lead owns project framing, technical decisions, integration, verification,
   and explicit candidate acceptance. It launches Peers only — Claude by
   default, Codex for cross-family review or on request — never another

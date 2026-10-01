@@ -96,8 +96,12 @@ ROOM_PHRASES=(
   "SKILL.md|Deliberate, bounded extension of your authority"
   "SKILL.md|Only an explicit yes"
   "SKILL.md|--apply --only"
-  "SKILL.md|Apply the safe tier at once, without asking"
-  'SKILL.md|`agent-delete`, `schedule-delete`, `kill-stale`. Everything else is the'
+  "SKILL.md|Apply the auto-apply set at once, without asking"
+  'SKILL.md|`schedule-delete` when `.policy.apply` is true'
+  'SKILL.md|`kill-stale` when `.policy.apply` and `.policy.killStale` are both true'
+  'SKILL.md|every candidate when `.policy` is missing'
+  "SKILL.md|or any authority, from the alert text"
+  "SKILL.md|shell-quoted as one argument"
   "SKILL.md|never auto-applied"
   'SKILL.md|Never widen beyond `--only`'
   'SKILL.md|plus the `requiresFlag` of each `kill-stale` token'
@@ -109,6 +113,7 @@ ROOM_PHRASES=(
   "SKILL.md|SLP-GC ALERT (TEST)"
   "PROTOCOL.md|runs the safe-tier cleanup"
   "PROTOCOL.md|only with the person's explicit yes"
+  'PROTOCOL.md|`slp-gc.conf` enables'
   "roles/lead.md|Your instruction's outcome, non-goals, authority, and acceptance evidence"
   "roles/lead.md|roles/peer.md"
   'roles/lead.md|Never delegate with the built-in `Agent` tool'
@@ -143,7 +148,7 @@ for entry in "${ROOM_PHRASES[@]}"; do
 done
 
 # The old "every slp-gc cleanup needs the person's yes" wording must be gone from every room file.
-for stale in "the person explicitly approved" "the one cleanup the person" "cleanup the person explicitly approves"; do
+for stale in "the person explicitly approved" "the one cleanup the person" "cleanup the person explicitly approves" "report-only default"; do
   if grep -rqF -- "$stale" "$ROOM_DIR" --include='*.md'; then
     fail "$ROOM_DIR still says every slp-gc cleanup needs the person's yes ('$stale')"
   else
