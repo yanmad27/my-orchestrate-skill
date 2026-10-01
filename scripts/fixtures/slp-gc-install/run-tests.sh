@@ -169,14 +169,14 @@ check "--gc-report-only on the safe-tier default clears all three" test "$RC" = 
 cp "$CONF" "$tmp/conf.zero"
 run gc-zero-rerun --gc-only
 check "a re-run with no --gc flag over an all-zero config leaves it byte-for-byte unchanged" cmp -s "$CONF" "$tmp/conf.zero"
-check "that re-run prints the one-line report-only notice with the opt-in command" bash -c 'grep -c "your existing config is report-only" "$0" | grep -qx 1 && grep -q "install.sh --gc-apply --gc-kill-stale" "$0"' "$tmp/gc-zero-rerun.out"
+check "that re-run prints the one-line report-only notice with the opt-in command" bash -c 'grep -c "your existing config is report-only" "$0" | grep -qx 1 && grep -q "install.sh --gc-apply --gc-kill-stale" "$0" && grep -q "ignore this to stay report-only" "$0"' "$tmp/gc-zero-rerun.out"
 run gc-zero-flag --gc-only --gc-report-only
 check "an explicit --gc flag prints no notice" bash -c '! grep -q "your existing config is report-only" "$0"' "$tmp/gc-zero-flag.out"
 printf 'SLP_GC_MEM_WARN_MB=2048\n' >> "$CONF"
 run gc-apply --gc-only --gc-apply
 check "--gc-apply sets only APPLY=1" test "$RC" = 0 -a "$(flags)" = 100
 check "--gc-apply keeps the other lines" test "$(conf_val SLP_GC_MEM_WARN_MB)" = 2048
-check "--gc-apply is announced in a prominent line naming the opt-in" bash -c 'grep -q "^!! slp-gc is RUNNING WITH OPT-INS" "$0" && grep -q "^!!   - apply" "$0"' "$tmp/gc-apply.out"
+check "--gc-apply is announced in a prominent line naming the opt-in" bash -c 'grep -q "^!! slp-gc reclaims every 60 s" "$0" && ! grep -q "RUNNING WITH OPT-INS" "$0" && grep -q "^!!   - apply" "$0"' "$tmp/gc-apply.out"
 cp "$CONF" "$tmp/conf.on"
 run gc-rerun --gc-only
 check "a re-run over a config with apply on is unchanged and prints no notice" bash -c 'cmp -s "$0" "$1" && ! grep -q "your existing config is report-only" "$2"' "$CONF" "$tmp/conf.on" "$tmp/gc-rerun.out"

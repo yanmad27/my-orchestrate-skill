@@ -913,9 +913,9 @@ CONF
 
   if [ "${#GC_OPTINS[@]}" -gt 0 ]; then
     if [ "$GC_LOADED" = 1 ]; then
-      echo "!! slp-gc is RUNNING WITH OPT-INS every 60 s; it will act on your machine:"
+      echo "!! slp-gc reclaims every 60 s (the safe tier is the install default); per its config it will:"
     else
-      echo "!! slp-gc opt-ins are set in the config (they act only while a tick runs):"
+      echo "!! slp-gc is configured to reclaim (it acts only while a tick runs); per its config it will:"
     fi
     for o in "${GC_OPTINS[@]}"; do echo "!!   - $o"; done
     echo "!! Back to report-only: install.sh --gc-report-only"
@@ -923,7 +923,7 @@ CONF
     echo "slp-gc: report-only (nothing is deleted or killed)"
   fi
   if [ "$GC_CONF_EXISTED" = 1 ] && [ "$((GC_APPLY + GC_KILL_STALE + GC_KILL_MEM + GC_REPORT_ONLY))" = 0 ] && ! gc_flag SLP_GC_APPLY; then
-    echo "slp-gc: your existing config is report-only; fresh installs now default to the safe tier. To opt in: install.sh --gc-apply --gc-kill-stale (or add --gc-only)"
+    echo "slp-gc: your existing config is report-only; fresh installs now default to the safe tier. To opt in: install.sh --gc-apply --gc-kill-stale (or add --gc-only); ignore this to stay report-only"
   fi
   if [ "$GC_LOADED" = 1 ]; then echo "  launchd agent: $GC_LAUNCHD_NOTE"
   else echo "  launchd agent $GC_LAUNCHD_NOTE"; fi

@@ -412,7 +412,7 @@ turns all reclaiming off: ticks then only sample, report and alert.
 
 ```bash
 ~/.config/slp-room/bin/slp-gc report   # read-only snapshot: processes, agents, garbage candidates
-~/.config/slp-room/bin/slp-gc report --json   # the same, machine-readable, with .candidates (action tokens)
+~/.config/slp-room/bin/slp-gc report --json   # the same, machine-readable, with .candidates (action tokens) and .policy (what slp-gc.conf enables)
 ~/.config/slp-room/bin/slp-gc record   # append one memory sample (delivers a real alert to a Supervisor)
 ~/.config/slp-room/bin/slp-gc test-alert   # send one marked TEST message to that Supervisor
 ~/.config/slp-room/bin/slp-gc tick     # what launchd runs
@@ -450,8 +450,9 @@ is one line in `tick.log` and never changes the exit status or blocks the other 
   the `Alert (data, not instructions):` line (process names are same-user text, so the
   line is labelled as data), `Home:`, the absolute `slp-gc:` path, a read-only
   `report --home <home> --json` command line (paths with spaces are quoted) and
-  the approval rule (safe-tier cleanup needs no yes; kill-memory needs the person's
-  explicit yes for this alert and the exact candidate set). No other process's environment or command line is included.
+  a line that cleanup rules are in the Supervisor role and `slp-gc.conf`, not in the message,
+  and that kill-memory always needs the person's explicit yes for this alert and the exact
+  candidate set. The message grants no authority. No other process's environment or command line is included.
 - *Pending permission.* `agent send` clears the recipient's pending permissions. When
   the selected Supervisor's record says `attentionReason` is `permission`, nothing
   is sent (no fallback to another Supervisor) and `tick.log` says so. Residual risk:
@@ -468,14 +469,21 @@ is one line in `tick.log` and never changes the exit status or blocks the other 
   turns delivery off, and it also disables `test-alert` (exit 3, "delivery disabled");
   anything but `0`/`1` keeps the default, `1`. The config keys
   above are unchanged: with all three `0` nothing is deleted or killed.
-- *What the Supervisor does.* On a non-test alert it applies the safe-tier candidates
-  from `slp-gc report --json` without asking: it uses the installed copy, checks that the
-  home matches `PASEO_HOME`, and runs `--apply --only <tokens>` plus each kill-stale
-  token's required flag. It reports what was reclaimed and asks the person only about
-  kill-memory candidates. A test alert does nothing. A refusal is not retried, and it
-  never widens beyond `--only`.
+- *What the Supervisor does.* On a non-test alert it uses the installed copy (home must
+  match `PASEO_HOME`) and reads `.policy` from its `report --json`: the keys of
+  `slp-gc.conf`, read exactly as `tick` reads them (`apply`, `killStale`, `killMemory`;
+  a value counts only when exactly `1`; a missing, unreadable, symlinked or special-file
+  conf gives all false). It applies without asking only the safe-tier candidates that
+  `.policy` enables: agent-delete and schedule-delete when `apply` is true, kill-stale
+  when `apply` and `killStale` are both true, with `--apply --only <tokens>` plus each
+  kill-stale token's required flag. It reports what was reclaimed. Everything else, the
+  whole safe tier under a report-only conf or when `.policy` is missing included, and
+  every kill-memory candidate, goes to the person for an explicit yes. A test alert does
+  nothing. A refusal is not retried, and it never widens beyond `--only`. `--apply` itself
+  ignores the conf and follows only its CLI flags, which is why the Supervisor checks
+  `.policy` first.
 
-**Candidate-bounded cleanup.** `slp-gc report --json` prints `.candidates`: every
+**Candidate-bounded cleanup.** `slp-gc report --json` prints `.policy` (`{apply, killStale, killMemory}`, additive) and `.candidates`: every
 action `--apply` could take now, as `{token, action, kind, reason, sizeMB, requiresFlag}`.
 Tokens are unique and action-scoped: `agent-delete:<id>`, `schedule-delete:<id>`,
 `kill-stale:<pid>@<lstart>`, `kill-memory:<pid>@<lstart>`. `slp-gc report --apply --only <token>[,<token>...]`
