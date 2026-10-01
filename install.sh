@@ -8,7 +8,7 @@
 #   3. the room's profiles and providers → ~/.paseo/config.json (backup kept alongside)
 #   4. paseo daemon reload
 #   5. slp-gc, the Paseo GC / memory diagnostic → ~/.config/slp-room/bin/slp-gc, run every 60 s
-#      by a launchd agent (report-only unless you opt in), config ~/.config/slp-room/slp-gc.conf.
+#      by a launchd agent (a fresh install reclaims the safe tier; kill-memory is opt-in), config ~/.config/slp-room/slp-gc.conf.
 #      The default mode and --paseo-only include this step unless --no-gc is given (--skill-only
 #      does not); --gc-only is this step alone.
 # From a checkout: ./install.sh   Piped: curl -fsSL <raw>/install.sh | bash
@@ -731,8 +731,9 @@ gc_existing_agent_note() {
 }
 
 # --- 5. slp-gc: Paseo GC + memory diagnostic, run every 60 s by a launchd agent -----------------
-# Independent of the Paseo daemon. Report-only by default: apply / kill are opt-ins in
-# slp-gc.conf (never in the plist's arguments), which a re-run keeps and only --gc-* edits.
+# Independent of the Paseo daemon. A fresh install defaults to the safe tier (apply + kill-stale on,
+# kill-memory off); the opt-ins live in slp-gc.conf (never in the plist's arguments), which a re-run
+# keeps and only --gc-* edits.
 
 if [ "$DO_GC" = 1 ]; then
   mkdir -p "$ROOM_HOME/bin"
@@ -753,20 +754,24 @@ if [ "$DO_GC" = 1 ]; then
   mv -f "$GC_TMP" "$GC_BIN"
   echo "Installed slp-gc: $GC_BIN"
 
-  # --- config: written once, never reset. KEY=VALUE, parsed (not sourced) by `slp-gc tick`.
+  # --- config: written once, never reset (a re-run never migrates it: an old untouched default and a
+  # deliberate opt-out are the same file). KEY=VALUE, parsed (not sourced) by `slp-gc tick`.
+  GC_CONF_EXISTED=1
   if [ ! -e "$GC_CONF" ] && [ ! -L "$GC_CONF" ]; then
+    GC_CONF_EXISTED=0
     (umask 077 && cat > "$GC_CONF" <<'CONF'
 # slp-gc configuration (KEY=VALUE, parsed not sourced; the last value wins). Read by `slp-gc tick`
 # only. A flag is on only when its value is exactly 1. install.sh never resets this file: change
 # it here, or with install.sh --gc-apply / --gc-kill / --gc-report-only.
 #
-# Default: report-only. Every tick records memory and writes hourly reports and alerts; nothing
-# is deleted or killed.
+# Default (fresh install): the safe tier. Every tick records memory, writes hourly reports and alerts,
+# deletes completed schedules and long-archived agents, and SIGTERMs proven orphaned processes.
+# kill-memory stays off. Set all three flags to 0 (install.sh --gc-report-only) for report-only.
 
 # 1 = delete completed schedules and long-archived agents through the paseo CLI.
-SLP_GC_APPLY=0
+SLP_GC_APPLY=1
 # 1 = also SIGTERM proven orphaned agent processes (needs SLP_GC_APPLY=1 to act).
-SLP_GC_KILL_STALE=0
+SLP_GC_KILL_STALE=1
 # 1 = also SIGTERM agent descendants above SLP_GC_MEM_KILL_MB (needs SLP_GC_APPLY=1 to act).
 SLP_GC_KILL_MEMORY=0
 
@@ -783,7 +788,7 @@ SLP_GC_KILL_MEMORY=0
 # SLP_GC_ALERT_SUPERVISOR=1         (0 = never deliver a real alert to the most recently used open Supervisor)
 CONF
     )
-    echo "Wrote default config (report-only): $GC_CONF"
+    echo "Wrote default config (safe tier: apply + kill-stale; kill-memory off): $GC_CONF"
   fi
   # Sets KEY=VALUE in place, replacing every existing KEY= line (or appending); the rest is kept.
   gc_conf_set() {
@@ -908,14 +913,17 @@ CONF
 
   if [ "${#GC_OPTINS[@]}" -gt 0 ]; then
     if [ "$GC_LOADED" = 1 ]; then
-      echo "!! slp-gc is RUNNING WITH OPT-INS every 60 s; it will act on your machine:"
+      echo "!! slp-gc reclaims every 60 s (the safe tier is the install default); per its config it will:"
     else
-      echo "!! slp-gc opt-ins are set in the config (they act only while a tick runs):"
+      echo "!! slp-gc is configured to reclaim (it acts only while a tick runs); per its config it will:"
     fi
     for o in "${GC_OPTINS[@]}"; do echo "!!   - $o"; done
     echo "!! Back to report-only: install.sh --gc-report-only"
   else
     echo "slp-gc: report-only (nothing is deleted or killed)"
+  fi
+  if [ "$GC_CONF_EXISTED" = 1 ] && [ "$((GC_APPLY + GC_KILL_STALE + GC_KILL_MEM + GC_REPORT_ONLY))" = 0 ] && ! gc_flag SLP_GC_APPLY; then
+    echo "slp-gc: your existing config is report-only; fresh installs now default to the safe tier. To opt in: install.sh --gc-apply --gc-kill-stale (or add --gc-only); ignore this to stay report-only"
   fi
   if [ "$GC_LOADED" = 1 ]; then echo "  launchd agent: $GC_LAUNCHD_NOTE"
   else echo "  launchd agent $GC_LAUNCHD_NOTE"; fi

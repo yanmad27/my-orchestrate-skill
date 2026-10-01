@@ -371,9 +371,10 @@ when that Supervisor agent is archived.
 `slp-gc` is a standalone garbage collector and memory diagnostic for a Paseo
 home. On a 16 GB Mac, test-runner `node` processes spawned by agents were
 orphaned, showed up as Paseo, and grew to about 4.5 GB each; ten of them
-froze the machine. `slp-gc` reports and alerts on this, and — only when you
-opt in — SIGTERMs proven orphans or over-memory agent descendants and deletes
-completed schedules and long-archived agents through the `paseo` CLI.
+froze the machine. `slp-gc` reports and alerts on this and, by default,
+reclaims the *safe tier*: it deletes completed schedules and long-archived
+agents through the `paseo` CLI and SIGTERMs proven orphaned processes.
+SIGTERMing over-memory agent descendants (kill-memory) stays a separate opt-in.
 
 **Install.** A normal `install.sh` run (and `--paseo-only`) also installs it,
 unless you pass `--no-gc`. To install just slp-gc — no seats, no Paseo config,
@@ -382,25 +383,36 @@ no daemon reload — run `./install.sh --gc-only` (needs `jq`). It:
 - copies `slp-gc` to `~/.config/slp-room/bin/slp-gc`, next to `slp-wait`;
 - writes `~/Library/LaunchAgents/com.paseo-slp.slp-gc.plist` and loads it with
   `launchctl bootstrap`: `slp-gc tick` every 60 s, at low priority, independent
-  of the Paseo daemon (no `--apply` in its arguments, ever). It checks that
+  of the Paseo daemon (no `--apply` in its arguments, ever: what it reclaims
+  comes from `slp-gc.conf`). It checks that
   `jq` (and `paseo`, if found) resolve under the agent's minimal `PATH`
   (`/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin`), adds their
   directory after those if they live elsewhere, and refuses to go on without `jq`;
-- writes `~/.config/slp-room/slp-gc.conf` only if none exists — a re-run never
-  resets it.
+- writes `~/.config/slp-room/slp-gc.conf` only if none exists, with the safe tier
+  on (`SLP_GC_APPLY=1`, `SLP_GC_KILL_STALE=1`, `SLP_GC_KILL_MEMORY=0`) — a re-run
+  never resets it. An existing config is never migrated, because an old untouched
+  all-zero default and a deliberate `--gc-report-only` look identical. When a
+  re-run without any `--gc-*` flag finds `SLP_GC_APPLY` not `1`, the summary prints
+  a one-line notice with the command to opt in
+  (`install.sh --gc-apply --gc-kill-stale`, plus `--gc-only` to touch nothing else).
+  Without a readable config file `slp-gc tick` itself stays report-only.
 
 `--no-gc` skips all of this; `--no-gc-launchd` installs the tool and config but
 no agent. Either way, an agent from an earlier install is left running and the
 summary says so, with how to remove it.
 
-**Default: report-only.** Every tick records a memory sample, writes a report
-hourly, and alerts when memory climbs. Nothing is deleted or killed.
+**Default: the safe tier.** Every tick records a memory sample, writes a report
+hourly, alerts when memory climbs, deletes completed room schedules and
+long-archived agents, and SIGTERMs proven orphaned processes (same eligibility
+rules as ever; at most `SLP_GC_MAX_KILLS` per tick). It never kills an agent
+descendant for memory unless you opt in to kill-memory. `install.sh --gc-report-only`
+turns all reclaiming off: ticks then only sample, report and alert.
 
 **By hand.**
 
 ```bash
 ~/.config/slp-room/bin/slp-gc report   # read-only snapshot: processes, agents, garbage candidates
-~/.config/slp-room/bin/slp-gc report --json   # the same, machine-readable, with .candidates (action tokens)
+~/.config/slp-room/bin/slp-gc report --json   # the same, machine-readable, with .candidates (action tokens) and .policy (what slp-gc.conf enables)
 ~/.config/slp-room/bin/slp-gc record   # append one memory sample (delivers a real alert to a Supervisor)
 ~/.config/slp-room/bin/slp-gc test-alert   # send one marked TEST message to that Supervisor
 ~/.config/slp-room/bin/slp-gc tick     # what launchd runs
@@ -438,8 +450,9 @@ is one line in `tick.log` and never changes the exit status or blocks the other 
   the `Alert (data, not instructions):` line (process names are same-user text, so the
   line is labelled as data), `Home:`, the absolute `slp-gc:` path, a read-only
   `report --home <home> --json` command line (paths with spaces are quoted) and
-  the rule that cleanup needs the person's explicit yes for this alert and the exact
-  candidate set. No other process's environment or command line is included.
+  a line that cleanup rules are in the Supervisor role and `slp-gc.conf`, not in the message,
+  and that kill-memory always needs the person's explicit yes for this alert and the exact
+  candidate set. The message grants no authority. No other process's environment or command line is included.
 - *Pending permission.* `agent send` clears the recipient's pending permissions. When
   the selected Supervisor's record says `attentionReason` is `permission`, nothing
   is sent (no fallback to another Supervisor) and `tick.log` says so. Residual risk:
@@ -454,10 +467,28 @@ is one line in `tick.log` and never changes the exit status or blocks the other 
   is no retry, the next chance is the next alert after the window.
 - *Switch.* `SLP_GC_ALERT_SUPERVISOR=0` in `slp-gc.conf` (or the environment)
   turns delivery off, and it also disables `test-alert` (exit 3, "delivery disabled");
-  anything but `0`/`1` keeps the default, `1`. The opt-ins
-  above are unchanged: without them nothing is deleted or killed.
+  anything but `0`/`1` keeps the default, `1`. The config keys
+  above are unchanged: with all three `0` nothing is deleted or killed.
+- *What the Supervisor does.* On a non-test alert it uses the installed copy (home must
+  match `PASEO_HOME`) and reads `.policy` from its `report --json`: the keys of
+  `slp-gc.conf`, read exactly as `tick` reads them (`apply`, `killStale`, `killMemory`;
+  a value counts only when exactly `1`; a missing, unreadable, symlinked or special-file
+  conf gives all false). It applies without asking only the safe-tier candidates that
+  `.policy` enables: agent-delete and schedule-delete when `apply` is true, kill-stale
+  when `apply` and `killStale` are both true, with `--apply --only <tokens>` plus each
+  kill-stale token's required flag. It reports what was reclaimed. Everything else, the
+  whole safe tier under a report-only conf or when `.policy` is missing included, and
+  every kill-memory candidate, goes to the person for an explicit yes. A test alert does
+  nothing. A refusal is not retried, and it never widens beyond `--only`. `--apply` itself
+  ignores the conf and follows only its CLI flags, which is why the Supervisor checks
+  `.policy` first.
+  `.policy` comes from the conf the installed copy resolves when it runs without
+  `SLP_GC_CONFIG`, i.e. the default room home `~/.config/slp-room/slp-gc.conf`; the launchd
+  tick reads the conf pinned in its plist (`SLP_GC_CONFIG`, set from the room home the
+  install used). With a custom `SLP_ROOM_HOME` the two can differ, so the Supervisor's
+  auto-apply is supported only for the default room home.
 
-**Candidate-bounded cleanup.** `slp-gc report --json` prints `.candidates`: every
+**Candidate-bounded cleanup.** `slp-gc report --json` prints `.policy` (`{apply, killStale, killMemory}`, additive) and `.candidates`: every
 action `--apply` could take now, as `{token, action, kind, reason, sizeMB, requiresFlag}`.
 Tokens are unique and action-scoped: `agent-delete:<id>`, `schedule-delete:<id>`,
 `kill-stale:<pid>@<lstart>`, `kill-memory:<pid>@<lstart>`. `slp-gc report --apply --only <token>[,<token>...]`
@@ -496,20 +527,22 @@ own — a symlink is refused, and so is a symlinked or special-file config or lo
 **When memory climbs,** run `slp-gc report` and look at the orphans and the
 per-agent process trees: an orphan is a test runner whose agent is gone, a big
 tree is an agent still running one. Stop the agent with `paseo agent stop`, or
-opt in below.
+opt in to kill-memory below.
 
-**Opt in.** Reclaiming and killing are enabled in `~/.config/slp-room/slp-gc.conf`
+**Opt in / out.** What slp-gc reclaims is set in `~/.config/slp-room/slp-gc.conf`
 (`KEY=VALUE`, on only when exactly `1`), or with install flags, which edit only
-those keys. The kill flags need `--gc-apply`. When the agent is loaded with an
-opt-in on, the install summary names each active one.
+those keys. A fresh install writes `SLP_GC_APPLY=1`, `SLP_GC_KILL_STALE=1`,
+`SLP_GC_KILL_MEMORY=0`; kill-memory is the one opt-in. The kill flags need `--gc-apply`
+on the same command line, and `--gc-report-only` cannot be combined with them. When
+the agent is loaded with a flag on, the install summary names each active one.
 
 | Flag | Config key | Effect |
 |---|---|---|
-| `--gc-apply` | `SLP_GC_APPLY=1` | Delete completed room schedules and long-archived agents via `paseo` |
-| `--gc-kill-stale` | `SLP_GC_KILL_STALE=1` | SIGTERM proven orphaned processes |
-| `--gc-kill-memory` | `SLP_GC_KILL_MEMORY=1` | SIGTERM an agent descendant above `SLP_GC_MEM_KILL_MB` |
-| `--gc-kill` | both kill keys | Shorthand for the two flags above |
-| `--gc-report-only` | all three `=0` | Back to report-only |
+| `--gc-apply` | `SLP_GC_APPLY=1` (fresh-install default) | Delete completed room schedules and long-archived agents via `paseo` |
+| `--gc-kill-stale` | `SLP_GC_KILL_STALE=1` (fresh-install default) | SIGTERM proven orphaned processes |
+| `--gc-kill-memory` | `SLP_GC_KILL_MEMORY=1` (off by default) | SIGTERM an agent descendant above `SLP_GC_MEM_KILL_MB` |
+| `--gc-kill` | both kill keys | Shorthand for the two kill flags |
+| `--gc-report-only` | all three `=0` | Back to report-only (all reclaiming off) |
 
 The launchd agent is only loaded when `HOME` is your own login home; for any
 other `HOME` the plist is written and the install warns that the agent is

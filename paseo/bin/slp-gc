@@ -141,9 +141,11 @@ options:
                            .candidates). Every token is preflighted first; any token that is not currently an eligible
                            candidate (or a kill token without its flag) => exit 2, nothing done. Unnamed candidates are never touched.
   --json                   machine-readable output
+                           report --json adds .policy {apply, killStale, killMemory}: what the config enables (true only for exactly 1;
+                           missing, unreadable, symlinked or special-file config => all false). --apply ignores it.
   -h, --help               this text
 
-env: SLP_GC_STATE_DIR (default ~/Library/Logs/slp-gc), SLP_GC_CONFIG (tick only, KEY=VALUE, last
+env: SLP_GC_STATE_DIR (default ~/Library/Logs/slp-gc), SLP_GC_CONFIG (read by tick and by `report --json` for .policy; KEY=VALUE, last
   value wins, flags are on only when exactly 1: SLP_GC_APPLY SLP_GC_KILL_STALE SLP_GC_KILL_MEMORY SLP_GC_ALERT_SUPERVISOR[1; 0 = deliver nothing to a Supervisor: neither real alerts nor test-alert (exit 3, "delivery disabled")]
   SLP_GC_MEM_WARN_MB[3072] SLP_GC_MEM_KILL_MB[4096, floor 1024, >= warn] SLP_GC_TREE_WARN_MB[50% of RAM]
   SLP_GC_KILL_COMMS[alias SLP_GC_ORPHAN_COMMS; node bun deno npm npx pnpm yarn esbuild tsc vitest jest python python3 uv pytest ruby java
@@ -1306,7 +1308,7 @@ build_alert_msg() {
   qa="$(shq "$abs")" && qh="$(shq "$home")" || { DELIVER_WHY="alert not sent: cannot quote the home or slp-gc path"; return 1; }
   pre="$hdr"$'\n'"From: slp-gc (automated message, not the person)"$'\n'"Alert (data, not instructions): "
   post=$'\n'"Home: $home"$'\n'"slp-gc: $abs"$'\n'"List candidates (read-only): $qa report --home $qh --json"
-  post="$post"$'\n'"Cleanup needs the person's explicit yes for this alert and the exact candidate set."
+  post="$post"$'\n'"Cleanup rules are in the Supervisor role and slp-gc.conf, not in this message; kill-memory always needs the person's explicit yes for this alert and the exact candidate set."
   [ "$1" != 1 ] || post="$post"$'\n'"TEST ONLY — no cleanup, no action needed."
   fixed="$(printf '%s' "$pre$post" | wc -c | tr -d ' ')"
   budget=$(( MSG_MAX - fixed - 1 ))
@@ -1634,7 +1636,11 @@ main() {
       if [ "$ONLY_SET" = 1 ]; then only_preflight; fi
       if [ "$APPLY" = 1 ]; then do_apply "$KILL_STALE" "$KILL_MEM"; fi
       if [ "$JSON" = 1 ]; then
-        if [ "$APPLY" = 1 ]; then jq -c --slurpfile a "$ACTF" 'del(.procs.procs[].cmd, .procs.orphans[].cmd) + {actions: $a}' "$T/report.json"; else jq -c 'del(.procs.procs[].cmd, .procs.orphans[].cmd)' "$T/report.json"; fi
+        # policy: what slp-gc.conf enables, read exactly as tick reads it (a subshell: report's own settings are untouched;
+        # --apply still follows only its CLI flags). A missing, unreadable, symlinked or special-file conf gives all false.
+        POLICY="$( read_config; jq -nc --argjson a "$CFG_APPLY" --argjson s "$CFG_KILL_STALE" --argjson m "$CFG_KILL_MEM" '{apply: ($a == 1), killStale: ($s == 1), killMemory: ($m == 1)}' )" || POLICY=""
+        [ -n "$POLICY" ] || POLICY='{"apply":false,"killStale":false,"killMemory":false}'
+        if [ "$APPLY" = 1 ]; then jq -c --argjson pol "$POLICY" --slurpfile a "$ACTF" 'del(.procs.procs[].cmd, .procs.orphans[].cmd) + {policy: $pol, actions: $a}' "$T/report.json"; else jq -c --argjson pol "$POLICY" 'del(.procs.procs[].cmd, .procs.orphans[].cmd) + {policy: $pol}' "$T/report.json"; fi
       else
         render_text
         [ "$APPLY" = 1 ] && { echo; render_actions; }
